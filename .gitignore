@@ -3,6 +3,7 @@ dist/
 deploy/
 .bundle-cache/
 .DS_Store
+.idea/
 *.local
 *.log
 .workbuddy/
