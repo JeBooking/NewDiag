@@ -25,6 +25,22 @@ python -m venv .venv
 
 开发态 Vite 把 `/api` 代理到 `127.0.0.1:8000`。
 
+## 内网单人测试
+
+服务跑在内网某台机器、你用另一台电脑的浏览器访问时：
+
+```bash
+# 服务端：后端保持回环即可，前端监听所有网卡
+backend/.venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+pnpm dev:lan          # 访问 http://<那台机器的内网IP>:5173
+```
+
+浏览器只访问 5173，`/api` 由 Vite 在服务端代理到 8000，所以不涉及 CORS。需要在服务端防火墙放行 5173。
+
+想直接看接口文档（`/docs`）时，后端才需要 `--host 0.0.0.0` 并放行 8000——注意这套没有鉴权，放行即对内网所有人开放。
+
+依赖安装需要外网或内网镜像：npm 用 `pnpm config set registry <镜像>`，pip 用 `-i <镜像>`；纯离线环境要提前把 node_modules 和 wheel 包带过去。
+
 ## 验证
 
 ```bash
