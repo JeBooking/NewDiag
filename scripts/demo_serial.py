@@ -1,4 +1,4 @@
-"""串行排查演示：同组两条思路按 order 依次尝试，成功后暂停并询问是否继续。
+"""串行排查演示：超温后同组两条思路按 order 依次尝试，成功后暂停并询问是否继续。
 
 前提：后端跑在 http://127.0.0.1:8000，且已跑过 demo_seed.py（工程已登记）。
 """
@@ -36,30 +36,31 @@ DOC = {
     'format': 1,
     'name': '冷却系统诊断（串行）',
     'mode': 'serial',
-    'snapshotFields': ['voltage'],
+    'snapshotFields': ['temperature'],
     'nodes': [
         {
             'id': 'n1',
             'kind': 'investigation',
-            'title': '检查母线电压',
-            'detail': '低于 210V 为异常',
+            'title': '检查是否超温',
+            'detail': '超过 70°C 为超温',
             'fields': {
-                'observation': '母线电压',
-                'acquisition': '数据服务器 voltage',
-                'assessment': '低于 210V 为异常',
+                'observation': '设备温度',
+                'acquisition': '启动快照 temperature',
+                'assessment': '超过 70°C 为超温',
             },
-            'binding': {'project': '冷却系统', 'function': 'judge_voltage'},
+            'binding': {'project': '冷却系统', 'function': 'is_overheated'},
+            'params': {'temperature': {'snapshot': 'temperature'}},
             'position': {'x': 120, 'y': 200},
         },
-        conclusion('n2', '更换电源模块', 400, 100),
-        remediation('n3', '断开负载后更换电源模块', 660, 100),
-        conclusion('n6', '检查供电线路', 400, 320),
-        remediation('n7', '紧固配电端子并复测', 660, 320),
+        conclusion('n2', '滤网可能堵塞', 400, 100),
+        remediation('n3', '清理滤网', 660, 100),
+        conclusion('n6', '风机可能故障', 400, 320),
+        remediation('n7', '重启风机', 660, 320),
         {
             'id': 'n4',
             'kind': 'problemSolved',
             'title': '问题解决',
-            'detail': '电压恢复',
+            'detail': '温度恢复',
             'position': {'x': 940, 'y': 200},
         },
     ],
@@ -110,7 +111,7 @@ def main():
 
     instance = call(
         'POST', f'/flows/{flow["id"]}/instances',
-        json={'releaseId': release['id'], 'input': {'voltage': 198.4}},
+        json={'releaseId': release['id'], 'input': {'temperature': 85.0}},
     )
 
     detail = wait(instance['id'], ('waiting',))

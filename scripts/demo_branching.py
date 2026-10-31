@@ -1,4 +1,4 @@
-"""分支与回退演示：是分支走处置，否分支上升；处置待办上回退改选「否」。
+"""分支与回退演示：超温走处置，未超温上升；处置待办上回退改选「否」。
 
 前提：后端跑在 http://127.0.0.1:8000，且已跑过 demo_seed.py（工程已登记）。
 """
@@ -15,47 +15,48 @@ DOC = {
     'format': 1,
     'name': '冷却系统诊断（分支）',
     'mode': 'parallel',
-    'snapshotFields': ['voltage'],
+    'snapshotFields': ['temperature'],
     'nodes': [
         {
             'id': 'n1',
             'kind': 'investigation',
-            'title': '检查母线电压',
-            'detail': '判断母线电压是否低于 210V',
+            'title': '检查是否超温',
+            'detail': '判断设备温度是否超过 70°C',
             'fields': {
-                'observation': '母线电压',
-                'acquisition': '数据服务器 voltage',
-                'assessment': '低于 210V 为异常',
+                'observation': '设备温度',
+                'acquisition': '启动快照 temperature',
+                'assessment': '超过 70°C 为超温',
             },
-            'binding': {'project': '冷却系统', 'function': 'judge_voltage'},
+            'binding': {'project': '冷却系统', 'function': 'is_overheated'},
+            'params': {'temperature': {'snapshot': 'temperature'}},
             'position': {'x': 120, 'y': 160},
         },
         {
             'id': 'n2',
             'kind': 'conclusion',
-            'title': '电压不足',
-            'detail': '电源模块输出不足',
+            'title': '冷却能力不足',
+            'detail': '设备超温，冷却能力不足',
             'position': {'x': 420, 'y': 80},
         },
         {
             'id': 'n3',
             'kind': 'remediation',
-            'title': '更换电源模块',
-            'detail': '断电更换 24V 电源模块后上电复查',
+            'title': '检查风路与风机',
+            'detail': '检查滤网与风机，确认冷却回路',
             'position': {'x': 700, 'y': 80},
         },
         {
             'id': 'n4',
             'kind': 'problemSolved',
             'title': '问题解决',
-            'detail': '电压恢复',
+            'detail': '温度恢复',
             'position': {'x': 980, 'y': 80},
         },
         {
             'id': 'n5',
             'kind': 'escalation',
-            'title': '转交电气工程师',
-            'detail': '电压正常但仍有异常，交人工排查',
+            'title': '转交热管理工程师',
+            'detail': '温度未超温但仍有异常，交人工排查',
             'position': {'x': 420, 'y': 260},
         },
     ],
@@ -98,29 +99,29 @@ def main():
     call('POST', f'/flows/{flow["id"]}/commit', json={'doc': DOC})
     release = call('POST', f'/flows/{flow["id"]}/releases', json={'note': '分支演示'})
 
-    # 场景一：电压异常 → 处置待办 → 回退改选「否」→ 上升
+    # 场景一：超温 → 处置待办 → 回退改选「否」→ 上升
     instance = call(
         'POST', f'/flows/{flow["id"]}/instances',
-        json={'releaseId': release['id'], 'input': {'voltage': 198.4}},
+        json={'releaseId': release['id'], 'input': {'temperature': 85.0}},
     )
     detail = wait(instance['id'], ('waiting',))
     review = next(r for r in detail['reviews'] if r['status'] == 'pending')
     print(f"停在 {review['request']['title']}（{review['kind']}）")
 
     call('POST', f'/instances/{instance["id"]}/rollback',
-         json={'targetNodeId': 'n1', 'branch': 'no', 'reason': '复测电压正常，改走上升'})
+         json={'targetNodeId': 'n1', 'branch': 'no', 'reason': '复测温度正常，改走上升'})
     detail = wait(instance['id'], ('escalated', 'success', 'failed'))
     abandoned = [r for r in detail['runs'] if r['status'] == 'abandoned']
     print(f"回退后状态：{detail['status']}，废弃记录 {len(abandoned)} 条，新代 token "
           f"{max((t['generation'] for t in detail['tokens']), default=0)}")
 
-    # 场景二：电压正常 → 直接上升
+    # 场景二：未超温 → 直接上升
     instance2 = call(
         'POST', f'/flows/{flow["id"]}/instances',
-        json={'releaseId': release['id'], 'input': {'voltage': 230.0}},
+        json={'releaseId': release['id'], 'input': {'temperature': 42.0}},
     )
     detail2 = wait(instance2['id'], ('escalated', 'success', 'failed'))
-    print(f"正常电压场景状态：{detail2['status']}")
+    print(f"正常温度场景状态：{detail2['status']}")
 
     assert detail['status'] == 'escalated', detail['status']
     assert detail2['status'] == 'escalated', detail2['status']
