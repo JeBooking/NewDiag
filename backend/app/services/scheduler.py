@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from types import SimpleNamespace
 
 from sqlalchemy import func, select
@@ -16,6 +17,7 @@ from sqlalchemy import func, select
 from app import db as db_module
 from app import models
 from app.db import SessionLocal, new_id, now_iso
+from app.logging_setup import brief
 from app.services import signatures
 from app.services.sessions import SessionCrashed, SessionError, SessionManager, SessionTimeout
 
@@ -75,6 +77,7 @@ class Scheduler:
             )
             self._threads[instance_id] = thread
             thread.start()
+            logger.info("实例 %s 调度线程启动", instance_id)
 
     def submit_review(self, instance_id: str, review_id: str, decision: dict) -> None:
         """人工提交判断/完成/回退。接口层可能已经把 review 置为 done，这里保持幂等。"""
@@ -261,6 +264,11 @@ class Scheduler:
                 db.commit()
             self._refresh(db, instance, plan)
             db.commit()
+            logger.debug(
+                "实例 %s 本轮推进 %s",
+                instance_id,
+                [(t.node_id, t.generation) for t in targets],
+            )
             return True
         finally:
             db.close()
@@ -310,11 +318,19 @@ class Scheduler:
         token.status = "running"
         token.updated_at = now_iso()
         db.flush()
+        logger.debug(
+            "实例 %s 推进节点 %s（%s，gen=%s）",
+            instance.id,
+            token.node_id,
+            step.get("kind"),
+            token.generation,
+        )
 
         if step.get("terminal"):
             token.status = "done"
             token.updated_at = now_iso()
             db.flush()
+            logger.info("实例 %s 到达终止节点 %s（%s）", instance.id, token.node_id, step.get("kind"))
             return
 
         if step.get("human"):
@@ -322,6 +338,9 @@ class Scheduler:
             token.status = "waiting"
             token.updated_at = now_iso()
             db.flush()
+            logger.info(
+                "实例 %s 等待人工：节点 %s（%s）", instance.id, token.node_id, step.get("kind")
+            )
             return
 
         call = step.get("call")
@@ -341,7 +360,9 @@ class Scheduler:
     def _run_call(self, db, instance, plan: dict, token, step: dict, call: dict) -> None:
         args, error = self._eval_args(db, instance, token, call.get("args") or {})
         started = now_iso()
+        t0 = time.perf_counter()
         if error is not None:
+            logger.warning("实例 %s 节点 %s 参数求值失败：%s", instance.id, token.node_id, error)
             self._write_run(
                 db,
                 instance,
@@ -356,6 +377,16 @@ class Scheduler:
         value, failure = self._invoke(db, instance, call, args, token)
         if failure is not None:
             code, message, attempts = failure
+            logger.warning(
+                "实例 %s 节点 %s 调用 %s.%s 失败（%s，第 %s 次）：%s",
+                instance.id,
+                token.node_id,
+                call.get("project"),
+                call.get("function"),
+                code,
+                attempts,
+                message,
+            )
             self._write_run(
                 db,
                 instance,
@@ -377,6 +408,7 @@ class Scheduler:
                 if branch is None
                 else f"分支 {branch} 没有后继节点"
             )
+            logger.warning("实例 %s 节点 %s 无法路由：%s", instance.id, token.node_id, reason)
             self._write_run(
                 db,
                 instance,
@@ -404,6 +436,16 @@ class Scheduler:
         token.status = "done"
         token.updated_at = now_iso()
         db.flush()
+        logger.info(
+            "实例 %s 节点 %s 调用 %s.%s -> %s，分支 %s，%.0fms",
+            instance.id,
+            token.node_id,
+            call.get("project"),
+            call.get("function"),
+            brief(value, 120),
+            branch,
+            (time.perf_counter() - t0) * 1000,
+        )
 
     def _invoke(self, db, instance, call: dict, args: dict, token):
         """调会话子进程；超时/崩溃重试一次。返回 (value, (code, message, attempts))。"""
@@ -415,6 +457,14 @@ class Scheduler:
         attempts = 0
         while attempts < 2:
             attempts += 1
+            logger.debug(
+                "实例 %s 调用 %s.%s（第 %s 次）参数 %s",
+                instance.id,
+                ref,
+                function,
+                attempts,
+                brief(args),
+            )
             try:
                 value = self._sessions.call(
                     instance.id, project, function, args, timeout=self._timeout
@@ -423,9 +473,13 @@ class Scheduler:
             except SessionTimeout as exc:
                 if attempts >= 2:
                     return None, (ERR_TIMEOUT, str(exc), attempts)
+                logger.warning("实例 %s 调用 %s 超时，重启会话后重试", instance.id, function)
             except SessionCrashed as exc:
                 if attempts >= 2:
                     return None, (ERR_CRASH, str(exc), attempts)
+                logger.warning(
+                    "实例 %s 调用 %s 会话崩溃，重启会话后重试：%s", instance.id, function, exc
+                )
             except SessionError as exc:
                 return None, (ERR_EXCEPTION, str(exc), attempts)
             except Exception as exc:  # noqa: BLE001 - 业务工程千奇百怪，统一记执行错误
@@ -677,29 +731,40 @@ class Scheduler:
         statuses = [t.status for t in tokens]
         success_token = self._success_token(tokens, plan)
 
+        def apply(status: str) -> None:
+            if instance.status != status:
+                logger.info("实例 %s 状态 %s -> %s", instance.id, instance.status, status)
+            instance.status = status
+
         if "running" in statuses:
-            instance.status = "running"
+            apply("running")
             return
         if "waiting" in statuses:
-            instance.status = "waiting"
+            apply("waiting")
             return
         if "queued" in statuses:
             if plan.get("mode") == "serial" and success_token is not None:
                 # 同一个成功令牌只问一次；选过「继续」就不再拦
                 review = self._ensure_after_success_review(db, instance, success_token)
                 if review is not None:
-                    instance.status = "paused"
+                    apply("paused")
                     return
-            instance.status = "running"
+            apply("running")
             return
         if success_token is not None:
-            instance.status = "success"
+            apply("success")
         elif self._reached(tokens, plan, "escalation") is not None:
             # 上升是交给人接手，不是失败；有成功路径时仍算 success
-            instance.status = "escalated"
+            apply("escalated")
         else:
-            instance.status = "failed"
+            apply("failed")
         instance.ended_at = instance.ended_at or now_iso()
+        logger.info(
+            "实例 %s 结束：%s，令牌 %s",
+            instance.id,
+            instance.status,
+            [(t.node_id, t.status) for t in tokens],
+        )
 
     def _success_token(self, tokens: list, plan: dict):
         return self._reached(tokens, plan, "problemSolved")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import subprocess
@@ -15,6 +16,8 @@ from pathlib import Path
 
 WORKER = Path(__file__).resolve().parent.parent / "worker" / "session.py"
 DEFAULT_TIMEOUT = 120.0
+
+logger = logging.getLogger(__name__)
 
 
 class SessionError(Exception):
@@ -70,6 +73,14 @@ class SessionManager:
         with handle.lock:
             handle.seq += 1
             request_id = str(handle.seq)
+            started = time.perf_counter()
+            logger.debug(
+                "实例 %s 会话调用 %s#%s 参数 %s",
+                instance_id,
+                function,
+                request_id,
+                sorted(args.keys()),
+            )
             line = json.dumps(
                 {"id": request_id, "function": function, "args": args}, ensure_ascii=False
             )
@@ -85,17 +96,29 @@ class SessionManager:
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    logger.warning(
+                        "实例 %s 调用 %s 超时（%.0fs），kill 会话", instance_id, function, timeout
+                    )
                     self._kill(handle)
                     self.close(instance_id)
                     raise SessionTimeout(f"调用 {function} 超时（{timeout}s）")
                 try:
                     message = handle.inbox.get(timeout=remaining)
                 except queue.Empty:
+                    logger.warning(
+                        "实例 %s 调用 %s 等待响应超时（%.0fs），kill 会话",
+                        instance_id,
+                        function,
+                        timeout,
+                    )
                     self._kill(handle)
                     self.close(instance_id)
                     raise SessionTimeout(f"调用 {function} 超时（{timeout}s）") from None
                 if message is None:
                     detail = "".join(handle.errors[-20:]).strip()
+                    logger.warning(
+                        "实例 %s 会话进程退出（函数 %s）：%s", instance_id, function, detail[-300:]
+                    )
                     self.close(instance_id)
                     raise SessionCrashed(f"会话进程已退出：{detail}" if detail else "会话进程已退出")
                 if message.get("id") is None and not message.get("ok"):
@@ -105,13 +128,26 @@ class SessionManager:
                 if message.get("id") != request_id:
                     continue  # 迟到的响应，丢弃
                 if message.get("ok"):
+                    logger.info(
+                        "实例 %s 调用 %s 完成 %.0fms",
+                        instance_id,
+                        function,
+                        (time.perf_counter() - started) * 1000,
+                    )
                     return message.get("value")
+                logger.warning(
+                    "实例 %s 调用 %s 抛错：%s",
+                    instance_id,
+                    function,
+                    str(message.get("error") or "调用失败")[:300],
+                )
                 raise SessionError(str(message.get("error") or "调用失败"))
 
     def close(self, instance_id: str) -> None:
         with self._lock:
             handle = self._handles.pop(instance_id, None)
         if handle is not None:
+            logger.info("实例 %s 会话关闭 pid=%s", instance_id, handle.proc.pid)
             self._dispose(handle)
 
     def shutdown(self) -> None:
@@ -149,6 +185,13 @@ class SessionManager:
             raise SessionCrashed(f"无法启动会话子进程：{exc}") from exc
 
         handle = SessionHandle(instance_id=instance_id, proc=proc, config_path=config_path)
+        logger.info(
+            "实例 %s 会话启动 pid=%s python=%s cwd=%s",
+            instance_id,
+            proc.pid,
+            python,
+            cwd or "(默认)",
+        )
         threading.Thread(target=_pump_stdout, args=(handle,), daemon=True).start()
         threading.Thread(target=_pump_stderr, args=(handle,), daemon=True).start()
         return handle
@@ -198,6 +241,7 @@ def _pump_stdout(handle: SessionHandle) -> None:
                 handle.inbox.put(json.loads(line))
             except json.JSONDecodeError:
                 handle.errors.append(f"无法解析的响应行：{line[:200]}\n")
+                logger.warning("实例 %s 会话输出无法解析：%s", handle.instance_id, line[:200])
     finally:
         handle.inbox.put(None)
 
@@ -209,6 +253,7 @@ def _pump_stderr(handle: SessionHandle) -> None:
     try:
         for line in stream:
             handle.errors.append(line)
+            logger.debug("实例 %s 会话 stderr：%s", handle.instance_id, line.rstrip()[:500])
             if len(handle.errors) > 200:
                 del handle.errors[:100]
     except (OSError, ValueError):

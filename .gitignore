@@ -7,6 +7,7 @@ dist/
 
 backend/.venv/
 backend/.local/
+backend/logs/
 __pycache__/
 *.py[cod]
 .pytest_cache/

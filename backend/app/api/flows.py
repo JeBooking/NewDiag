@@ -160,6 +160,14 @@ def commit_working(
     db.commit()
     db.refresh(flow)
     detail = flow_detail(db, flow)
+    logger.info(
+        "流程 %s 提交 revision=%s：%d 个节点，%d 条 warning%s",
+        flow.id,
+        working.id,
+        len(doc.get("nodes") or []),
+        len(warnings),
+        "（管理员代存）" if admin else "",
+    )
     return CommitResult(**detail.model_dump(), revision_id=working.id, issues=warnings)
 
 
@@ -172,6 +180,7 @@ def discard_working(db: Session, flow: Flow, working: Revision, *, admin: bool =
         flow.editing_since = None
     db.commit()
     db.refresh(flow)
+    logger.info("流程 %s 放弃检出 revision=%s%s", flow.id, working.id, "（管理员）" if admin else "")
     return flow_detail(db, flow)
 
 
@@ -276,6 +285,7 @@ def checkout(flow_id: str, db: Session = Depends(get_db)) -> FlowDetail:
     flow.editing_since = stamp
     db.commit()
     db.refresh(flow)
+    logger.info("流程 %s 检出：working=%s", flow.id, revision.id)
     return flow_detail(db, flow)
 
 

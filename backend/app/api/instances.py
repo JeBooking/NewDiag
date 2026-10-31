@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.db import SessionLocal, get_db, new_id, now_iso
+from app.logging_setup import brief
 from app.models import Flow, Instance, Release, Review, Run, Snapshot, Token
 from app.schemas import (
     InstanceCreate,
@@ -145,6 +146,14 @@ def start_instance(
     db.commit()
     db.refresh(instance)
 
+    logger.info(
+        "实例 %s 启动：flow=%s release=v%s 输入 %s",
+        instance.id,
+        flow_id,
+        release.version_no,
+        brief(payload.input),
+    )
+
     try:
         scheduler.start(instance.id)
     except Exception as exc:  # 调度起不来只影响推进，实例记录仍保留给人排查
@@ -222,6 +231,14 @@ def submit_review(
     review.decided_by = "local"
     db.commit()
 
+    logger.info(
+        "实例 %s 待办 %s 提交：%s（节点 %s）",
+        instance_id,
+        review_id,
+        decision.get("result"),
+        review.node_id,
+    )
+
     try:
         scheduler.submit_review(instance_id, review_id, decision)
     except Exception as exc:
@@ -239,6 +256,13 @@ def rollback(
     instance_id: str, payload: RollbackIn, db: Session = Depends(get_db)
 ) -> InstanceDetail:
     get_instance_or_404(db, instance_id)
+    logger.info(
+        "实例 %s 回退请求：target=%s branch=%s reason=%s",
+        instance_id,
+        payload.target,
+        payload.branch,
+        (payload.reason or "")[:80],
+    )
     try:
         scheduler.rollback(instance_id, payload.target, payload.branch, payload.reason)
     except Exception as exc:

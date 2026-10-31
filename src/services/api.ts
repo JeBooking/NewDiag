@@ -3,6 +3,23 @@ import type { LintIssue } from '@/domain/types'
 /** v1 固定本地用户，权限模型落地后由登录态替换 */
 export const CURRENT_USER = 'local'
 
+/** 浏览器控制台调试开关：开发态默认开，生产在控制台执行 localStorage.setItem('newdiag:debug','1') 后刷新 */
+export const debugEnabled = (() => {
+  try {
+    return import.meta.env.DEV || localStorage.getItem('newdiag:debug') === '1'
+  } catch {
+    return import.meta.env.DEV
+  }
+})()
+
+export function debugLog(...args: unknown[]) {
+  if (debugEnabled) console.debug('[newdiag]', ...args)
+}
+
+function warnLog(...args: unknown[]) {
+  console.warn('[newdiag]', ...args)
+}
+
 const errorMessageKeys = ['message', 'msg', 'detail'] as const
 
 export class ApiError extends Error {
@@ -71,12 +88,18 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set('Content-Type', 'application/json')
   }
 
+  const method = init?.method ?? 'GET'
+  const started = performance.now()
   let response: Response
   try {
     response = await fetch(`/api${path}`, { ...init, headers })
   } catch (error) {
+    warnLog(`${method} ${path} 网络失败`, (error as Error).message)
     throw new ApiError(0, `无法连接后端服务：${(error as Error).message}`)
   }
+
+  const cost = Math.round(performance.now() - started)
+  const requestId = response.headers.get('X-Request-ID') ?? '-'
 
   if (!response.ok) {
     const payload = await readBody(response)
@@ -86,9 +109,11 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
         : payload
     const issues = toIssues(detail)
     const message = issues.map((issue) => issue.message).join('；') || `请求失败（HTTP ${response.status}）`
+    warnLog(`${method} ${path} ${response.status} ${cost}ms req=${requestId}`, detail)
     throw new ApiError(response.status, message, detail, issues)
   }
 
+  debugLog(`${method} ${path} ${response.status} ${cost}ms req=${requestId}`)
   if (response.status === 204) return undefined as T
   return (await readBody(response)) as T
 }

@@ -41,6 +41,20 @@ pnpm dev:lan          # 访问 http://<那台机器的内网IP>:5173
 
 依赖安装需要外网或内网镜像：npm 用 `pnpm config set registry <镜像>`，pip 用 `-i <镜像>`；纯离线环境要提前把 node_modules 和 wheel 包带过去。
 
+## 调试
+
+后端日志写到 `backend/logs/app.log`，5 MB 轮转、保留 5 份。
+
+| 环境变量 | 作用 |
+|---|---|
+| `NEWDIAG_LOG_LEVEL=DEBUG` | 打开调试日志：每步调度、参数求值、会话调用与耗时、SSE 不涉及 |
+| `NEWDIAG_LOG_DIR` | 日志目录，默认 `backend/logs` |
+| `NEWDIAG_LOG_PAYLOAD=1` | 把实参与返回值也写进日志；默认只记字段名，避免敏感数据落盘 |
+
+每个 HTTP 响应都带 `X-Request-ID`，日志行前缀 `[abcd1234]` 与它对应，出问题时按这个 id 串起一次请求。
+
+前端：开发态默认在浏览器控制台输出 `[newdiag]` 前缀的请求、SSE 重连与组件错误；生产构建里在控制台执行 `localStorage.setItem('newdiag:debug','1')` 再刷新即可打开。
+
 ## 验证
 
 ```bash

@@ -118,6 +118,14 @@ def publish(flow_id: str, payload: ReleaseCreate, db: Session = Depends(get_db))
     flow.updated_at = release.published_at
     db.commit()
     db.refresh(release)
+    logger.info(
+        "发布 flow=%s 版本 v%s：%d 步，%d 个函数签名，note=%s",
+        flow_id,
+        version_no,
+        len(plan.get("steps") or {}),
+        len(signature),
+        (payload.note or "")[:60],
+    )
     return make_release_summary(release)
 
 

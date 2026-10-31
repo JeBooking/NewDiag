@@ -1,3 +1,5 @@
+import { debugLog } from './api'
+
 export interface InstanceEvent {
   type: string
   data: unknown
@@ -31,7 +33,9 @@ export function subscribeInstance(
 
   const connect = () => {
     if (closed) return
+    debugLog(`SSE 连接实例 ${instanceId}（第 ${attempt + 1} 次）`)
     source = new EventSource(`/api/instances/${encodeURIComponent(instanceId)}/events`)
+    source.onopen = () => debugLog(`SSE 已连上实例 ${instanceId}`)
     source.onmessage = handler('message')
     for (const type of EVENT_TYPES) {
       source.addEventListener(type, handler(type) as EventListener)
@@ -42,6 +46,7 @@ export function subscribeInstance(
       if (closed) return
       const delay = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]
       attempt += 1
+      debugLog(`SSE 断开实例 ${instanceId}，${delay}ms 后重连`)
       timer = setTimeout(connect, delay)
     }
   }

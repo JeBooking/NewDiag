@@ -10,5 +10,18 @@ import '@vue-flow/minimap/dist/style.css'
 import './styles/index.scss'
 import App from './App.vue'
 import router from './router'
+import { debugLog } from './services/api'
 
-createApp(App).use(createPinia()).use(router).use(ElementPlus, { locale: zhCn }).mount('#app')
+const app = createApp(App)
+
+app.config.errorHandler = (error, _instance, info) => {
+  console.error('[newdiag] 组件错误', info, error)
+}
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('[newdiag] 未处理的 Promise 拒绝', event.reason)
+})
+
+debugLog('应用启动', { dev: import.meta.env.DEV, href: location.href })
+
+app.use(createPinia()).use(router).use(ElementPlus, { locale: zhCn }).mount('#app')

@@ -5,7 +5,11 @@
 
 from __future__ import annotations
 
+import logging
+
 from . import rules
+
+logger = logging.getLogger(__name__)
 
 LEVEL_ERROR = "error"
 LEVEL_WARNING = "warning"
@@ -120,6 +124,21 @@ def compile_doc(
 
             step["next"] = _next_map(nid, kind, valid_edges)
         steps[nid] = step
+
+    calls = [
+        f"{step['call'].get('project')}.{step['call'].get('function')}"
+        for step in steps.values()
+        if step.get("call")
+    ]
+    logger.info(
+        "编译 flow=%s release=%s：%d 个节点，%d 个调用，%d 个人工节点，函数 %s",
+        flow_id,
+        release_no,
+        len(nodes_by_id),
+        len(calls),
+        sum(1 for step in steps.values() if step.get("human")),
+        sorted(set(calls)) or "无",
+    )
 
     return {
         "format": 1,

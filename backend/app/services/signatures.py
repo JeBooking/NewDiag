@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 PROBE = Path(__file__).resolve().parent.parent / "worker" / "probe.py"
 PROBE_TIMEOUT = 30.0
@@ -26,6 +30,7 @@ def probe_doc(doc: dict) -> dict:
     """
     result: dict[str, object] = {}
     cache: dict[str, tuple[list[dict] | None, str]] = {}
+    started = time.perf_counter()
     for node in doc.get("nodes") or []:
         if not isinstance(node, dict):
             continue
@@ -54,6 +59,15 @@ def probe_doc(doc: dict) -> dict:
             result[key] = {"error": f"工程 {project_name} 里找不到函数 {function_name}"}
             continue
         result[key] = _param_list(matched[0])
+    failed = [k for k, v in result.items() if isinstance(v, dict) and v.get("error")]
+    logger.info(
+        "签名探测：%d 个函数，%d 个失败，%d 个工程，%.0fms%s",
+        sum(1 for v in result.values() if isinstance(v, list)),
+        len(failed),
+        len(cache),
+        (time.perf_counter() - started) * 1000,
+        f"，失败：{failed}" if failed else "",
+    )
     return result
 
 
