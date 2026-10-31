@@ -2,9 +2,11 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import type { UploadFile } from 'element-plus'
 import AppHeader from '@/components/layout/AppHeader.vue'
-import type { FlowMode, FlowSummary, InstanceStatus } from '@/domain/types'
+import type { FlowDoc, FlowMode, FlowSummary, InstanceStatus } from '@/domain/types'
 import { errorText } from '@/services/api'
+import { importFlow } from '@/services/flows'
 import { useFlowsStore } from '@/stores/flows'
 
 const router = useRouter()
@@ -12,6 +14,9 @@ const store = useFlowsStore()
 
 const createVisible = ref(false)
 const submitting = ref(false)
+const importVisible = ref(false)
+const importText = ref('')
+const importing = ref(false)
 const form = ref<{ name: string; description: string; mode: FlowMode }>({
   name: '',
   description: '',
@@ -71,6 +76,47 @@ async function submitCreate(): Promise<void> {
   }
 }
 
+function openImport(): void {
+  importText.value = ''
+  importVisible.value = true
+}
+
+function onImportFileChange(file: UploadFile): void {
+  const raw = file.raw
+  if (!raw) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    importText.value = String(reader.result ?? '')
+  }
+  reader.readAsText(raw)
+}
+
+async function submitImport(): Promise<void> {
+  let doc: unknown
+  try {
+    doc = JSON.parse(importText.value)
+  } catch {
+    ElMessage.error('JSON 解析失败，请检查内容')
+    return
+  }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+    ElMessage.error('流程文档必须是 JSON 对象')
+    return
+  }
+  importing.value = true
+  try {
+    const created = await importFlow(doc as FlowDoc)
+    importVisible.value = false
+    ElMessage.success('流程已导入')
+    await store.load(true)
+    router.push({ name: 'flow-edit', params: { id: created.id } })
+  } catch (error) {
+    ElMessage.error(errorText(error, '导入流程失败'))
+  } finally {
+    importing.value = false
+  }
+}
+
 function openEdit(row: FlowSummary): void {
   router.push({ name: 'flow-edit', params: { id: row.id } })
 }
@@ -95,6 +141,7 @@ function openRun(row: FlowSummary): void {
         </div>
         <div class="head-actions">
           <el-button :loading="store.loading" @click="store.load(true)">刷新</el-button>
+          <el-button @click="openImport">导入</el-button>
           <el-button type="primary" @click="openCreate">新建流程</el-button>
         </div>
       </div>
@@ -198,6 +245,24 @@ function openRun(row: FlowSummary): void {
         <el-button type="primary" :loading="submitting" @click="submitCreate">创建</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="importVisible" title="导入流程" width="560px">
+      <el-upload
+        drag
+        :auto-upload="false"
+        :show-file-list="false"
+        accept=".json,application/json"
+        :on-change="onImportFileChange"
+        class="import-upload"
+      >
+        <div class="upload-hint">把 .json 流程文档拖到这里，或点击选择文件</div>
+      </el-upload>
+      <el-input v-model="importText" type="textarea" :rows="10" placeholder="或粘贴流程文档 JSON" />
+      <template #footer>
+        <el-button @click="importVisible = false">取消</el-button>
+        <el-button type="primary" :loading="importing" @click="submitImport">导入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -271,6 +336,16 @@ function openRun(row: FlowSummary): void {
   display: flex;
   justify-content: flex-end;
   gap: 4px;
+}
+
+.import-upload {
+  margin-bottom: 12px;
+}
+
+.upload-hint {
+  padding: 8px 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 :deep(.el-table__row) {

@@ -107,3 +107,10 @@ export function startInstance(flowId: string, payload: StartInstancePayload): Pr
     body: JSON.stringify(payload),
   })
 }
+
+export function importFlow(doc: FlowDoc): Promise<FlowDetail> {
+  return request<FlowDetail>('/flows/import', {
+    method: 'POST',
+    body: JSON.stringify({ doc }),
+  })
+}
