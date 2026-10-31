@@ -1,5 +1,7 @@
 node_modules/
 dist/
+deploy/
+.bundle-cache/
 .DS_Store
 *.local
 *.log

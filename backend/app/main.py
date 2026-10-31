@@ -8,9 +8,12 @@ import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app import db
 from app.api import files, flows, instances, projects, releases
@@ -19,6 +22,12 @@ from app.logging_setup import setup_logging
 setup_logging()
 
 logger = logging.getLogger(__name__)
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+# 只有显式指定、或同目录下存在 web/（离线包形态）时才托管前端；开发态仍走 Vite
+WEB_DIR = Path(os.environ.get("NEWDIAG_WEB_DIR") or (BACKEND_ROOT.parent / "web"))
+if not (WEB_DIR / "index.html").is_file():
+    WEB_DIR = None  # type: ignore[assignment]
 
 DEV_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"]
 
@@ -86,3 +95,25 @@ for module in (flows, releases, instances, projects, files):
 @app.get("/api/health", tags=["meta"])
 def health() -> dict[str, bool]:
     return {"ok": True}
+
+
+if WEB_DIR is not None:
+    # 离线包形态：一个进程同时提供前端与接口，静态资源单独挂载，其余路径回落到 index.html
+    _assets = WEB_DIR / "assets"
+    if _assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=_assets), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        target = (WEB_DIR / full_path).resolve()
+        try:
+            target.relative_to(WEB_DIR.resolve())
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Not Found") from None
+        if full_path and target.is_file():
+            return FileResponse(target)
+        return FileResponse(WEB_DIR / "index.html")
+
+    logger.info("前端静态目录 %s", WEB_DIR)

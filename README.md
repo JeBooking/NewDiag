@@ -55,6 +55,20 @@ pnpm dev:lan          # 访问 http://<那台机器的内网IP>:5173
 
 前端：开发态默认在浏览器控制台输出 `[newdiag]` 前缀的请求、SSE 重连与组件错误；生产构建里在控制台执行 `localStorage.setItem('newdiag:debug','1')` 再刷新即可打开。
 
+## 离线部署包
+
+在能上网的机器上构建：
+
+```bash
+backend/.venv/Scripts/python scripts/build_bundle.py
+```
+
+产物：`deploy/newdiag-win64-<日期>.zip`（约 25 MB）。
+
+目标机器解压后双击 `start.cmd`，浏览器打开 http://127.0.0.1:8765/ 即可，**不需要装 Node、Python 或任何依赖**。内网他机访问用 `start-lan.cmd`。
+
+包里含：Python 3.13 嵌入版、FastAPI / Uvicorn / SQLAlchemy 等运行时依赖、前端静态产物、示例工程 `examples/cooling`。业务工程自身的依赖（numpy、串口 SDK 等）仍需在目标机器上、业务工程自己的解释器里装好。
+
 ## 验证
 
 ```bash

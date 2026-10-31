@@ -6,13 +6,14 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
 
 import httpx
 
-BASE = 'http://127.0.0.1:8000/api'
+BASE = os.environ.get('NEWDIAG_BASE', 'http://127.0.0.1:8000/api')
 ROOT = Path(__file__).resolve().parents[1]
 
 DOC = {
