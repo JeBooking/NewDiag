@@ -63,11 +63,11 @@ pnpm dev:lan          # 访问 http://<那台机器的内网IP>:5173
 backend/.venv/Scripts/python scripts/build_bundle.py
 ```
 
-产物：`deploy/newdiag-win64-<日期>.zip`（约 25 MB）。
+产物：`deploy/newdiag-win64-<日期>.zip`（约 7 MB）。
 
-目标机器解压后双击 `start.cmd`，浏览器打开 http://127.0.0.1:8765/ 即可，**不需要装 Node、Python 或任何依赖**。内网他机访问用 `start-lan.cmd`。
+目标机器解压后，先双击 `setup.cmd`（用本机 Python 建虚拟环境并从 `wheels/` 离线装依赖），再双击 `start.cmd`，浏览器打开 http://127.0.0.1:8765/ 。需要目标机器自带 **Python 3.11 / 64 位**（其他版本要重新打包）。内网他机访问用 `start-lan.cmd`。
 
-包里含：Python 3.11 嵌入版、FastAPI / Uvicorn / SQLAlchemy 等运行时依赖、前端静态产物、示例工程 `examples/cooling`。业务工程自身的依赖（numpy、串口 SDK 等）仍需在目标机器上、业务工程自己的解释器里装好，登记工程时把 `python` 填成那个解释器。
+包里含：FastAPI / Uvicorn / SQLAlchemy 等运行时依赖的轮子（cp311）、前端静态产物、示例工程 `examples/cooling`。业务工程自身的依赖（numpy、串口 SDK 等）仍需在目标机器上、业务工程自己的解释器里装好，登记工程时把 `python` 填成那个解释器。
 
 ## 验证
 

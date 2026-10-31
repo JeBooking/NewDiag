@@ -1,35 +1,25 @@
-"""打离线包：内嵌 Python + 依赖 + 前端产物，目标机器无需安装 Node/Python。
+"""打离线包：应用代码 + 前端产物 + 运行时依赖轮子，用目标机器自己的 Python 建虚拟环境。
 
 用法：backend/.venv/Scripts/python scripts/build_bundle.py [--skip-build]
 
-产物：deploy/newdiag/（目录）与 deploy/newdiag-win64.zip
+目标机器需自带 Python 3.9+（推荐 3.11 / 64 位）。首次解压后先跑 setup.cmd 建虚拟环境并离线装依赖，
+之后双击 start.cmd 即可。产物：deploy/newdiag-win64-<日期>.zip
 """
 
 from __future__ import annotations
 
 import argparse
-import shutil
 import subprocess
 import sys
-import urllib.request
 import zipfile
 from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / 'deploy'
-BUNDLE = DEPLOY / 'newdiag'
-CACHE = ROOT / '.bundle-cache'
-PY_VERSION = '3.11.9'  # 3.11 最后一个带 Windows 二进制的补丁版本
+PY_VERSION = '3.11'  # 只影响下载的轮子 ABI，与目标机器版本需一致
 PY_ABI = 'cp311'
-PY_STEM = 'python311'
-PY_ZIP = f'python-{PY_VERSION}-embed-amd64.zip'
-PY_URL = f'https://www.python.org/ftp/python/{PY_VERSION}/{PY_ZIP}'
-
-
-def run(cmd: list[str], **kwargs) -> None:
-    print('+', ' '.join(str(part) for part in cmd))
-    subprocess.run(cmd, check=True, **kwargs)
+RUNTIME_REQS = ROOT / 'backend' / 'requirements-runtime.txt'
 
 
 def build_frontend() -> None:
@@ -37,49 +27,20 @@ def build_frontend() -> None:
     subprocess.run('pnpm build', cwd=ROOT, shell=True, check=True)
 
 
-def fetch_python() -> Path:
-    CACHE.mkdir(parents=True, exist_ok=True)
-    target = CACHE / PY_ZIP
-    if target.is_file() and target.stat().st_size > 1_000_000:
-        return target
-    print(f'下载 {PY_URL}')
-    with urllib.request.urlopen(PY_URL, timeout=120) as response, target.open('wb') as fh:
-        shutil.copyfileobj(response, fh)
-    return target
-
-
-def extract_python(zip_path: Path) -> Path:
-    runtime = BUNDLE / 'runtime' / 'python'
-    runtime.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as archive:
-        archive.extractall(runtime)
-
-    pth = next(runtime.glob('python*._pth'), None)
-    if pth is None:
-        raise SystemExit('嵌入版 Python 里找不到 ._pth')
-    # ..\.. 指向包根，让 app 包可被 import；其余保持官方默认
-    pth.write_text(
-        f'{PY_STEM}.zip\n.\nLib\\site-packages\n..\\..\n',
-        encoding='utf-8',
-    )
-    return runtime
-
-
-def install_deps(runtime: Path) -> None:
-    site = runtime / 'Lib' / 'site-packages'
-    site.mkdir(parents=True, exist_ok=True)
-    run(
+def download_wheels(bundle: Path) -> None:
+    wheels = bundle / 'wheels'
+    wheels.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
         [
             sys.executable,
             '-m',
             'pip',
-            'install',
-            '--target',
-            str(site),
-            '--upgrade',
+            'download',
+            '--dest',
+            str(wheels),
             '--only-binary=:all:',
             '--python-version',
-            PY_VERSION.rsplit('.', 1)[0],
+            PY_VERSION,
             '--implementation',
             'cp',
             '--abi',
@@ -89,27 +50,67 @@ def install_deps(runtime: Path) -> None:
             '--index-url',
             'https://pypi.org/simple',
             '-r',
-            str(ROOT / 'backend' / 'requirements-runtime.txt'),
-        ]
+            str(RUNTIME_REQS),
+        ],
+        check=True,
     )
 
 
-def copy_app() -> None:
+def copy_files(bundle: Path) -> None:
+    import shutil
+
     shutil.copytree(
         ROOT / 'backend' / 'app',
-        BUNDLE / 'app',
+        bundle / 'app',
         ignore=shutil.ignore_patterns('__pycache__', '*.pyc'),
     )
-    shutil.copytree(ROOT / 'examples', BUNDLE / 'examples')
-    shutil.copytree(ROOT / 'dist', BUNDLE / 'web')
-    (BUNDLE / 'data').mkdir(parents=True, exist_ok=True)
-    (BUNDLE / 'logs').mkdir(parents=True, exist_ok=True)
+    shutil.copytree(ROOT / 'examples', bundle / 'examples')
+    shutil.copytree(ROOT / 'dist', bundle / 'web')
+    shutil.copy2(RUNTIME_REQS, bundle / 'requirements-runtime.txt')
+    (bundle / 'data').mkdir(parents=True, exist_ok=True)
+    (bundle / 'logs').mkdir(parents=True, exist_ok=True)
 
+
+SETUP = r'''@echo off
+chcp 65001 >nul
+setlocal
+set "HERE=%~dp0"
+set "VENV=%HERE%runtime\venv"
+echo 正在创建虚拟环境（需要本机 Python 3.9+，推荐 3.11 64 位）...
+
+set "BASE="
+py -3.11 -V >nul 2>nul && set "BASE=py -3.11"
+if "%BASE%"=="" (py -V >nul 2>nul && set "BASE=py")
+if "%BASE%"=="" (python -V >nul 2>nul && set "BASE=python")
+if "%BASE%"=="" (
+  echo 未找到 Python，请先安装 Python 3.9+ 并加入 PATH。
+  pause
+  exit /b 1
+)
+echo 使用解释器：%BASE%
+
+%BASE% -m venv "%VENV%"
+"%VENV%\Scripts\python.exe" -m pip install --no-index --find-links "%HERE%wheels" -r "%HERE%requirements-runtime.txt"
+if errorlevel 1 (
+  echo 安装失败，检查 Python 是否为 64 位、版本是否匹配（默认按 3.11 打包）。
+  pause
+  exit /b 1
+)
+echo.
+echo 完成。以后双击 start.cmd 启动。
+pause
+'''
 
 START = r'''@echo off
 chcp 65001 >nul
 setlocal
 set "HERE=%~dp0"
+set "PY=%HERE%runtime\venv\Scripts\python.exe"
+if not exist "%PY%" (
+  echo 首次使用请先运行 setup.cmd 安装依赖。
+  pause
+  exit /b 1
+)
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 set "NEWDIAG_DB=%HERE%data\newdiag.db"
@@ -118,7 +119,7 @@ set "NEWDIAG_LOG_DIR=%HERE%logs"
 if "%NEWDIAG_LOG_LEVEL%"=="" set "NEWDIAG_LOG_LEVEL=INFO"
 echo 诊断流程平台启动中：http://127.0.0.1:8765/
 echo 日志：%HERE%logs\app.log    停止：Ctrl+C
-"%HERE%runtime\python\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8765 --app-dir "%HERE%"
+"%PY%" -m uvicorn app.main:app --host 127.0.0.1 --port 8765 --app-dir "%HERE%"
 endlocal
 '''
 
@@ -126,6 +127,12 @@ START_LAN = r'''@echo off
 chcp 65001 >nul
 setlocal
 set "HERE=%~dp0"
+set "PY=%HERE%runtime\venv\Scripts\python.exe"
+if not exist "%PY%" (
+  echo 首次使用请先运行 setup.cmd 安装依赖。
+  pause
+  exit /b 1
+)
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 set "NEWDIAG_DB=%HERE%data\newdiag.db"
@@ -134,63 +141,50 @@ set "NEWDIAG_LOG_DIR=%HERE%logs"
 if "%NEWDIAG_LOG_LEVEL%"=="" set "NEWDIAG_LOG_LEVEL=INFO"
 echo 诊断流程平台启动中（监听所有网卡）：http://<本机IP>:8765/
 echo 注意：这套没有登录，仅限内网自用。
-"%HERE%runtime\python\python.exe" -m uvicorn app.main:app --host 0.0.0.0 --port 8765 --app-dir "%HERE%"
+"%PY%" -m uvicorn app.main:app --host 0.0.0.0 --port 8765 --app-dir "%HERE%"
 endlocal
 '''
 
 README = '''# 诊断流程平台（离线包）
 
-解压后双击 `start.cmd`，浏览器打开 http://127.0.0.1:8765/ 。
-不需要安装 Node、Python 或任何依赖。
+目标机器需自带 Python 3.9+（推荐 3.11 / 64 位）。
 
 ## 首次使用
 
+1. 双击 `setup.cmd`：创建虚拟环境并从本地 `wheels/` 离线安装依赖，无需联网。
+2. 双击 `start.cmd`，浏览器打开 http://127.0.0.1:8765/ 。
+
+内网他机访问用 `start-lan.cmd`（监听所有网卡），地址 http://<本机IP>:8765/ 。
+
+## 登记业务工程
+
 1. 打开「工程」页，登记业务 Python 工程：
-   - 路径：本机上的工程目录（例如包内 `examples\\cooling` 的绝对路径）
-   - 模块：`cooling.diagnosis`
-   - 解释器、工厂按需填写，可留空
-2. 打开「流程」页，新建流程，画图、绑定接口、保存、发布。
-3. 在版本列表点「执行」，填入启动输入（例如 `{"voltage": 198.4}`）。
-4. 处置待办出现后，在右侧面板点「完成」或「回退」。
+   - 路径：本机工程目录绝对路径（示例 `examples\\cooling`）
+   - 模块：如 `cooling.diagnosis`
+   - 解释器：业务工程自己的 Python（平台不会往里面装依赖）
+2. 打开「流程」页，新建、画图、绑定、保存、发布。
+3. 版本列表点「执行」，填入启动输入（如 `{"voltage": 198.4}`）。
+4. 处置待办在右侧面板点「完成」或「回退」。
 
-## 内网访问
+## 说明
 
-`start-lan.cmd` 监听所有网卡，别人用 `http://<本机IP>:8765/` 访问。
-这套没有登录与权限，仅建议自己测试时使用，别长期对内网开放。
-
-## 数据与日志
-
-- 数据库：`data\\newdiag.db`（SQLite，备份直接复制这个文件）
-- 附件：`data\\files\\`
-- 日志：`logs\\app.log`（5MB 轮转）
-
-调试时用环境变量提高日志级别再启动：
-
-```
-set NEWDIAG_LOG_LEVEL=DEBUG
-set NEWDIAG_LOG_PAYLOAD=1
-start.cmd
-```
-
-`NEWDIAG_LOG_PAYLOAD=1` 会把接口参数与返回值写进日志，内含业务数据时慎用。
-
-## 业务工程要求
-
-- Python 3.9+，依赖需装在业务工程自己的解释器里
-- 平台通过子进程调用业务函数，函数必须是只读的（采集/判断），动作由人完成
-- 接口参数按函数签名自动匹配：同名快照字段 → 上游唯一同名字段 → 默认值
-- 改了函数签名需要重新发布会话，否则执行前会被签名指纹拦下
+- 平台依赖在 `runtime\\venv`，由 `setup.cmd` 离线安装，`wheels/` 默认按 Python 3.11 / 64 位打包；
+  如果目标机器版本不同，`setup.cmd` 会报错，需要重新打包。
+- 数据库：`data\\newdiag.db`；附件：`data\\files\\`；日志：`logs\\app.log`
+- 调试：先 `set NEWDIAG_LOG_LEVEL=DEBUG` 再运行 start.cmd
+- 平台只通过子进程调用业务函数，业务依赖（numpy、串口 SDK 等）装在业务解释器里
+- 改了函数签名要重新发布，执行前会被签名指纹拦下
 '''
 
 
-def write_launchers() -> None:
-    (BUNDLE / 'start.cmd').write_text(START, encoding='utf-8-sig')
-    (BUNDLE / 'start-lan.cmd').write_text(START_LAN, encoding='utf-8-sig')
-    (BUNDLE / 'README.md').write_text(README, encoding='utf-8')
+def write_launchers(bundle: Path) -> None:
+    (bundle / 'setup.cmd').write_text(SETUP, encoding='utf-8-sig')
+    (bundle / 'start.cmd').write_text(START, encoding='utf-8-sig')
+    (bundle / 'start-lan.cmd').write_text(START_LAN, encoding='utf-8-sig')
+    (bundle / 'README.md').write_text(README, encoding='utf-8')
 
 
 def zip_bundle(bundle: Path) -> Path:
-    """压缩包内统一用 newdiag/ 作为根目录，与构建目录名无关。"""
     stamp = date.today().strftime('%Y%m%d')
     archive = DEPLOY / f'newdiag-win64-{stamp}.zip'
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
@@ -201,7 +195,6 @@ def zip_bundle(bundle: Path) -> Path:
 
 
 def pick_bundle_dir() -> Path:
-    """构建目录被占用时递增后缀；压缩包内仍是 newdiag/。"""
     base = DEPLOY / 'newdiag'
     if not base.exists():
         return base
@@ -213,7 +206,6 @@ def pick_bundle_dir() -> Path:
 
 
 def main() -> None:
-    global BUNDLE
     parser = argparse.ArgumentParser()
     parser.add_argument('--skip-build', action='store_true', help='复用已有 dist')
     args = parser.parse_args()
@@ -221,17 +213,16 @@ def main() -> None:
     if not args.skip_build or not (ROOT / 'dist' / 'index.html').is_file():
         build_frontend()
 
-    BUNDLE = pick_bundle_dir()
-    BUNDLE.mkdir(parents=True)
+    bundle = pick_bundle_dir()
+    bundle.mkdir(parents=True)
 
-    runtime = extract_python(fetch_python())
-    install_deps(runtime)
-    copy_app()
-    write_launchers()
+    download_wheels(bundle)
+    copy_files(bundle)
+    write_launchers(bundle)
 
-    total = sum(p.stat().st_size for p in BUNDLE.rglob('*') if p.is_file())
-    print(f'目录：{BUNDLE}（{total / 1024 / 1024:.0f} MB）')
-    print(f'压缩包：{zip_bundle(BUNDLE)}')
+    total = sum(p.stat().st_size for p in bundle.rglob('*') if p.is_file())
+    print(f'目录：{bundle}（{total / 1024 / 1024:.0f} MB）')
+    print(f'压缩包：{zip_bundle(bundle)}')
 
 
 if __name__ == '__main__':
