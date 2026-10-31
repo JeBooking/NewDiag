@@ -1,0 +1,126 @@
+{
+  "format": 1,
+  "name": "冷却系统诊断",
+  "mode": "parallel",
+  "snapshotFields": ["temperature", "airflow", "fan_rpm"],
+  "nodes": [
+    {
+      "id": "overheat",
+      "kind": "investigation",
+      "title": "检查是否超温",
+      "detail": "读取初始温度，超过 70°C 时并列检查风路和风机",
+      "fields": {
+        "observation": "设备初始温度",
+        "acquisition": "启动快照 temperature",
+        "assessment": "超过 70°C 判为超温"
+      },
+      "binding": { "project": "冷却系统", "function": "is_overheated" },
+      "params": { "temperature": { "snapshot": "temperature" } },
+      "position": { "x": 120, "y": 260 }
+    },
+    {
+      "id": "filter_check",
+      "kind": "investigation",
+      "title": "检查滤网是否堵塞",
+      "detail": "风量低于 0.6 m³/s 判为滤网堵塞，否则这条思路不成立",
+      "fields": {
+        "observation": "风路风量 airflow",
+        "acquisition": "启动快照 airflow",
+        "assessment": "低于 0.6 m³/s 判为堵塞"
+      },
+      "binding": { "project": "冷却系统", "function": "filter_is_blocked" },
+      "params": { "airflow": { "snapshot": "airflow" } },
+      "position": { "x": 420, "y": 60 }
+    },
+    {
+      "id": "filter_conclusion",
+      "kind": "conclusion",
+      "title": "滤网堵塞",
+      "detail": "滤网堵塞导致风量不足，清理滤网",
+      "position": { "x": 700, "y": 60 }
+    },
+    {
+      "id": "clean_filter",
+      "kind": "remediation",
+      "title": "清理滤网",
+      "detail": "停机清理滤网并检查风道，完成后复测风量",
+      "position": { "x": 960, "y": 60 }
+    },
+    {
+      "id": "filter_solved",
+      "kind": "problemSolved",
+      "title": "问题解决",
+      "detail": "风量恢复正常",
+      "position": { "x": 1220, "y": 60 }
+    },
+    {
+      "id": "fan_check",
+      "kind": "investigation",
+      "title": "检查风机转速",
+      "detail": "转速低于 1000 rpm 判为风机异常，否则这条思路不成立",
+      "fields": {
+        "observation": "风机转速 fan_rpm",
+        "acquisition": "启动快照 fan_rpm",
+        "assessment": "低于 1000 rpm 判为异常"
+      },
+      "binding": { "project": "冷却系统", "function": "fan_is_faulty" },
+      "params": { "fan_rpm": { "snapshot": "fan_rpm" } },
+      "position": { "x": 420, "y": 460 }
+    },
+    {
+      "id": "fan_conclusion",
+      "kind": "conclusion",
+      "title": "风机故障",
+      "detail": "风机转速异常，重启风机并验证降温",
+      "position": { "x": 700, "y": 460 }
+    },
+    {
+      "id": "restart_fan",
+      "kind": "remediation",
+      "title": "重启风机",
+      "detail": "重启风机并确认转速恢复到 1000 rpm 以上",
+      "position": { "x": 960, "y": 460 }
+    },
+    {
+      "id": "fan_solved",
+      "kind": "problemSolved",
+      "title": "问题解决",
+      "detail": "转速恢复正常",
+      "position": { "x": 1220, "y": 460 }
+    },
+    {
+      "id": "normal_conclusion",
+      "kind": "conclusion",
+      "title": "未超温",
+      "detail": "设备未超温，无需故障处置",
+      "position": { "x": 420, "y": 260 }
+    },
+    {
+      "id": "normal_report",
+      "kind": "remediation",
+      "title": "记录正常状态",
+      "detail": "记录本次正常检测结果",
+      "position": { "x": 700, "y": 260 }
+    },
+    {
+      "id": "normal_solved",
+      "kind": "problemSolved",
+      "title": "问题解决",
+      "detail": "检测完成",
+      "position": { "x": 960, "y": 260 }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "from": "overheat", "to": "filter_check", "branch": "yes", "order": 0 },
+    { "id": "e2", "from": "overheat", "to": "fan_check", "branch": "yes", "order": 1 },
+    { "id": "e3", "from": "overheat", "to": "normal_conclusion", "branch": "no" },
+    { "id": "e4", "from": "filter_check", "to": "filter_conclusion", "branch": "yes" },
+    { "id": "e5", "from": "filter_conclusion", "to": "clean_filter" },
+    { "id": "e6", "from": "clean_filter", "to": "filter_solved" },
+    { "id": "e7", "from": "fan_check", "to": "fan_conclusion", "branch": "yes" },
+    { "id": "e8", "from": "fan_conclusion", "to": "restart_fan" },
+    { "id": "e9", "from": "restart_fan", "to": "fan_solved" },
+    { "id": "e10", "from": "normal_conclusion", "to": "normal_report" },
+    { "id": "e11", "from": "normal_report", "to": "normal_solved" }
+  ]
+}

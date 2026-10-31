@@ -1,0 +1,4 @@
+﻿name,value,unit
+max_temperature,70,C
+min_airflow,0.6,m3/s
+min_fan_rpm,1000,rpm
