@@ -90,6 +90,12 @@ class WorkingDocIn(ApiModel):
     doc: dict[str, Any]
 
 
+class ImportFlowIn(ApiModel):
+    """导入流程：body 携带完整 doc，一次建流程并写入在线版本。"""
+
+    doc: dict[str, Any]
+
+
 class SavedAt(ApiModel):
     revision_id: str
     saved_at: str

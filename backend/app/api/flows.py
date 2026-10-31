@@ -17,6 +17,7 @@ from app.schemas import (
     FlowDetail,
     FlowPatch,
     FlowSummary,
+    ImportFlowIn,
     SavedAt,
     WorkingDocIn,
     make_flow_detail,
@@ -229,6 +230,46 @@ def create_flow(payload: FlowCreate, db: Session = Depends(get_db)) -> FlowDetai
     flow.current_revision_id = revision.id
     db.commit()
     db.refresh(flow)
+    return flow_detail(db, flow)
+
+
+@router.post("/flows/import", response_model=FlowDetail)
+def import_flow(payload: ImportFlowIn, db: Session = Depends(get_db)) -> FlowDetail:
+    """导入一份流程文档：一次建流程并写入在线版本，不占用检出锁。
+
+    绑定问题按半成品放行（同 commit），发布时才强制校验。
+    """
+    doc = payload.doc
+    validate_or_422(doc, strict_binding=False)
+
+    stamp = now_iso()
+    mode = doc.get("mode") if doc.get("mode") in ("parallel", "serial") else "parallel"
+    flow = Flow(
+        id=new_id(),
+        name=str(doc.get("name") or "").strip() or "未命名流程",
+        description=str(doc.get("description") or ""),
+        mode=mode,
+        owner_id=LOCAL_ACTOR,
+        created_at=stamp,
+        updated_at=stamp,
+    )
+    db.add(flow)
+    db.flush()
+    revision = Revision(
+        id=new_id(),
+        flow_id=flow.id,
+        json=json.dumps(doc, ensure_ascii=False),
+        status="committed",
+        author=LOCAL_ACTOR,
+        created_at=stamp,
+        committed_at=stamp,
+    )
+    db.add(revision)
+    db.flush()
+    flow.current_revision_id = revision.id
+    db.commit()
+    db.refresh(flow)
+    logger.info("导入流程 %s：%d 节点", flow.id, len(doc.get("nodes") or []))
     return flow_detail(db, flow)
 
 
