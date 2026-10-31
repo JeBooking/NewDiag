@@ -67,7 +67,7 @@ backend/.venv/Scripts/python scripts/build_bundle.py
 
 目标机器解压后双击 `start.cmd`，浏览器打开 http://127.0.0.1:8765/ 即可，**不需要装 Node、Python 或任何依赖**。内网他机访问用 `start-lan.cmd`。
 
-包里含：Python 3.13 嵌入版、FastAPI / Uvicorn / SQLAlchemy 等运行时依赖、前端静态产物、示例工程 `examples/cooling`。业务工程自身的依赖（numpy、串口 SDK 等）仍需在目标机器上、业务工程自己的解释器里装好。
+包里含：Python 3.11 嵌入版、FastAPI / Uvicorn / SQLAlchemy 等运行时依赖、前端静态产物、示例工程 `examples/cooling`。业务工程自身的依赖（numpy、串口 SDK 等）仍需在目标机器上、业务工程自己的解释器里装好，登记工程时把 `python` 填成那个解释器。
 
 ## 验证
 

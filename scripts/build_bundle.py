@@ -20,7 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / 'deploy'
 BUNDLE = DEPLOY / 'newdiag'
 CACHE = ROOT / '.bundle-cache'
-PY_VERSION = '3.13.12'
+PY_VERSION = '3.11.9'  # 3.11 最后一个带 Windows 二进制的补丁版本
+PY_ABI = 'cp311'
+PY_STEM = 'python311'
 PY_ZIP = f'python-{PY_VERSION}-embed-amd64.zip'
 PY_URL = f'https://www.python.org/ftp/python/{PY_VERSION}/{PY_ZIP}'
 
@@ -57,7 +59,7 @@ def extract_python(zip_path: Path) -> Path:
         raise SystemExit('嵌入版 Python 里找不到 ._pth')
     # ..\.. 指向包根，让 app 包可被 import；其余保持官方默认
     pth.write_text(
-        'python313.zip\n.\nLib\\site-packages\n..\\..\n',
+        f'{PY_STEM}.zip\n.\nLib\\site-packages\n..\\..\n',
         encoding='utf-8',
     )
     return runtime
@@ -81,7 +83,7 @@ def install_deps(runtime: Path) -> None:
             '--implementation',
             'cp',
             '--abi',
-            'cp313',
+            PY_ABI,
             '--platform',
             'win_amd64',
             '--index-url',
