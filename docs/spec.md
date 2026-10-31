@@ -83,7 +83,7 @@ SQLite（WAL）。所有表带 `id TEXT PRIMARY KEY`（ULID），时间统一 IS
 | 字段 | 说明 |
 |---|---|
 | id, flow_id, release_id | |
-| status | `running` / `waiting` / `paused` / `success` / `failed` |
+| status | `running` / `waiting` / `paused` / `success` / `failed` / `escalated` |
 | snapshot_id | |
 | started_by, started_at, ended_at | |
 
@@ -154,6 +154,7 @@ SQLite（WAL）。所有表带 `id TEXT PRIMARY KEY`（ULID），时间统一 IS
   "format": 1,
   "name": "冷却系统诊断",
   "mode": "parallel",
+  "snapshotFields": ["voltage"],
   "nodes": [
     {
       "id": "n1",
@@ -166,7 +167,9 @@ SQLite（WAL）。所有表带 `id TEXT PRIMARY KEY`（ULID），时间统一 IS
         "assessment": "低于 210V 判为异常"
       },
       "attachments": [{ "hash": "sha256:…", "name": "接线图.pdf" }],
-      "binding": { "project": "cooling", "function": "judge_voltage" },
+      "binding": { "project": "冷却系统", "function": "judge_voltage" },
+      "outputs": [],
+      "params": { "voltage": { "snapshot": "voltage" } },
       "position": { "x": 120, "y": 80 }
     }
   ],
@@ -175,6 +178,11 @@ SQLite（WAL）。所有表带 `id TEXT PRIMARY KEY`（ULID），时间统一 IS
   ]
 }
 ```
+
+- `snapshotFields`：启动输入里可供节点引用的字段名，发布时参与参数绑定
+- `outputs`：该节点返回结构里的字段名，供下游绑定；布尔判据留空
+- `params`：参数名 → 来源，可省略；省略时按函数签名自动匹配
+- `binding.project` 用**工程名**，不用 id
 
 ### 节点类型
 
@@ -212,7 +220,7 @@ v1 不实现：`deepDiagnosis`（深度诊断）、`jump`（跳转）。枚举�
 
 同一份规则表由前端提示与后端编译共用，避免「前端放过、后端拒绝」。
 
-1. 只有一个开始事件，且只连一条到排查节点
+1. 恰好一个入口节点（没有入边的节点），且必须是排查节点
 2. 连接符合上表；排查的每条出线必须有 `branch`（yes/no），同组可多条
 3. 排查节点：四个描述字段非空；无绑定视为人工节点，合法；有绑定则工程与函数必须存在
 4. 结论：文本非空；恰好一条出线
@@ -229,14 +237,16 @@ v1 不实现：`deepDiagnosis`（深度诊断）、`jump`（跳转）。枚举�
 
 ### 参数绑定
 
-按顺序解析，能唯一确定就自动，否则发布失败并要求作者显式指定：
+发布前先用 probe 拿到每个被绑定函数的真实签名，再编译：
 
-1. 节点上已保存的显式绑定
-2. 快照字段同名（仅入口采集可见）
+1. 节点上已保存的显式 `params` 优先
+2. 快照字段同名
 3. 上游运行结果中唯一的同名字段
-4. 函数默认值
+4. 函数默认值（可选参数无来源时直接省略，交给 Python 默认值）
 
-显式绑定保存进节点，同时作为发布校验依据；来源节点被删除或不在上游时报错。
+只有函数的**真实参数**会被绑定，候选里多出来的字段一律不传；必填参数找不到来源时发布失败，错误消息带参数名和候选来源。声明了 `outputs` 但函数没有对应参数只给 warning；`params` 里出现签名之外的参数名直接报错。
+
+发布时的校验是严格的；`commit` 用 `strict_binding=False`，把参数类问题降级为 warning，允许保存半成品，把绑定错误留到发布时暴露。工程探测失败（路径不可导入、函数不存在）一律拒绝发布。
 
 ### 步骤表
 
@@ -295,7 +305,7 @@ while 存在可推进的 token:
         创建 token（串行则入队）
 ```
 
-实例状态：有 `running` token → running；全部活跃 token 都在 waiting → waiting；串行成功且有剩余队列 → paused；任一 token 到达 problemSolved 且无活跃 token → success；所有 token 失败 → failed。
+实例状态收敛顺序：有 `running` token → running；有 `waiting` token → waiting；串行已到达 problemSolved 且队列仍有剩余 → paused；无活跃 token 时，有 problemSolved → success，否则有 escalation → escalated，否则 failed。优先级 `success > escalated > failed`。
 
 ### 排查的分支判定
 
@@ -376,6 +386,7 @@ while 存在可推进的 token:
 | GET | `/api/instances/{id}` | 详情：tokens、runs、reviews |
 | GET | `/api/instances/{id}/events` | SSE：状态、新 run、新待办 |
 | POST | `/api/instances/{id}/reviews/{reviewId}` | 提交判断或完成/回退 |
+| POST | `/api/instances/{id}/rollback` | `{targetNodeId, branch, reason?}`，branch 为任意非空字符串（排查 yes/no，其余 default） |
 | GET | `/api/projects` `POST` | 工程登记 |
 | POST | `/api/projects/{id}/refresh` | 重新发现接口 |
 | GET | `/api/projects/{id}/functions` | 接口与签名 |

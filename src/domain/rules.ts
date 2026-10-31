@@ -5,7 +5,7 @@ import type { NodeKind } from './types'
  * generic 表示非诊断元素（如开始事件），只用于边界判定。
  */
 export const CONNECTION_RULES: Record<string, string[]> = {
-  start: ['investigation'],
+  start: ['investigation', 'generic'],
   generic: ['remediation', 'problemSolved', 'escalation', 'generic'],
   investigation: ['investigation', 'investigationAction', 'conclusion', 'escalation'],
   investigationAction: ['investigation'],
