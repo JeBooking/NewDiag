@@ -2,6 +2,9 @@
 
 本文件约束所有参与本仓库开发的 agent。`docs/spec.md` 是唯一设计依据，冲突时以 spec 为准，并在此处登记偏差。
 
+## 0.需求分析
+- 在动手之前，先与需求方进行充分的讨论，把需求理清楚，逼需求方想清楚再动手。
+
 ## 1. 技术栈
 
 - 前端：Vue 3.5 + TypeScript 5.9 + Vite 7 + Vue Router 4 + Pinia 3 + Element Plus 2 + `@vue-flow/core` 1.x
