@@ -1,0 +1,26 @@
+:root {
+  --app-header-height: 56px;
+  --app-panel-width: 320px;
+  --el-font-size-base: 13px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  color: var(--el-text-color-primary);
+  background: var(--el-bg-color-page);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
