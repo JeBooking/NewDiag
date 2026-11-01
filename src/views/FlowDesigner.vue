@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import FlowCanvas from '@/components/canvas/FlowCanvas.vue'
+import { layoutDoc } from '@/components/canvas/autolayout'
 import FlowPanel from '@/components/panels/FlowPanel.vue'
 import NodePanel from '@/components/panels/NodePanel.vue'
 import type { DocNode, FlowDoc, FlowMode, LintIssue } from '@/domain/types'
@@ -17,6 +18,7 @@ const editor = useEditorStore()
 
 const loadError = ref<string | null>(null)
 const issuesVisible = ref(false)
+const canvas = ref<InstanceType<typeof FlowCanvas> | null>(null)
 
 const flowId = computed(() => String(route.params.id))
 
@@ -47,6 +49,17 @@ function onDocUpdate(next: FlowDoc): void {
 
 function onSelect(nodeId: string | null): void {
   editor.selectedNodeId = nodeId
+}
+
+/** 整图重排：坐标覆盖式写入，dirty 与取锁都交给 applyDoc */
+async function autoLayout(): Promise<void> {
+  const doc = editor.doc
+  if (!doc) return
+  editor.applyDoc(layoutDoc(doc))
+  // 投影在 watch 里重建，等画布按新坐标渲染完这一帧再取景，否则取到的还是旧范围
+  await nextTick()
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  await canvas.value?.fitView()
 }
 
 function issueNodeName(issue: LintIssue): string {
@@ -264,6 +277,7 @@ onBeforeRouteLeave(async () => {
       </div>
       <div class="right">
         <el-button @click="startRun">开始执行</el-button>
+        <el-button :disabled="!editor.editable" @click="autoLayout">自动布局</el-button>
         <el-button :disabled="editor.readonly" :loading="editor.saving" @click="save()">
           保存
         </el-button>
@@ -323,6 +337,7 @@ onBeforeRouteLeave(async () => {
       <div class="canvas-area">
         <FlowCanvas
           v-if="editor.doc"
+          ref="canvas"
           :doc="editor.doc"
           :readonly="editor.readonly"
           :issues="editor.issues"

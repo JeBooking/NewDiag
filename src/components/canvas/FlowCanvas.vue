@@ -85,7 +85,8 @@ const emit = defineEmits<{
 
 // 父组件也要 project/坐标换算，必须与 <VueFlow> 共用同一个 store
 const flowId = `canvas-${Math.random().toString(36).slice(2, 8)}`
-const { project, dimensions, viewport, setCenter, connectionStartHandle } = useVueFlow(flowId)
+const { project, dimensions, viewport, setCenter, connectionStartHandle, fitView } =
+  useVueFlow(flowId)
 
 const wrapper = ref<HTMLElement | null>(null)
 const nodes = ref<Node[]>([])
@@ -673,6 +674,9 @@ onBeforeUnmount(() => {
   clearHoverTimer()
   clearCloseTimer()
 })
+
+// 自动布局后坐标整批换掉，需要外部触发重新取景；fitView 只在本组件的 store 上有效
+defineExpose({ fitView })
 </script>
 
 <template>

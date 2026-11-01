@@ -3,6 +3,17 @@ import type { DocNode, FlowDoc } from '@/domain/types'
 const COL_GAP = 280
 const ROW_GAP = 120
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+/** position 在类型上必填，导入的老文档却可能整个缺掉，或带着字符串坐标 */
+function isPositioned(node: DocNode): boolean {
+  const position = (node as { position?: { x?: unknown; y?: unknown } } | null)?.position
+  if (!position || typeof position !== 'object') return false
+  return isFiniteNumber(position.x) && isFiniteNumber(position.y)
+}
+
 /**
  * BFS 分层：列按最长路径深度，行按文档顺序。
  * 环里的节点没有稳定深度，与孤立节点一起放到最后一列。
@@ -84,4 +95,14 @@ export function layoutDoc(doc: FlowDoc): FlowDoc {
     })),
     edges: edges.map((edge) => ({ ...edge })),
   }
+}
+
+/**
+ * 运行时兜底：只要有节点缺合法坐标就整图重排。
+ * 只补缺失节点会让新旧坐标混排，连线更容易穿过卡片，不如整体重来。
+ */
+export function ensureLayout(doc: FlowDoc): { doc: FlowDoc; changed: boolean } {
+  const nodes = doc.nodes ?? []
+  if (nodes.every(isPositioned)) return { doc, changed: false }
+  return { doc: layoutDoc(doc), changed: true }
 }

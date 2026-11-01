@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { ensureLayout } from '@/components/canvas/autolayout'
 import type { DocEdge, DocNode, FlowDetail, FlowDoc, FlowMode, LintIssue } from '@/domain/types'
 import { CURRENT_USER, isApiError } from '@/services/api'
 import {
@@ -132,9 +133,12 @@ export const useEditorStore = defineStore('editor', () => {
       readonly.value = Boolean(detail.editingBy) && !mine
       hasLock.value = mine && Boolean(detail.workingRevisionId)
       flow.value = detail
-      const prepared = ensureStartNode(coerceDoc(detail.doc, detail.name, detail.mode))
+      // 先补坐标再补开始节点：ensureStartNode 要按现有节点的 position 摆位置
+      const laid = ensureLayout(coerceDoc(detail.doc, detail.name, detail.mode))
+      const prepared = ensureStartNode(laid.doc)
       doc.value = prepared.doc
-      if (prepared.added && !readonly.value) dirty.value = true
+      // 补出来的坐标和开始节点都要等用户保存才落库，这里只标脏、不抢锁不自动存
+      if ((laid.changed || prepared.added) && !readonly.value) dirty.value = true
     } finally {
       loading.value = false
     }

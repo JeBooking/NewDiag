@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadFile } from 'element-plus'
 import { Folder, Search } from '@element-plus/icons-vue'
 import AppHeader from '@/components/layout/AppHeader.vue'
+import { ensureLayout } from '@/components/canvas/autolayout'
 import type { FlowDoc, FlowMode, FlowSummary, FolderNode, InstanceStatus } from '@/domain/types'
 import { errorText } from '@/services/api'
 import { createFolder, listFolders, removeFolder, updateFolder } from '@/services/folders'
@@ -282,9 +283,15 @@ async function submitImport(): Promise<void> {
     ElMessage.error('流程文档必须是 JSON 对象')
     return
   }
+  const record = doc as FlowDoc
+  if (!Array.isArray(record.nodes)) {
+    ElMessage.error('流程文档缺少 nodes 数组')
+    return
+  }
   importing.value = true
   try {
-    const created = await importFlow(doc as FlowDoc)
+    // 后端原样存 JSON，缺坐标的文档一打开设计页就崩，所以补好坐标再提交
+    const created = await importFlow(ensureLayout(record).doc)
     importVisible.value = false
     ElMessage.success('流程已导入')
     await reload()
