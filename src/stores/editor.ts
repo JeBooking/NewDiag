@@ -81,6 +81,8 @@ export const useEditorStore = defineStore('editor', () => {
   const flow = ref<FlowDetail | null>(null)
   const doc = ref<FlowDoc | null>(null)
   const readonly = ref(false)
+  /** 是否已拿到编辑锁；进页面不算，首次改动才 checkout */
+  const hasLock = ref(false)
   const dirty = ref(false)
   const loading = ref(false)
   const saving = ref(false)
@@ -91,6 +93,8 @@ export const useEditorStore = defineStore('editor', () => {
   const lastSavedAt = ref<string | null>(null)
 
   let autosaveTimer: ReturnType<typeof setTimeout> | null = null
+  /** 进行中的检出请求；连续改动共用同一次 checkout */
+  let lockPromise: Promise<void> | null = null
 
   const editable = computed(() => !readonly.value && Boolean(doc.value))
   const selectedNode = computed(
@@ -107,6 +111,8 @@ export const useEditorStore = defineStore('editor', () => {
     flow.value = null
     doc.value = null
     readonly.value = false
+    hasLock.value = false
+    lockPromise = null
     dirty.value = false
     saving.value = false
     publishing.value = false
@@ -120,22 +126,11 @@ export const useEditorStore = defineStore('editor', () => {
     reset()
     loading.value = true
     try {
-      let detail = await getFlow(id)
-      if (!detail.editingBy) {
-        // 抢占失败说明别人刚拿走锁，退回只读而不是报错阻断页面
-        try {
-          detail = await checkoutFlow(id)
-        } catch {
-          readonly.value = true
-          try {
-            detail = await getFlow(id)
-          } catch {
-            // 读取占用者失败就沿用旧数据，横幅会退化成「其他用户」
-          }
-        }
-      } else {
-        readonly.value = detail.editingBy !== CURRENT_USER
-      }
+      const detail = await getFlow(id)
+      // 进页面只读文档、不占锁：别人正在编辑才转只读，自己遗留的草稿视为已持有
+      const mine = detail.editingBy === CURRENT_USER
+      readonly.value = Boolean(detail.editingBy) && !mine
+      hasLock.value = mine && Boolean(detail.workingRevisionId)
       flow.value = detail
       const prepared = ensureStartNode(coerceDoc(detail.doc, detail.name, detail.mode))
       doc.value = prepared.doc
@@ -143,6 +138,36 @@ export const useEditorStore = defineStore('editor', () => {
     } finally {
       loading.value = false
     }
+  }
+
+  /** 首次改动才拿锁：失败转只读，避免页面在无锁状态下继续写 */
+  async function ensureLock(): Promise<void> {
+    if (!flow.value) throw new Error('流程尚未加载')
+    if (hasLock.value) return
+    if (readonly.value) throw new Error('当前流程只读')
+    const id = flow.value.id
+    if (lockPromise) return lockPromise
+    lockPromise = (async () => {
+      try {
+        const detail = await checkoutFlow(id)
+        if (flow.value?.id !== id) return
+        flow.value = detail
+        hasLock.value = true
+      } catch (error) {
+        if (flow.value?.id === id) {
+          readonly.value = true
+          try {
+            flow.value = await getFlow(id)
+          } catch {
+            // 读不到占用者也保持只读，横幅退化成「其他用户」
+          }
+        }
+        throw error
+      } finally {
+        lockPromise = null
+      }
+    })()
+    return lockPromise
   }
 
   function applyDoc(next: FlowDoc): void {
@@ -160,6 +185,8 @@ export const useEditorStore = defineStore('editor', () => {
     doc.value = resolved
     if (readonly.value) return
     dirty.value = true
+    // 改动即抢锁，抢不到会转只读；autosave 复用同一个 Promise
+    void ensureLock().catch(() => {})
     scheduleAutosave()
   }
 
@@ -167,6 +194,7 @@ export const useEditorStore = defineStore('editor', () => {
     if (!flow.value || !doc.value || readonly.value || saving.value) return
     if (!dirty.value) return
     try {
+      await ensureLock()
       await putWorking(flow.value.id, doc.value)
       lastSavedAt.value = new Date().toISOString()
     } catch {
@@ -188,19 +216,17 @@ export const useEditorStore = defineStore('editor', () => {
     saving.value = true
     issues.value = []
     try {
-      const result = await commitFlow(flow.value.id, doc.value)
-      saveIssues.value = result.issues ?? []
+      await ensureLock()
+      const id = flow.value.id
+      const result = await commitFlow(id, doc.value)
+      if (flow.value?.id !== id) return
+      // 提交即释放锁，不再自动重检：下次改动时再 checkout，列表页也不该显示编辑中
+      flow.value = result
+      hasLock.value = false
       dirty.value = false
+      saveIssues.value = result.issues ?? []
       lastSavedAt.value = new Date().toISOString()
-      // 提交会释放编辑锁，立即重新检出以便继续修改
-      try {
-        const detail = await checkoutFlow(flow.value.id)
-        flow.value = detail
-        readonly.value = false
-        if (detail.doc) doc.value = coerceDoc(detail.doc, detail.name, detail.mode)
-      } catch {
-        readonly.value = true
-      }
+      if (result.doc) doc.value = coerceDoc(result.doc, result.name, result.mode)
     } catch (error) {
       if (isApiError(error) && error.issues.length > 0) issues.value = error.issues
       throw error
@@ -229,7 +255,9 @@ export const useEditorStore = defineStore('editor', () => {
     if (!flow.value) return
     const id = flow.value.id
     clearAutosave()
-    await discardFlow(id)
+    // 检出可能还在路上，先等它落地再决定要不要调后端
+    if (lockPromise) await lockPromise.catch(() => undefined)
+    if (hasLock.value) await discardFlow(id)
     reset()
   }
 

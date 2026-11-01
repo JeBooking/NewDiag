@@ -32,10 +32,10 @@ export interface ListFlowsFilter {
   search?: string
 }
 
-export interface CommitResponse {
-  revisionId: string
-  updatedAt?: string
-  /** 轻校验放过的 warning，阻断级问题走 422 */
+/** 提交成功返回完整流程详情，前端据此刷新流程元信息，无需再请求一次 */
+export interface CommitResponse extends FlowDetail {
+  revisionId: string | null
+  /** 保存只提示、不阻断的问题 */
   issues?: LintIssue[]
 }
 
