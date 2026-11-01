@@ -95,7 +95,7 @@ async function start(): Promise<void> {
           <div>
             <h1>{{ flow?.name || '未命名流程' }}</h1>
             <p class="meta">
-              <template v-if="latest">按 v{{ latest.versionNo }} 的步骤表执行，启动时采集一次快照</template>
+              <template v-if="latest">按 v{{ latest.versionNo }} 的步骤表执行，启动时固定本次参数</template>
               <template v-else>还没有发布版本</template>
             </p>
           </div>
