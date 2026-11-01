@@ -7,23 +7,22 @@
 
 ## 运行
 
-前端：
-
-```bash
-pnpm install
-pnpm dev          # http://127.0.0.1:5173
-```
-
-后端：
+首次准备后端环境：
 
 ```bash
 cd backend
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
-.venv/Scripts/python -m uvicorn app.main:app --reload --port 8000
 ```
 
-开发态 Vite 把 `/api` 代理到 `127.0.0.1:8000`。
+一键起前后端：
+
+```bash
+pnpm install
+pnpm dev          # 后端 8000 + 前端 5173
+```
+
+`pnpm dev` 会同时拉起 uvicorn 与 Vite，Ctrl+C 一起停。只调前端时用 `pnpm dev:web`（此时 `/api` 仍代理到 `127.0.0.1:8000`，后端需另行启动）。
 
 ## 内网单人测试
 
