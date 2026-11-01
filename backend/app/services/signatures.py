@@ -164,6 +164,8 @@ def _param_list(func: dict) -> list[dict]:
                 "type": str(param.get("type") or "any"),
                 "required": bool(param.get("required", True)),
                 "default": param.get("default"),
+                # 探针用 repr 兜底的默认值不可信，发布侧不拿它填启动上下文
+                "defaultTrusted": bool(param.get("defaultTrusted", True)),
             }
         )
     return params

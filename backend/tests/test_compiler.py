@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -635,3 +636,42 @@ def test_lax_binding_downgrades_missing_required_param():
     assert any(
         i["level"] == "warning" and "必填参数 voltage 没有来源" in i["message"] for i in lax
     )
+
+
+# ---------------------------------------------------------------- 探针默认值
+
+
+def test_probe_marks_repr_default_untrusted():
+    """repr 兜底的默认值不能当真实默认值用，必须带不可信标记。"""
+    from app.worker.probe import _describe
+
+    moment = datetime(2020, 1, 1)
+
+    def sample(count=3, when=moment, tags=("a", "b")):
+        pass
+
+    probed = {p["name"]: p for p in _describe("sample", sample)["params"]}
+    assert probed["count"]["defaultTrusted"] is True
+    assert probed["tags"]["defaultTrusted"] is True
+    assert probed["when"]["defaultTrusted"] is False
+    assert probed["when"]["default"] == repr(moment)
+
+
+def test_param_list_keeps_trust_flag_without_changing_hash():
+    """信任标记只是附带信息，不能改变签名指纹，否则已发布版本会全部报签名变更。"""
+    from app.services import signatures
+
+    params = [
+        {
+            "name": "when",
+            "type": "datetime",
+            "required": False,
+            "default": "x",
+            "defaultTrusted": False,
+        }
+    ]
+    listed = signatures._param_list({"name": "f", "params": params})
+    assert listed[0]["defaultTrusted"] is False
+
+    trusted = [{**params[0], "defaultTrusted": True}]
+    assert signatures._hash_params("f", listed) == signatures._hash_params("f", trusted)

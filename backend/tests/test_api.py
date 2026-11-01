@@ -970,6 +970,106 @@ def test_instance_fills_release_defaults(client, tmp_path):
     assert payload["scope"]["check"]["retry"] == 5
 
 
+def test_freeze_inputs_skips_untrusted_default():
+    """探针用 repr 兜底的默认值不能进发布表单；老 probe 结果没有该字段时按可信处理。"""
+    from app.api.releases import freeze_inputs
+
+    doc = {
+        "format": 1,
+        "name": "默认值",
+        "mode": "parallel",
+        "nodes": [
+            start_doc_node(
+                [
+                    {"name": "when", "scope": "global"},
+                    {"name": "retry", "scope": "global"},
+                    {"name": "legacy", "scope": "global"},
+                ]
+            )
+        ],
+        "edges": [],
+    }
+    probed = {
+        "P:run": [
+            {"name": "when", "type": "datetime", "required": False,
+             "default": "datetime.datetime(2020, 1, 1, 0, 0)", "defaultTrusted": False},
+            {"name": "retry", "type": "int", "required": False, "default": 1,
+             "defaultTrusted": True},
+            # 老版本 probe 结果不带 defaultTrusted
+            {"name": "legacy", "type": "str", "required": False, "default": "keep"},
+        ]
+    }
+
+    frozen = {item["name"]: item for item in freeze_inputs(doc, probed)}
+    # 不可信的默认值丢掉，但必填判定仍按签名（有默认值 → 非必填）
+    assert frozen["when"]["required"] is False
+    assert frozen["when"]["default"] is None
+    assert frozen["retry"]["default"] == 1
+    assert frozen["legacy"]["default"] == "keep"
+
+
+def test_publish_skips_untrusted_signature_default(client, tmp_path):
+    """真实探针路径：datetime 默认值不写进发布表单，执行页留空即可。"""
+    project_dir = tmp_path / "untrusted-project"
+    package = project_dir / "untrusted"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "diagnosis.py").write_text(
+        "from datetime import datetime\n"
+        "\n"
+        "\n"
+        "def scheduled(when: datetime = datetime(2020, 1, 1)) -> bool:\n"
+        "    return True\n",
+        encoding="utf-8",
+    )
+    registered = client.post(
+        "/api/projects",
+        json={"name": "默认值工程", "path": str(project_dir), "module": "untrusted.diagnosis"},
+    )
+    assert registered.status_code == 200, registered.text
+
+    doc = {
+        "format": 1,
+        "name": "默认值诊断",
+        "mode": "parallel",
+        "nodes": [
+            start_doc_node([{"name": "when", "scope": "global"}]),
+            {
+                "id": "n1",
+                "kind": "investigation",
+                "title": "按时间判断",
+                "detail": "调用 scheduled",
+                "fields": {
+                    "observation": "计划时间",
+                    "acquisition": "调用 scheduled",
+                    "assessment": "返回 True 判为命中",
+                },
+                "binding": {"project": "默认值工程", "function": "scheduled"},
+                "position": {"x": 0, "y": 100},
+            },
+            {
+                "id": "n2",
+                "kind": "escalation",
+                "title": "上升",
+                "detail": "转交专家",
+                "position": {"x": 0, "y": 200},
+            },
+        ],
+        "edges": [
+            {"id": "e0", "from": "n0", "to": "n1"},
+            {"id": "e1", "from": "n1", "to": "n2", "branch": "yes", "order": 1},
+        ],
+    }
+    _flow_id, release = seed_published(client, doc)
+
+    detail = client.get(f"/api/releases/{release['id']}").json()
+    inputs = {item["name"]: item for item in detail["inputs"]}
+    assert inputs["when"]["required"] is False
+    assert inputs["when"]["type"] == "datetime"
+    # 关键：不能出现 "datetime.datetime(2020, 1, 1, 0, 0)" 这种 repr 假值
+    assert inputs["when"]["default"] is None
+
+
 def test_probe_returns_function_signatures(client, tmp_path):
     register_input_project(client, tmp_path, name="探测工程")
     flow = create_flow(client)

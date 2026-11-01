@@ -135,6 +135,8 @@ def _describe(name: str, func) -> dict:
                 "type": _type_name(param.annotation),
                 "default": _jsonable(param.default) if has_default else None,
                 "required": not has_default,
+                # repr 兜底的默认值（datetime、枚举、自定义对象）不是真值，调用方不能拿它填参
+                "defaultTrusted": bool(has_default and _plain(param.default)),
             }
         )
     return {"name": name, "params": params, "returns": _type_name(signature.return_annotation)}
@@ -163,6 +165,17 @@ def _jsonable(value):
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
     return repr(value)
+
+
+def _plain(value) -> bool:
+    """默认值本身是否可原样传给业务函数；只有走 repr 兜底的对象才不可信。"""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return True
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return all(_plain(item) for item in value)
+    if isinstance(value, dict):
+        return all(_plain(item) for item in value.values())
+    return False
 
 
 def _emit(payload: dict) -> None:

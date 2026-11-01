@@ -125,6 +125,7 @@ def freeze_inputs(doc: dict, probed: dict) -> list[dict]:
     是同一份口径（老文档的 snapshotFields 也会被当作全局参数）。
     冻结的意义：发布后改 doc 或改函数签名，老版本的表单不能跟着变。
     required 取签名该参数有无默认值；作者在设计期给了默认值就不算必填，执行页预填即可。
+    签名默认值只有 defaultTrusted 时才写进表单：repr 兜底的值不是真值，写进去等于预填假数据。
     """
     specs = StartParams(doc).items
     if not specs:
@@ -153,8 +154,15 @@ def freeze_inputs(doc: dict, probed: dict) -> list[dict]:
         if matched:
             required = any(bool(param.get("required", True)) for param in matched)
             annotation = next((param.get("type") for param in matched if param.get("type")), None)
+            # 探针用 repr 兜底的默认值（datetime / 枚举 / 自定义对象）不是真值，
+            # 冻结进表单只会在执行页预填一个假值再静默传给函数，所以宁可不写
             signature_default = next(
-                (param.get("default") for param in matched if not param.get("required", True)), None
+                (
+                    param.get("default")
+                    for param in matched
+                    if not param.get("required", True) and param.get("defaultTrusted", True)
+                ),
+                None,
             )
         else:
             # 签名里查不到（函数没被绑定 / 探不到），只能按作者是否给了默认值判断
