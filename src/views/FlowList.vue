@@ -382,7 +382,7 @@ function folderNameOf(row: FlowSummary): string | null {
           >
             <template #default="{ data }">
               <div class="tree-row">
-                <el-icon v-if="data.fixed" class="tree-icon"><Folder /></el-icon>
+                <el-icon class="tree-icon"><Folder /></el-icon>
                 <span class="tree-label">{{ data.name }}</span>
                 <span v-if="typeof data.count === 'number'" class="tree-count">{{ data.count }}</span>
                 <span v-if="!data.fixed" class="tree-actions">
