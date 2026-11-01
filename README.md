@@ -1,13 +1,20 @@
 # 诊断流程平台
 
-在画布上编排设备诊断流程，发布成不可变版本，由平台调用业务 Python 接口取数与判断，人工完成处置，全过程留痕。
+把设备故障的排查经验画成流程图，发布成固定版本，按图执行。平台负责调用业务 Python 接口取数与判断，现场的处置由人完成，全过程留痕。
 
-- 设计依据：[docs/spec.md](docs/spec.md)
-- 协作规则：[AGENTS.md](AGENTS.md)
+- **不碰设备**：只读数据接口，动作由人对着设备做
+- **发布即冻结**：已经发布、正在使用的版本不受后续编辑影响
+- **全程可回查**：每次调用的参数、返回值、走的分支、人工选择和时间都有记录
 
-## 运行
+设计细节见 [docs/spec.md](docs/spec.md)，协作规则见 [AGENTS.md](AGENTS.md)。
 
-首次准备后端环境：
+## 快速开始
+
+### 用源码跑
+
+需要 Node 20.19+、pnpm、Python 3.11+。
+
+首次准备后端：
 
 ```bash
 cd backend
@@ -15,46 +22,16 @@ python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
 ```
 
-一键起前后端：
+回到仓库根目录，装前端依赖并同时启动前后端：
 
 ```bash
 pnpm install
-pnpm dev          # 后端 8000 + 前端 5173
+pnpm dev
 ```
 
-`pnpm dev` 会同时拉起 uvicorn 与 Vite，Ctrl+C 一起停。只调前端时用 `pnpm dev:web`（此时 `/api` 仍代理到 `127.0.0.1:8000`，后端需另行启动）。
+浏览器打开 http://127.0.0.1:5173 。后端在 8000，`/api` 由 Vite 代理，Ctrl+C 一起停。只调前端时用 `pnpm dev:web`，后端需另行启动。
 
-## 内网单人测试
-
-服务跑在内网某台机器、你用另一台电脑的浏览器访问时：
-
-```bash
-# 服务端：后端保持回环即可，前端监听所有网卡
-backend/.venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-pnpm dev:lan          # 访问 http://<那台机器的内网IP>:5173
-```
-
-浏览器只访问 5173，`/api` 由 Vite 在服务端代理到 8000，所以不涉及 CORS。需要在服务端防火墙放行 5173。
-
-想直接看接口文档（`/docs`）时，后端才需要 `--host 0.0.0.0` 并放行 8000——注意这套没有鉴权，放行即对内网所有人开放。
-
-依赖安装需要外网或内网镜像：npm 用 `pnpm config set registry <镜像>`，pip 用 `-i <镜像>`；纯离线环境要提前把 node_modules 和 wheel 包带过去。
-
-## 调试
-
-后端日志写到 `backend/logs/app.log`，5 MB 轮转、保留 5 份。
-
-| 环境变量 | 作用 |
-|---|---|
-| `NEWDIAG_LOG_LEVEL=DEBUG` | 打开调试日志：每步调度、参数求值、会话调用与耗时、SSE 不涉及 |
-| `NEWDIAG_LOG_DIR` | 日志目录，默认 `backend/logs` |
-| `NEWDIAG_LOG_PAYLOAD=1` | 把实参与返回值也写进日志；默认只记字段名，避免敏感数据落盘 |
-
-每个 HTTP 响应都带 `X-Request-ID`，日志行前缀 `[abcd1234]` 与它对应，出问题时按这个 id 串起一次请求。
-
-前端：开发态默认在浏览器控制台输出 `[newdiag]` 前缀的请求、SSE 重连与组件错误；生产构建里在控制台执行 `localStorage.setItem('newdiag:debug','1')` 再刷新即可打开。
-
-## 离线部署包
+### 用离线包
 
 在能上网的机器上构建：
 
@@ -62,18 +39,121 @@ pnpm dev:lan          # 访问 http://<那台机器的内网IP>:5173
 backend/.venv/Scripts/python scripts/build_bundle.py
 ```
 
-产物：`deploy/newdiag-win64-<日期>.zip`（约 7 MB）。
+产物是 `deploy/newdiag-win64-<日期>.zip`，拷到目标机器解压后：
 
-目标机器解压后，先双击 `setup.cmd`（用本机 Python 建虚拟环境并从 `wheels/` 离线装依赖），再双击 `start.cmd`，浏览器打开 http://127.0.0.1:8765/ 。需要目标机器自带 **Python 3.11 / 64 位**（其他版本要重新打包）。内网他机访问用 `start-lan.cmd`。
+1. 双击 `setup.cmd`：用本机 Python 建虚拟环境，从 `wheels/` 离线装依赖
+2. 双击 `start.cmd`：浏览器打开 http://127.0.0.1:8765/
 
-包里含：FastAPI / Uvicorn / SQLAlchemy 等运行时依赖的轮子（cp311）、前端静态产物、示例工程 `examples/cooling`。业务工程自身的依赖（numpy、串口 SDK 等）仍需在目标机器上、业务工程自己的解释器里装好，登记工程时把 `python` 填成那个解释器。
+目标机器需要 **Python 3.11 / 64 位**，版本不同要重新打包。内网他机访问用 `start-lan.cmd`，地址是 `http://<本机IP>:8765/`。
 
-## 验证
+## 上手五步
+
+### 1. 登记业务工程
+
+进顶部「工程」→「登记工程」，填名称、工程路径、模块名；解释器默认 `python`，工厂函数可以留空。
+
+- **名称**是流程绑定用的引用键，登记后不能改；路径、模块、解释器、工厂随时可以编辑
+- 点「接口」能看到实际探测到的函数和签名；改完代码点「重新发现」
+- 删除工程后，引用它的流程会在下一次探测或发布时报「工程未登记」，重新登记同名工程即可恢复
+
+### 2. 建流程
+
+「流程」页可以新建（名称、描述、并行/串行），也可以导入现成的 `.json` 流程文档。
+
+左侧目录树支持多级目录；流程通过列表里的「移动到…」归类。删除目录要求目录为空。
+
+### 3. 设计与发布
+
+画布上拖节点、连线。节点类型：开始、排查、排查动作、结论、处置措施、问题解决、上升。
+
+- 开始节点是唯一入口，不能删除；它声明的启动参数由下游绑定函数的签名派生
+- 排查节点绑定了 Python 函数就自动判断，没绑定就是人工判断
+- 节点右上角显示校验问题数量，悬停能看到具体问题
+
+「保存」把当前编辑提交为在线版本，同时释放编辑锁；「发布」才会编译成执行用的步骤表。发布后版本不可修改，执行只认发布版本。
+
+### 4. 启动一次诊断
+
+流程列表点「执行」，或设计页点「开始执行」，按**最新发布版本**启动；版本页里也可以对某个历史版本点「启动执行」。
+
+填完必填的启动参数，点「开始执行」，会跳到本次实例详情。没有发布版本时页面会提示先去发布。
+
+### 5. 处理待办
+
+实例详情右侧是待办面板：
+
+- **判断类**：是 / 否
+- **动作类**：完成 / 回退；回退要选一个已经执行过的节点和目标分支，原因可选
+- 串行流程找到问题后队列还有剩余时，会多一个「结束排查 / 继续排查」的选择
+
+回退只把后续记录标记为作废，不删除历史。平台不会撤销任何已经对设备做过的操作。
+
+历史执行都在「执行记录」里，可以回看路径、每次调用的输入输出和人工选择。
+
+## 编辑锁
+
+- 进设计页只是只读，不占锁；**第一次改动**才拿编辑锁
+- 别人持锁时页面只读，顶部显示谁在编辑
+- 保存后锁释放，可以继续改，下次改动再重新拿
+- 直接离开且没保存，草稿和锁都会保留，下次进来接着改；点「放弃」才丢弃草稿并释放
+
+## 内网其他机器访问
+
+源码方式：后端保持回环，前端监听所有网卡。
 
 ```bash
-pnpm type-check                      # 前端类型
-pnpm build                           # 类型 + 打包
-backend/.venv/Scripts/python -m pytest backend/tests -q       # 后端 55 个用例
+backend/.venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+pnpm dev:lan          # 访问 http://<那台机器的内网IP>:5173
+```
+
+浏览器只访问 5173，`/api` 由 Vite 在服务端代理到 8000，不涉及 CORS；需要在服务端防火墙放行 5173。
+
+离线包直接双击 `start-lan.cmd`，放行 8765。
+
+这套**没有鉴权**，放行端口等于对内网所有人开放；要看接口文档（`/docs`）才需要后端监听 `0.0.0.0`。
+
+## 数据、日志与备份
+
+- 数据：源码方式在 `backend/data/newdiag.db`，离线包在解压目录的 `data/newdiag.db`。SQLite 开了 WAL，备份时停服后复制整个 `data` 目录最稳
+- 日志：源码方式在 `backend/logs/app.log`，离线包在 `logs/app.log`，5 MB 轮转、保留 5 份
+- 每个 HTTP 响应都带 `X-Request-ID`，日志行前缀 `[xxxxxxxx]` 与它对应，出问题按这个 id 串一次请求
+
+| 环境变量 | 作用 |
+|---|---|
+| `NEWDIAG_DATA_DIR` | 数据目录，默认 `backend/data` |
+| `NEWDIAG_DB` | 直接指定数据库文件或连接串 |
+| `NEWDIAG_LOG_LEVEL` | `DEBUG` 打开调试日志：每步调度、参数求值、会话调用与耗时 |
+| `NEWDIAG_LOG_DIR` | 日志目录，默认 `backend/logs` |
+| `NEWDIAG_LOG_PAYLOAD` | 设为 `1` 时把实参与返回值也写进日志；默认只记字段名，避免敏感数据落盘 |
+
+前端调试：开发态默认在控制台输出 `[newdiag]` 前缀的请求、SSE 重连与组件错误；生产构建里执行 `localStorage.setItem('newdiag:debug','1')` 再刷新即可打开。
+
+## 常见问题
+
+**发布或执行时提示工程未登记、函数不存在**
+检查工程路径、模块名、解释器。工程页「接口」能直接看到探测报错。
+
+**执行前被拦住，提示函数签名与发布时不一致**
+业务函数的参数改过了。确认改动后再发布一个新版本。
+
+**点了「执行」提示没有版本**
+流程还没发布，先去设计页发布。
+
+**删除工程后流程发布失败**
+引用关系还在 doc 里。重新登记同名工程，或把节点的绑定改成别的工程。
+
+**端口被占用**
+源码方式用 8000 和 5173，离线包用 8765。改端口要同步改 Vite 代理或启动脚本。
+
+**别的机器打不开**
+确认用的是内网 IP 而不是 `127.0.0.1`，并放行对应端口。
+
+## 开发者参考
+
+```bash
+pnpm type-check                                  # 前端类型
+pnpm build                                       # 类型 + 打包
+backend/.venv/Scripts/python -m pytest backend/tests -q   # 后端 96 个用例
 ```
 
 三套端到端脚本（需要后端已启动，且先跑过 `demo_seed.py` 登记工程）：
@@ -84,21 +164,18 @@ backend/.venv/Scripts/python scripts/demo_branching.py  # 分支 + 回退 + 上�
 backend/.venv/Scripts/python scripts/demo_serial.py     # 串行队列 + 成功后暂停 + 继续
 ```
 
-示例业务工程在 `examples/cooling`，登记时填路径 `examples/cooling`、模块 `cooling.diagnosis`。
-
-## 结构
+示例业务工程在 `examples/cooling`，登记时路径填它的**绝对路径**，模块填 `cooling.diagnosis`。
 
 ```
 src/          前端（Vue 3 + Vue Flow + Element Plus）
   domain/     契约：doc / plan / instance 类型、连接规则
   components/ 画布、节点、边、属性面板、待办、历史
-  views/      列表、设计、版本、执行、工程
+  views/      列表、设计、版本、启动、执行记录、工程
 backend/      FastAPI + SQLite
   app/api/            HTTP 接口
   app/services/       编译、调度、会话、签名、存储
   app/worker/         会话子进程与接口探针
 examples/     示例业务工程
-scripts/      端到端演示
+scripts/      构建与端到端演示
 docs/         设计说明
 ```
-
