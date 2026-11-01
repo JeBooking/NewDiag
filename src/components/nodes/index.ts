@@ -19,6 +19,8 @@ export interface NodeCardData {
   hasBinding: boolean
   /** 入口节点不画左侧 target handle */
   hasTarget: boolean
+  /** 仅 start：已声明的启动参数数量，用于副标题；不传按 0 处理 */
+  paramCount?: number
   /** 该节点名下的全部校验问题，按错误优先排序 */
   issues: NodeIssue[]
   status: NodeVisualStatus | null

@@ -27,12 +27,16 @@ class ValidationError(Exception):
 
 
 def validate_doc(
-    doc: dict, functions: dict | None = None, strict_binding: bool = True
+    doc: dict,
+    functions: dict | None = None,
+    strict_binding: bool = True,
+    require_start: bool = True,
 ) -> list[dict]:
     """返回 issue 列表；level=error 才算阻断。
 
     functions 传 probe_doc 的结果时按真实参数名校验绑定，否则按候选字段全量校验。
     strict_binding=False 供 commit 使用：参数绑定问题一律降级为 warning，半成品能存。
+    require_start=False 供老版本文档重编译使用：没有 start 节点时退回旧的入口算法。
     """
     issues: list[dict] = []
     if not isinstance(doc, dict):
@@ -63,6 +67,7 @@ def validate_doc(
             issues.append(_issue(LEVEL_ERROR, f"v1 不支持的节点类型：{kind}", node_id=nid))
 
     valid_edges = _check_edges(edges, nodes_by_id, issues)
+    shaped_edges = [e for e in edges if e.get("from") in nodes_by_id and e.get("to") in nodes_by_id]
     outgoing = _outgoing_map(nodes_by_id, valid_edges)
     incoming: dict[str, list[str]] = {nid: [] for nid in nodes_by_id}
     for src, targets in outgoing.items():
@@ -71,36 +76,53 @@ def validate_doc(
 
     _check_node_fields(nodes_by_id, issues)
     _check_out_edges(nodes_by_id, valid_edges, outgoing, issues)
-    entry = _check_entry(nodes_by_id, incoming, issues)
+    entry = _check_start(nodes_by_id, shaped_edges, valid_edges, issues, require_start)
+    if entry is None:
+        entry = _check_entry(nodes_by_id, incoming, issues)
     if entry is not None:
         _check_reachability(entry, nodes_by_id, outgoing, issues)
         _check_cycles(entry, outgoing, issues)
-    _check_bindings(nodes_by_id, valid_edges, doc, issues, functions, strict_binding)
+    start = StartParams(doc)
+    _check_bindings(nodes_by_id, valid_edges, start, issues, functions, strict_binding)
     return issues
 
 
 def compile_doc(
-    doc: dict, flow_id: str, release_no: int, functions: dict | None = None
+    doc: dict,
+    flow_id: str,
+    release_no: int,
+    functions: dict | None = None,
+    require_start: bool = True,
 ) -> dict:
     """把 doc 编译成 plan。校验不过抛 ValidationError。
 
     functions 为 probe_doc 的结果；给了签名就只为函数真实参数绑定。
     """
-    issues = [i for i in validate_doc(doc, functions) if i.get("level") == LEVEL_ERROR]
+    issues = [
+        i
+        for i in validate_doc(doc, functions, require_start=require_start)
+        if i.get("level") == LEVEL_ERROR
+    ]
     if issues:
         raise ValidationError(issues)
 
     nodes_by_id = {n["id"]: n for n in doc["nodes"]}
     edges = [e for e in doc.get("edges", []) if isinstance(e, dict)]
     valid_edges = [e for e in edges if e.get("from") in nodes_by_id and e.get("to") in nodes_by_id]
-    snapshot_fields = _snapshot_fields(doc)
-    entry = _find_entry(nodes_by_id, valid_edges)
+    start = StartParams(doc)
+    entry = start.id or _find_entry(nodes_by_id, valid_edges)
 
     steps: dict[str, dict] = {}
     for nid in sorted(nodes_by_id):
         node = nodes_by_id[nid]
         kind = node.get("kind", "")
         step: dict = {"kind": kind}
+
+        if rules.is_start_kind(kind):
+            # 开始节点不执行代码也不等人：运行时把出边一次投递出去
+            step["next"] = _next_map(nid, kind, valid_edges)
+            steps[nid] = step
+            continue
 
         if rules.is_terminal_kind(kind):
             step["terminal"] = True
@@ -109,9 +131,7 @@ def compile_doc(
                 step["human"] = True
             elif kind == "investigation":
                 if node.get("binding"):
-                    args, _ = _resolve_args(
-                        node, nodes_by_id, valid_edges, snapshot_fields, functions
-                    )
+                    args, _ = _resolve_args(node, nodes_by_id, valid_edges, start, functions)
                     step["call"] = {
                         "project": str(node["binding"].get("project") or ""),
                         "function": str(node["binding"].get("function") or ""),
@@ -203,6 +223,10 @@ def _check_edges(edges: list[dict], nodes_by_id: dict[str, dict], issues: list[d
 def _check_node_fields(nodes_by_id: dict[str, dict], issues: list[dict]) -> None:
     for nid, node in nodes_by_id.items():
         kind = node.get("kind", "")
+        if rules.is_start_kind(kind):
+            # 开始节点只有参数声明，没有诊断描述，标题/说明都不强制
+            continue
+
         for key, label in rules.REQUIRED_TEXT.items():
             if not _text(node.get(key)):
                 issues.append(_issue(LEVEL_ERROR, f"{_kind_label(kind)}缺少{label}", node_id=nid))
@@ -234,6 +258,9 @@ def _check_out_edges(
         kind = node.get("kind", "")
         targets = outgoing.get(nid, [])
         out_edges = [e for e in edges if e.get("from") == nid]
+
+        if rules.is_start_kind(kind):
+            continue  # 出线由 _check_start 统一检查，避免重复报错
 
         if rules.is_terminal_kind(kind):
             for edge in out_edges:
@@ -267,13 +294,97 @@ def _check_out_edges(
         elif rules.is_single_successor(kind):
             if len(out_edges) != 1:
                 issues.append(_issue(LEVEL_ERROR, "结论节点必须恰好一条出线", node_id=nid))
-        elif len(_unique(targets)) > 1:
+        elif len(_unique(targets)) > 1 and not rules.allows_multiple_targets(kind):
             issues.append(_issue(LEVEL_ERROR, "不支持隐式分叉，请为每个后继单独建节点", node_id=nid))
+
+
+def _check_start(
+    nodes_by_id: dict[str, dict],
+    shaped_edges: list[dict],
+    valid_edges: list[dict],
+    issues: list[dict],
+    require_start: bool,
+) -> str | None:
+    """开始节点：全局唯一、无入边、至少一条出边、不绑函数。
+
+    返回入口 id；没有开始节点时返回 None，由 _check_entry 走旧规则。
+    """
+    starts = sorted(
+        nid for nid, node in nodes_by_id.items() if rules.is_start_kind(node.get("kind", ""))
+    )
+    if not starts:
+        if require_start:
+            issues.append(
+                _issue(LEVEL_ERROR, "缺少开始节点：流程必须有且只有一个开始节点，请新建后连到第一个排查节点")
+            )
+        return None
+
+    if len(starts) > 1:
+        issues.append(
+            _issue(LEVEL_ERROR, f"开始节点必须全局唯一，当前有 {len(starts)} 个：{', '.join(starts)}")
+        )
+
+    for nid in starts:
+        for edge in shaped_edges:
+            if edge.get("to") == nid:
+                issues.append(
+                    _issue(LEVEL_ERROR, "开始节点不能有入线", node_id=nid, edge_id=edge.get("id"))
+                )
+        targets = [edge.get("to") for edge in valid_edges if edge.get("from") == nid]
+        if not targets:
+            issues.append(_issue(LEVEL_ERROR, "开始节点至少需要一条出线", node_id=nid))
+        # 开始节点的出线会被一次性全部投递，重复连接等于同一个节点跑两遍
+        for target in _unique([t for t in targets if targets.count(t) > 1]):
+            issues.append(_issue(LEVEL_ERROR, f"开始节点重复连接到 {target}", node_id=nid))
+
+        node = nodes_by_id[nid]
+        if node.get("binding"):
+            issues.append(_issue(LEVEL_ERROR, "开始节点不允许绑定函数", node_id=nid))
+        if node.get("params"):
+            issues.append(_issue(LEVEL_ERROR, "开始节点不允许配置参数绑定", node_id=nid))
+        _check_start_inputs(nid, node, issues)
+    return starts[0]
+
+
+def _check_start_inputs(nid: str, node: dict, issues: list[dict]) -> None:
+    raw = node.get("inputs")
+    if raw is None:
+        return
+    if not isinstance(raw, list):
+        issues.append(_issue(LEVEL_ERROR, "开始节点的启动参数格式不正确", node_id=nid))
+        return
+
+    seen: set[tuple[str, str, str]] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            issues.append(_issue(LEVEL_ERROR, "启动参数格式不正确", node_id=nid))
+            continue
+        name = _text(item.get("name"))
+        if not name:
+            issues.append(_issue(LEVEL_ERROR, "启动参数缺少名称", node_id=nid))
+            continue
+        scope = item.get("scope") or "global"
+        if not rules.is_start_param_scope(scope):
+            issues.append(_issue(LEVEL_ERROR, f"启动参数 {name} 的 scope 不合法：{scope}", node_id=nid))
+            continue
+        function = _text(item.get("function")) if scope == "function" else ""
+        if scope == "function" and not function:
+            issues.append(
+                _issue(LEVEL_ERROR, f"启动参数 {name} 的 scope=function 但没有指定函数", node_id=nid)
+            )
+            continue
+        key = (scope, function, name)
+        if key in seen:
+            where = f"函数 {function} 的" if function else "全局"
+            issues.append(_issue(LEVEL_ERROR, f"{where}启动参数 {name} 重复", node_id=nid))
+            continue
+        seen.add(key)
 
 
 def _check_entry(
     nodes_by_id: dict[str, dict], incoming: dict[str, list[str]], issues: list[dict]
 ) -> str | None:
+    """旧文档（没有开始节点）的入口规则：入度为 0 且只允许一个。"""
     entries = [nid for nid in nodes_by_id if not incoming.get(nid)]
     if not entries:
         issues.append(_issue(LEVEL_ERROR, "没有入口节点（缺少入度为 0 的节点）"))
@@ -353,17 +464,16 @@ def _check_cycles(entry: str, outgoing: dict[str, list[str]], issues: list[dict]
 def _check_bindings(
     nodes_by_id: dict[str, dict],
     edges: list[dict],
-    doc: dict,
+    start: "StartParams",
     issues: list[dict],
     functions: dict | None = None,
     strict_binding: bool = True,
 ) -> None:
     """spec 4.8：参数来源必须在当前版本存在，且位于该节点上游。"""
-    snapshot_fields = _snapshot_fields(doc)
     for nid, node in nodes_by_id.items():
         if node.get("kind") != "investigation" or not node.get("binding"):
             continue
-        _, arg_issues = _resolve_args(node, nodes_by_id, edges, snapshot_fields, functions)
+        _, arg_issues = _resolve_args(node, nodes_by_id, edges, start, functions)
         for issue in arg_issues:
             if not strict_binding and issue.get("level") == LEVEL_ERROR:
                 issue = {**issue, "level": LEVEL_WARNING}
@@ -372,22 +482,52 @@ def _check_bindings(
 
 # ---------------------------------------------------------------- 参数绑定
 
+# 同一参数名的多个来源按层比较，只有最靠前的一层参与绑定
+TIER_FUNCTION = 0
+TIER_GLOBAL = 1
+TIER_UPSTREAM = 2
+
+
+class StartParams:
+    """开始节点声明的启动参数。
+
+    旧文档没有 start 节点，`snapshotFields` 一律视为全局参数，保证老版本仍能编译。
+    """
+
+    def __init__(self, doc: dict) -> None:
+        node = _find_start_node(doc)
+        self.id = str(node.get("id")) if node else None
+        self.items = _collect_start_params(doc, node)
+
+    def local(self, function: str) -> set[str]:
+        """只对该函数可见的启动参数名；不泄漏给别的函数。"""
+        return {
+            item["name"]
+            for item in self.items
+            if item["scope"] == "function" and item["function"] == function
+        }
+
+    def global_names(self) -> set[str]:
+        return {item["name"] for item in self.items if item["scope"] == "global"}
+
 
 def _resolve_args(
     node: dict,
     nodes_by_id: dict[str, dict],
     edges: list[dict],
-    snapshot_fields: list[str],
+    start: StartParams,
     functions: dict | None = None,
 ) -> tuple[dict, list[dict]]:
-    """解析调用参数：显式 params 优先，其次按函数签名或候选字段自动绑定。
+    """解析调用参数：显式 params 优先，其次按启动参数、上游输出、函数默认值兜底。
 
     有签名时只为真实参数绑定，多余候选一律不传；无签名时（向前兼容）按候选全量绑定并给警告。
     """
     node_id = str(node.get("id"))
+    binding = node.get("binding") or {}
+    function = str(binding.get("function") or "")
     issues: list[dict] = []
     args: dict = {}
-    candidates = _candidate_map(node_id, nodes_by_id, edges, snapshot_fields)
+    candidates = _candidate_map(node_id, nodes_by_id, edges, start, function)
     upstream = set(_upstream_ids(node_id, edges))
     params = _function_params(node, functions)
 
@@ -413,7 +553,7 @@ def _resolve_args(
             name = str(param.get("name") or "")
             if not name or name in args:
                 continue
-            sources = _unique(candidates.get(name, []))
+            sources = _best_sources(candidates.get(name, []))
             if len(sources) > 1:
                 issues.append(
                     _issue(
@@ -428,8 +568,8 @@ def _resolve_args(
                     issues.append(
                         _issue(
                             LEVEL_ERROR,
-                            f"缺少必填参数 {name}，候选：{_available(candidates)}",
-                            node_id=node_id,
+                            f"函数 {function} 的必填参数 {name} 没有来源，候选：{_available(candidates)}",
+                            node_id=start.id or node_id,
                         )
                     )
                 continue  # 可选参数交给 Python 默认值
@@ -449,7 +589,7 @@ def _resolve_args(
         return args, issues
 
     for name in sorted(candidates):
-        sources = _unique(candidates[name])
+        sources = _best_sources(candidates[name])
         if len(sources) > 1:
             issues.append(
                 _issue(
@@ -485,7 +625,7 @@ def _function_params(node: dict, functions: dict | None) -> list[dict] | None:
     return [item for item in params if isinstance(item, dict)]
 
 
-def _available(candidates: dict[str, list[str]]) -> str:
+def _available(candidates: dict[str, object]) -> str:
     return ", ".join(sorted(candidates)) or "无"
 
 
@@ -493,29 +633,46 @@ def _candidate_map(
     node_id: str,
     nodes_by_id: dict[str, dict],
     edges: list[dict],
-    snapshot_fields: list[str],
-) -> dict[str, list[str]]:
-    candidates: dict[str, list[str]] = {}
-    for field in snapshot_fields:
-        candidates.setdefault(field, []).append(SNAPSHOT_SOURCE)
+    start: StartParams,
+    function: str,
+) -> dict[str, list[tuple[int, str]]]:
+    """候选来源按层收集：函数局部启动参数 > 全局启动参数 > 上游同名字段。"""
+    local = start.local(function)
+    globals_ = start.global_names()
+    candidates: dict[str, list[tuple[int, str]]] = {}
+    for name in sorted(local):
+        candidates.setdefault(name, []).append((TIER_FUNCTION, SNAPSHOT_SOURCE))
+    for name in sorted(globals_ - local):
+        candidates.setdefault(name, []).append((TIER_GLOBAL, SNAPSHOT_SOURCE))
     for src in _upstream_ids(node_id, edges):
-        if src not in nodes_by_id:
+        upstream_node = nodes_by_id.get(src)
+        if upstream_node is None:
             continue
-        for field in _declared_outputs(nodes_by_id[src]):
-            candidates.setdefault(field, []).append(src)
+        for field in _declared_outputs(upstream_node):
+            if field in local or field in globals_:
+                continue  # 有启动参数时上游同名字段不参与竞争
+            candidates.setdefault(field, []).append((TIER_UPSTREAM, src))
     return candidates
+
+
+def _best_sources(entries: list[tuple[int, str]]) -> list[str]:
+    """取最高优先级那一层的来源；同层多个才算歧义。"""
+    if not entries:
+        return []
+    tier = min(entry[0] for entry in entries)
+    return _unique([source for entry_tier, source in entries if entry_tier == tier])
 
 
 def _expr_from_spec(
     name: str,
     spec: object,
     node_id: str,
-    candidates: dict[str, list[str]],
+    candidates: dict[str, list[tuple[int, str]]],
     upstream: set[str],
     issues: list[dict],
 ) -> dict | None:
     if isinstance(spec, str):
-        sources = _unique(candidates.get(spec, []))
+        sources = _best_sources(candidates.get(spec, []))
         if not sources:
             available = ", ".join(sorted(candidates)) or "无"
             issues.append(
@@ -572,6 +729,42 @@ def _declared_outputs(node: dict) -> list[str]:
     return []
 
 
+def _find_start_node(doc: dict) -> dict | None:
+    raw = doc.get("nodes")
+    for node in raw if isinstance(raw, list) else []:
+        if isinstance(node, dict) and rules.is_start_kind(node.get("kind", "")):
+            return node
+    return None
+
+
+def _collect_start_params(doc: dict, start: dict | None) -> list[dict]:
+    """开始节点的 inputs；旧文档的 snapshotFields 一并当作全局参数。"""
+    items: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    raw = start.get("inputs") if start else None
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = _text(item.get("name"))
+        if not name:
+            continue
+        scope = item.get("scope") if rules.is_start_param_scope(item.get("scope")) else "global"
+        function = _text(item.get("function")) if scope == "function" else ""
+        key = (scope, function, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({"name": name, "scope": scope, "function": function})
+
+    global_names = {item["name"] for item in items if item["scope"] == "global"}
+    for field in _snapshot_fields(doc):
+        if field in global_names:
+            continue
+        global_names.add(field)
+        items.append({"name": field, "scope": "global", "function": ""})
+    return items
+
+
 def _snapshot_fields(doc: dict) -> list[str]:
     raw = doc.get("snapshotFields")
     if isinstance(raw, dict):
@@ -608,14 +801,29 @@ def _next_map(node_id: str, kind: str, edges: list[dict]) -> dict[str, list[str]
 
 
 def _find_entry(nodes_by_id: dict[str, dict], edges: list[dict]) -> str:
+    """没有开始节点时的旧算法：入度为 0 且可达节点最多的那个。"""
     incoming = {nid: 0 for nid in nodes_by_id}
     for edge in edges:
         if edge.get("to") in incoming:
             incoming[edge["to"]] += 1
-    for nid in nodes_by_id:
-        if incoming[nid] == 0:
-            return nid
-    raise ValidationError([_issue(LEVEL_ERROR, "没有入口节点")])
+    roots = sorted(nid for nid in nodes_by_id if incoming[nid] == 0)
+    if not roots:
+        raise ValidationError([_issue(LEVEL_ERROR, "没有入口节点")])
+
+    outgoing: dict[str, list[str]] = {nid: [] for nid in nodes_by_id}
+    for edge in edges:
+        outgoing[edge["from"]].append(edge["to"])
+
+    def reachable(nid: str) -> int:
+        seen, queue = {nid}, [nid]
+        while queue:
+            for nxt in outgoing.get(queue.pop(), []):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    queue.append(nxt)
+        return len(seen)
+
+    return min(roots, key=lambda nid: (-reachable(nid), nid))
 
 
 def _outgoing_map(nodes_by_id: dict[str, dict], edges: list[dict]) -> dict[str, list[str]]:
@@ -645,6 +853,7 @@ def _label(node: dict) -> str:
 
 def _kind_label(kind: str) -> str:
     return {
+        "start": "开始",
         "investigation": "排查",
         "investigationAction": "排查动作",
         "conclusion": "结论",

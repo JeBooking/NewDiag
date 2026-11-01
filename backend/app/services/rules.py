@@ -18,7 +18,10 @@ CONNECTION_RULES: dict[str, list[str]] = {
     "escalation": [],
 }
 
+START_KIND = "start"
+
 V1_KINDS = (
+    START_KIND,
     "investigation",
     "investigationAction",
     "conclusion",
@@ -62,9 +65,22 @@ def is_success_kind(kind: str) -> bool:
     return kind in SUCCESS_KINDS
 
 
+def is_start_kind(kind: str) -> bool:
+    return kind == START_KIND
+
+
+def is_start_param_scope(scope: object) -> bool:
+    return scope in ("global", "function")
+
+
 def needs_branch(kind: str) -> bool:
     """排查按是/否两组出线，其余节点单出口。"""
     return kind == "investigation"
+
+
+def allows_multiple_targets(kind: str) -> bool:
+    """开始节点把出边一次性全部投递，不算隐式分叉。"""
+    return kind == START_KIND
 
 
 def is_single_successor(kind: str) -> bool:

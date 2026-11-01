@@ -3,9 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import AppHeader from '@/components/layout/AppHeader.vue'
+import ReleaseInputForm from '@/components/panels/ReleaseInputForm.vue'
 import type { FlowDetail, ReleaseSummary } from '@/domain/types'
 import { errorText } from '@/services/api'
-import { getFlow, listReleases, startInstance } from '@/services/flows'
+import { getFlow, getRelease, listReleases, startInstance, type ReleaseDetail } from '@/services/flows'
 
 const route = useRoute()
 const router = useRouter()
@@ -13,51 +14,59 @@ const flowId = computed(() => String(route.params.id))
 
 const flow = ref<FlowDetail | null>(null)
 const releases = ref<ReleaseSummary[]>([])
+const release = ref<ReleaseDetail | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
-const input = ref('{}')
+const releaseError = ref<string | null>(null)
 const starting = ref(false)
 
+const formRef = ref<InstanceType<typeof ReleaseInputForm> | null>(null)
+const missingLabels = ref<string[]>([])
+
 const latest = computed(() => releases.value[0] ?? null)
+
+/** 老版本没有冻结启动输入，直接开始即可 */
+const hasInputs = computed(() => (release.value?.inputs?.length ?? 0) > 0)
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = null
+  releaseError.value = null
+  release.value = null
   try {
     const [detail, list] = await Promise.all([getFlow(flowId.value), listReleases(flowId.value)])
     flow.value = detail
     releases.value = list.slice().sort((a, b) => b.versionNo - a.versionNo)
   } catch (err) {
     error.value = errorText(err, '加载流程失败')
-  } finally {
     loading.value = false
+    return
   }
+  const target = latest.value
+  if (target) {
+    try {
+      release.value = await getRelease(target.id)
+    } catch (err) {
+      releaseError.value = errorText(err, '读取发布版本的启动参数失败')
+    }
+  }
+  loading.value = false
 }
 
 onMounted(load)
 
 async function start(): Promise<void> {
   if (!latest.value) return
-  let payload: Record<string, unknown> = {}
-  const text = input.value.trim()
-  if (text) {
-    try {
-      const parsed = JSON.parse(text)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        ElMessage.warning('启动输入必须是 JSON 对象')
-        return
-      }
-      payload = parsed as Record<string, unknown>
-    } catch {
-      ElMessage.warning('启动输入不是合法的 JSON')
-      return
-    }
+  const missing = formRef.value?.missing() ?? []
+  if (missing.length > 0) {
+    ElMessage.warning(`请填写：${missing.join('、')}`)
+    return
   }
   starting.value = true
   try {
     const instance = await startInstance(flowId.value, {
       releaseId: latest.value.id,
-      input: payload,
+      input: formRef.value?.build() ?? { global: {}, scope: {} },
     })
     await router.push({ name: 'instance', params: { id: instance.id } })
   } catch (err) {
@@ -111,15 +120,32 @@ async function start(): Promise<void> {
         </el-alert>
 
         <template v-else>
-          <label class="label">启动输入（JSON 对象，可留空）</label>
-          <el-input
-            v-model="input"
-            type="textarea"
-            :rows="8"
-            spellcheck="false"
-            placeholder='{ "voltage": 198.4 }'
+          <el-alert
+            v-if="releaseError"
+            type="warning"
+            :closable="false"
+            show-icon
+            :title="releaseError"
+            class="notice"
+          >
+            <el-button link type="primary" @click="load">重试</el-button>
+          </el-alert>
+
+          <div v-if="!hasInputs && !releaseError" class="section-hint">
+            该版本没有声明启动参数，直接开始即可
+          </div>
+
+          <ReleaseInputForm
+            v-if="hasInputs"
+            ref="formRef"
+            :inputs="release?.inputs ?? []"
+            @update:missing="missingLabels = $event"
           />
+
           <div class="actions">
+            <span v-if="missingLabels.length" class="missing">
+              还缺 {{ missingLabels.length }} 项必填
+            </span>
             <el-button type="primary" :loading="starting" @click="start">开始执行</el-button>
           </div>
         </template>
@@ -173,21 +199,27 @@ h1 {
   color: var(--el-text-color-secondary);
 }
 
-.label {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
 .notice {
   margin-bottom: 12px;
 }
 
+.section-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.6;
+}
+
 .actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 12px;
   margin-top: 16px;
+}
+
+.missing {
+  font-size: 12px;
+  color: var(--el-color-danger);
 }
 
 .state {

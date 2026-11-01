@@ -2,20 +2,21 @@ import type { NodeKind } from './types'
 
 /**
  * 与后端 app/services/rules.py 保持一致的连接矩阵。
- * generic 表示非诊断元素（如开始事件），只用于边界判定。
+ * 开始节点是唯一入口，只出不进；出边只到排查节点。
  */
-export const CONNECTION_RULES: Record<string, string[]> = {
-  start: ['investigation', 'generic'],
-  generic: ['remediation', 'problemSolved', 'escalation', 'generic'],
+export const CONNECTION_RULES: Record<NodeKind, NodeKind[]> = {
+  start: ['investigation'],
   investigation: ['investigation', 'investigationAction', 'conclusion', 'escalation'],
   investigationAction: ['investigation'],
   conclusion: ['remediation', 'escalation'],
   remediation: ['remediation', 'problemSolved', 'escalation'],
   problemSolved: [],
   escalation: [],
+  deepDiagnosis: ['investigation'],
+  jump: ['investigation'],
 }
 
-export function canConnect(from: NodeKind | 'start' | 'generic', to: NodeKind | 'generic') {
+export function canConnect(from: NodeKind, to: NodeKind): boolean {
   const targets = CONNECTION_RULES[from]
   if (!targets) return false
   return targets.includes(to)

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   MarkerType,
   Panel,
@@ -17,7 +17,7 @@ import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
 import { ElMessage } from 'element-plus'
 import { KIND_META, V1_KINDS } from '@/domain/kinds'
-import { canConnect, needsBranch } from '@/domain/rules'
+import { canConnect, isSingleSuccessor, needsBranch } from '@/domain/rules'
 import type { Branch, DocEdge, DocNode, FlowDoc, LintIssue, NodeKind, NodeVisualStatus } from '@/domain/types'
 import { NODE_DRAG_TYPE, nodeTypes, type NodeCardData, type NodeIssue } from '@/components/nodes'
 import { edgeTypes, type EdgeBranchData } from '@/components/edges'
@@ -26,6 +26,41 @@ import NodePalette from './NodePalette.vue'
 const NODE_WIDTH = 220
 const NODE_HEIGHT = 96
 const EDGE_COLOR = { yes: '#16a34a', no: '#dc2626', none: '#94a3b8' } as const
+
+/** 老流程（doc 里没有 start）在投影层补的占位开始节点，不回写 doc */
+const START_GHOST_ID = '__start__'
+const START_POSITION = { x: 60, y: 220 }
+/** 端口悬停多久后弹出候选面板 */
+const TIP_DELAY = 150
+const TIP_WIDTH = 176
+const TIP_MAX_HEIGHT = 240
+
+/** 可与给定节点相连的节点类型，已过连接矩阵与类型规则 */
+function candidateKinds(sourceId: string): NodeKind[] {
+  const source = nodeMeta.get(sourceId)
+  if (!source) return []
+  const meta = KIND_META[source.kind]
+  if (!meta || meta.branch === 'none') return []
+  // 结论只允许一个后继，已有出线就不再给候选
+  if (isSingleSuccessor(source.kind)) {
+    for (const edge of edgeMeta.values()) if (edge.from === sourceId) return []
+  }
+  return (Object.keys(KIND_META) as NodeKind[]).filter(
+    (kind) => !KIND_META[kind].entry && kind !== 'start' && canConnect(source.kind, kind),
+  )
+}
+
+interface HoverTip {
+  sourceId: string
+  /** 悬停的是哪个出口；单出口节点为 null */
+  branch: Branch | null
+  left: number
+  top: number
+  /** 悬停 handle 的中心点，建节点时换算成画布坐标 */
+  clientX: number
+  clientY: number
+  kinds: NodeKind[]
+}
 
 const props = withDefaults(
   defineProps<{
@@ -50,11 +85,17 @@ const emit = defineEmits<{
 
 // 父组件也要 project/坐标换算，必须与 <VueFlow> 共用同一个 store
 const flowId = `canvas-${Math.random().toString(36).slice(2, 8)}`
-const { project, dimensions, viewport, setCenter } = useVueFlow(flowId)
+const { project, dimensions, viewport, setCenter, connectionStartHandle } = useVueFlow(flowId)
 
 const wrapper = ref<HTMLElement | null>(null)
 const nodes = ref<Node[]>([])
 const edges = ref<Edge[]>([])
+
+/** doc 里没有开始节点时的占位投影；只存在渲染层，不参与 commit */
+const ghostStart = ref<DocNode | null>(null)
+const tip = ref<HoverTip | null>(null)
+let hoverTimer: ReturnType<typeof setTimeout> | null = null
+let closeTimer: ReturnType<typeof setTimeout> | null = null
 
 /** 业务字段的唯一副本；画布上的 nodes/edges 只是渲染投影 */
 const nodeMeta = new Map<string, DocNode>()
@@ -143,13 +184,18 @@ function projectAll(preservePositions: boolean) {
   const { byNode, byEdge } = issueIndex(props.issues)
 
   const nextNodes: Node[] = []
-  for (const meta of nodeMeta.values()) {
+  const pushNode = (
+    meta: DocNode,
+    extra: { ghost?: boolean } = {},
+  ) => {
+    const isStart = meta.kind === 'start'
     const data: NodeCardData = {
       kind: meta.kind,
       title: meta.title ?? '',
       detail: meta.detail ?? '',
       hasBinding: Boolean(meta.binding?.project && meta.binding?.function),
-      hasTarget: meta.id !== entry,
+      hasTarget: !isStart && meta.id !== entry,
+      paramCount: isStart ? (meta.inputs?.length ?? 0) : undefined,
       issues: byNode.get(meta.id) ?? [],
       status: props.status[meta.id] ?? null,
       selected: props.selectedNodeId === meta.id,
@@ -159,11 +205,15 @@ function projectAll(preservePositions: boolean) {
       type: 'diag',
       position: live.has(meta.id) ? { ...live.get(meta.id)! } : { ...meta.position },
       data,
-      draggable: !props.readonly,
-      connectable: !props.readonly,
-      deletable: !props.readonly,
+      draggable: !props.readonly && !extra.ghost,
+      connectable: !props.readonly && !extra.ghost,
+      // 开始节点是流程入口，任何操作都不允许删掉它
+      deletable: !props.readonly && !isStart && !extra.ghost,
     })
   }
+
+  for (const meta of nodeMeta.values()) pushNode(meta)
+  if (ghostStart.value) pushNode(ghostStart.value, { ghost: true })
   nodes.value = nextNodes
 
   const nextEdges: Edge[] = []
@@ -205,6 +255,18 @@ function syncMetas(doc: FlowDoc) {
   for (const edge of doc.edges ?? []) {
     edgeMeta.set(edge.id, { ...edge })
   }
+  // 老流程 / 空文档没有开始节点时补一个占位；已存在就不再补
+  const hasStart = [...nodeMeta.values()].some((node) => node.kind === 'start')
+  ghostStart.value = hasStart
+    ? null
+    : {
+        id: START_GHOST_ID,
+        kind: 'start',
+        title: KIND_META.start.label,
+        detail: '',
+        inputs: [],
+        position: { ...START_POSITION },
+      }
 }
 
 watch(
@@ -212,6 +274,7 @@ watch(
   (doc) => {
     const json = canonical(doc)
     if (json === lastJson) return
+    hideTip()
     syncMetas(doc)
     lastJson = json
     projectAll(false)
@@ -287,15 +350,25 @@ function commit() {
   emit('update:doc', next)
 }
 
-// Vue Flow 的删除键会同时改 nodes/edges，这里按 id 差集回收业务字段
+// Vue Flow 的删除键会同时改 nodes/edges，这里按 id 差集回收业务字段。
+// 开始节点被删时只恢复投影、不改 doc（占位节点同样不在 nodeMeta 里）
 watch(nodes, (list) => {
-  if (list.length === nodeMeta.size) return
   const alive = new Set(list.map((n) => n.id))
   let removed = false
-  for (const id of [...nodeMeta.keys()]) {
+  let blockedStart = false
+  for (const [id, meta] of [...nodeMeta]) {
     if (alive.has(id)) continue
+    if (meta.kind === 'start') {
+      blockedStart = true
+      continue
+    }
     nodeMeta.delete(id)
     removed = true
+  }
+  if (blockedStart) {
+    ElMessage.warning('开始节点是流程入口，不能删除')
+    hideTip()
+    projectAll(true)
   }
   if (!removed) return
   for (const id of [...edgeMeta.keys()]) {
@@ -307,7 +380,6 @@ watch(nodes, (list) => {
 })
 
 watch(edges, (list) => {
-  if (list.length === edgeMeta.size) return
   const alive = new Set(list.map((e) => e.id))
   let removed = false
   for (const id of [...edgeMeta.keys()]) {
@@ -364,8 +436,24 @@ function resolveBranch(connection: Connection, source: DocNode): Branch {
   return hasYes ? 'no' : 'yes'
 }
 
+/** 分支组内自增序号；只有排查节点才分组 */
+function nextOrder(sourceId: string, branch: Branch | undefined): number | undefined {
+  if (!branch) return undefined
+  let max = 0
+  for (const edge of edgeMeta.values()) {
+    if (edge.from !== sourceId || edge.branch !== branch) continue
+    max = Math.max(max, edge.order ?? 0)
+  }
+  return max + 1
+}
+
 function onConnect(connection: Connection) {
   if (props.readonly) return
+  // 开始节点是唯一入口，任何连线都不能指回来
+  if (connection.target === START_GHOST_ID || nodeMeta.get(connection.target)?.kind === 'start') {
+    ElMessage.warning('任何连线都不能指向开始节点')
+    return
+  }
   const source = nodeMeta.get(connection.source)
   const target = nodeMeta.get(connection.target)
   if (!source || !target) return
@@ -376,7 +464,12 @@ function onConnect(connection: Connection) {
     )
     return
   }
+  if (KIND_META[source.kind].branch === 'none') {
+    ElMessage.warning(`「${KIND_META[source.kind].label}」是终止节点，不能再出线`)
+    return
+  }
 
+  // start 只有一条 default 出边，不写 branch；排查按拖拽的出口分组
   const branch = needsBranch(source.kind) ? resolveBranch(connection, source) : undefined
   const duplicated = [...edgeMeta.values()].some(
     (e) => e.from === connection.source && e.to === connection.target && (e.branch ?? null) === (branch ?? null),
@@ -386,16 +479,7 @@ function onConnect(connection: Connection) {
     return
   }
 
-  let order: number | undefined
-  if (branch) {
-    let max = 0
-    for (const edge of edgeMeta.values()) {
-      if (edge.from !== connection.source || edge.branch !== branch) continue
-      max = Math.max(max, edge.order ?? 0)
-    }
-    order = max + 1
-  }
-
+  const order = nextOrder(connection.source, branch)
   const edge: DocEdge = {
     id: nextId('e'),
     from: connection.source,
@@ -408,11 +492,151 @@ function onConnect(connection: Connection) {
   commit()
 }
 
+/* ---------- 端口悬停候选面板 ---------- */
+
+function clearHoverTimer() {
+  if (hoverTimer) clearTimeout(hoverTimer)
+  hoverTimer = null
+}
+
+function clearCloseTimer() {
+  if (closeTimer) clearTimeout(closeTimer)
+  closeTimer = null
+}
+
+function hideTip() {
+  clearHoverTimer()
+  clearCloseTimer()
+  tip.value = null
+}
+
+/** 鼠标离开 handle 后留一点时间，允许移进浮层继续点击 */
+function scheduleClose() {
+  clearCloseTimer()
+  closeTimer = setTimeout(() => {
+    closeTimer = null
+    tip.value = null
+  }, 160)
+}
+
+const handleBranch = (id: string | null): Branch | null => (id === 'yes' || id === 'no' ? id : null)
+
+function openTip(sourceId: string, branch: Branch | null, handle: HTMLElement) {
+  const rect = wrapper.value?.getBoundingClientRect()
+  if (!rect) return
+  const handleRect = handle.getBoundingClientRect()
+  // 浮层挂在画布容器上（绝对定位），不跟着画布缩放
+  tip.value = {
+    sourceId,
+    branch,
+    left: Math.min(Math.max(handleRect.right - rect.left + 12, 8), Math.max(8, rect.width - TIP_WIDTH - 8)),
+    top: Math.min(
+      Math.max(handleRect.top - rect.top - 8, 8),
+      Math.max(8, rect.height - TIP_MAX_HEIGHT - 8),
+    ),
+    clientX: handleRect.left + handleRect.width / 2,
+    clientY: handleRect.top + handleRect.height / 2,
+    kinds: candidateKinds(sourceId),
+  }
+}
+
+/** 用事件委托识别 handle：Handle 渲染成带 data-nodeid / source 类的 div */
+function onCanvasMouseOver(event: MouseEvent) {
+  if (props.readonly) return
+  // 正在拖连线时不要再弹候选面板
+  if (connectionStartHandle.value) return
+  const target = event.target as HTMLElement | null
+  const handle = target?.closest?.('.vue-flow__handle') as HTMLElement | null
+  if (!handle || !handle.classList.contains('source') || !handle.classList.contains('connectable')) return
+  const nodeId = handle.dataset.nodeid
+  if (!nodeId) return
+
+  const branch = handleBranch(handle.dataset.handleid ?? null)
+  if (tip.value && tip.value.sourceId === nodeId && tip.value.branch === branch) {
+    clearCloseTimer()
+    return
+  }
+  clearHoverTimer()
+  clearCloseTimer()
+  hoverTimer = setTimeout(() => {
+    hoverTimer = null
+    openTip(nodeId, branch, handle)
+  }, TIP_DELAY)
+}
+
+function onCanvasMouseOut(event: MouseEvent) {
+  const target = event.target as HTMLElement | null
+  if (!target?.closest?.('.vue-flow__handle')) return
+  const to = event.relatedTarget as HTMLElement | null
+  if (to && typeof to.closest === 'function' && to.closest('.connect-tip')) return
+  clearHoverTimer()
+  if (tip.value) scheduleClose()
+}
+
+const tipTitle = computed(() => {
+  const state = tip.value
+  if (!state) return ''
+  const source = nodeMeta.get(state.sourceId)
+  if (!source) return ''
+  const label = KIND_META[source.kind]?.label ?? ''
+  if (state.branch) return `${label} · ${state.branch === 'yes' ? '是' : '否'}`
+  return label
+})
+
+/** 点候选类型：在 handle 右侧建节点，并立刻连一条边 */
+function tipCreate(kind: NodeKind) {
+  const state = tip.value
+  hideTip()
+  if (!state || props.readonly) return
+  const source = nodeMeta.get(state.sourceId)
+  if (!source) return
+  if (!canConnect(source.kind, kind)) {
+    ElMessage.warning(
+      `「${KIND_META[source.kind].label}」不能连到「${KIND_META[kind].label}」`,
+    )
+    return
+  }
+
+  const rect = wrapper.value?.getBoundingClientRect()
+  const point = project({
+    x: state.clientX - (rect?.left ?? 0),
+    y: state.clientY - (rect?.top ?? 0),
+  })
+  const node: DocNode = {
+    id: nextId('n'),
+    kind,
+    title: defaultTitle(kind),
+    detail: '',
+    position: {
+      x: Math.round(point.x + 48),
+      y: Math.round(point.y - NODE_HEIGHT / 2),
+    },
+  }
+  nodeMeta.set(node.id, node)
+
+  const branch = needsBranch(source.kind) ? (state.branch ?? 'yes') : undefined
+  const order = nextOrder(source.id, branch)
+  const edge: DocEdge = {
+    id: nextId('e'),
+    from: source.id,
+    to: node.id,
+    ...(branch ? { branch } : {}),
+    ...(order ? { order } : {}),
+  }
+  edgeMeta.set(edge.id, edge)
+
+  projectAll(true)
+  emit('select-node', node.id)
+  commit()
+}
+
 function onNodeClick(event: NodeMouseEvent) {
+  hideTip()
   emit('select-node', event.node.id)
 }
 
 function onPaneClick() {
+  hideTip()
   emit('select-node', null)
 }
 
@@ -444,6 +668,11 @@ const minimapColor = (node: GraphNode) => {
   const kind = (node.data as NodeCardData | undefined)?.kind
   return kind ? KIND_META[kind].color : EDGE_COLOR.none
 }
+
+onBeforeUnmount(() => {
+  clearHoverTimer()
+  clearCloseTimer()
+})
 </script>
 
 <template>
@@ -453,6 +682,9 @@ const minimapColor = (node: GraphNode) => {
     :class="{ 'is-readonly': readonly }"
     @dragover="onDragOver"
     @drop="onDrop"
+    @mouseover="onCanvasMouseOver"
+    @mouseout="onCanvasMouseOut"
+    @wheel.passive="hideTip"
   >
     <VueFlow
       :id="flowId"
@@ -472,6 +704,7 @@ const minimapColor = (node: GraphNode) => {
       :zoom-on-scroll="false"
       zoom-activation-key-code="Control"
       @connect="onConnect"
+      @connect-start="hideTip"
       @node-click="onNodeClick"
       @pane-click="onPaneClick"
       @node-drag-stop="commit"
@@ -483,6 +716,31 @@ const minimapColor = (node: GraphNode) => {
         <NodePalette :disabled="readonly" @add="(kind) => addNode(kind, centerPosition())" />
       </Panel>
     </VueFlow>
+
+    <div
+      v-if="tip"
+      class="connect-tip"
+      :style="{ left: `${tip.left}px`, top: `${tip.top}px` }"
+      @mouseenter="clearCloseTimer"
+      @mouseleave="hideTip"
+    >
+      <div class="connect-tip-head">{{ tipTitle }}</div>
+      <div class="connect-tip-list">
+        <button
+          v-for="kind in tip.kinds"
+          :key="kind"
+          type="button"
+          class="connect-tip-item"
+          @click="tipCreate(kind)"
+        >
+          <span class="connect-tip-swatch" :style="{ background: KIND_META[kind].color }" />
+          <span>{{ KIND_META[kind].label }}</span>
+        </button>
+        <div v-if="!tip.kinds.length" class="connect-tip-empty">
+          这里没有可添加的节点类型
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -497,5 +755,64 @@ const minimapColor = (node: GraphNode) => {
 
 .palette-panel {
   margin: 12px;
+}
+
+/* 端口候选面板挂在画布容器上，绝对定位，不受画布缩放影响 */
+.connect-tip {
+  position: absolute;
+  z-index: 12;
+  width: 176px;
+  padding: 6px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  background: var(--el-bg-color-overlay);
+  box-shadow: 0 6px 18px rgb(15 23 42 / 16%);
+  font-size: 12px;
+}
+
+.connect-tip-head {
+  padding: 2px 4px 4px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.connect-tip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 208px;
+  overflow-y: auto;
+}
+
+.connect-tip-item {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.connect-tip-item:hover {
+  border-color: var(--el-border-color);
+  background: var(--el-fill-color-light);
+}
+
+.connect-tip-swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.connect-tip-empty {
+  padding: 6px;
+  font-size: 11px;
+  color: var(--el-text-color-placeholder);
 }
 </style>

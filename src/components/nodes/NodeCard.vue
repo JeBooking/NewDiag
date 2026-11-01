@@ -17,9 +17,18 @@ const props = withDefaults(
 
 const meta = computed(() => KIND_META[props.data.kind])
 const isSelected = computed(() => props.selected || props.data.selected)
+const isStart = computed(() => props.data.kind === 'start')
 const badge = computed(() => (props.data.hasBinding ? '自动' : '人工'))
 const statusClass = computed(() => (props.data.status ? `status-${props.data.status}` : ''))
 const issues = computed(() => props.data.issues ?? [])
+/** start 卡片副标题换成启动参数摘要，其余节点仍显示说明 */
+const subtitle = computed(() => {
+  if (isStart.value) {
+    const count = props.data.paramCount ?? 0
+    return count > 0 ? `${count} 个启动参数` : '未声明参数'
+  }
+  return props.data.detail || '暂无说明'
+})
 const worst = computed(() => {
   if (issues.value.some((issue) => issue.level === 'error')) return 'error'
   return issues.value.length > 0 ? 'warning' : ''
@@ -48,10 +57,10 @@ const worst = computed(() => {
         <span class="dot" />
       </div>
       <div class="title">{{ data.title || '未命名节点' }}</div>
-      <div class="detail">
-        {{ data.detail || '暂无说明' }}
+      <div class="detail" :class="{ 'is-param': isStart }">
+        {{ subtitle }}
       </div>
-      <div class="row-foot">
+      <div v-if="!isStart" class="row-foot">
         <span class="badge" :class="{ 'is-auto': data.hasBinding }">{{ badge }}</span>
       </div>
     </div>
@@ -150,6 +159,14 @@ const worst = computed(() => {
   color: var(--el-text-color-secondary);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+/* 开始节点的副标题是参数摘要，不会换行 */
+.detail.is-param {
+  display: block;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  -webkit-line-clamp: 1;
 }
 
 .row-foot {

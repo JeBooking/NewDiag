@@ -66,6 +66,87 @@ def release_meta(db: Session, release_id: str) -> tuple[str | None, int | None]:
     return release.flow_id, release.version_no
 
 
+def release_inputs(release: Release) -> list[dict]:
+    """发布时冻结的启动表单；老版本的行里是空数组。"""
+    raw = release.inputs_json
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("发布版本 %s 的启动表单无法解析", release.id)
+        return []
+    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+
+def normalize_start_input(raw: Any) -> dict:
+    """启动上下文固定两层：global 全函数可用，scope 按函数名覆盖同名全局参数。
+
+    前端已按两层提交时原样保留；提交扁平对象时按 global 处理（兼容老前端）。
+    调度器按同一口径取值，见 services/scheduler._snapshot_value。
+    """
+    if isinstance(raw, dict) and ("global" in raw or "scope" in raw):
+        glob = raw.get("global")
+        scope = raw.get("scope")
+        return {
+            "global": glob if isinstance(glob, dict) else {},
+            "scope": (
+                {str(key): value for key, value in scope.items() if isinstance(value, dict)}
+                if isinstance(scope, dict)
+                else {}
+            ),
+        }
+    return {"global": raw if isinstance(raw, dict) else {}, "scope": {}}
+
+
+def _blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def apply_defaults(inputs: list[dict], context: dict) -> dict:
+    """把发布时冻结的默认值填进启动上下文，请求里已经给了的字段不动。
+
+    函数局部参数的默认值只写进 scope[函数名]：全局层是所有函数共享的，
+    一旦泄漏，别的同名参数会被悄悄改掉。
+    """
+    glob = context.setdefault("global", {})
+    scope = context.setdefault("scope", {})
+    for item in inputs:
+        default = item.get("default")
+        if default is None:
+            continue
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        if item.get("scope") == "function":
+            bucket = scope.setdefault(str(item.get("function") or ""), {})
+            if not _blank(bucket.get(name)):
+                continue
+            bucket[name] = default
+        elif _blank(glob.get(name)):
+            glob[name] = default
+    return context
+
+
+def missing_inputs(inputs: list[dict], context: dict) -> list[str]:
+    missing: list[str] = []
+    for item in inputs:
+        if not item.get("required", True):
+            continue
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        if item.get("scope") == "function":
+            section = context.get("scope")
+            key = str(item.get("function") or "")
+            values = section.get(key) if isinstance(section, dict) else None
+        else:
+            values = context.get("global")
+        if not isinstance(values, dict) or _blank(values.get(name)):
+            missing.append(name)
+    return missing
+
+
 def instance_payload(db: Session, instance: Instance) -> InstanceDetail:
     tokens = list(
         db.scalars(
@@ -122,6 +203,14 @@ def start_instance(
         if release is None:
             raise HTTPException(status_code=409, detail="流程还没有发布版本")
 
+    frozen = release_inputs(release)
+    context = normalize_start_input(payload.input)
+    apply_defaults(frozen, context)
+    missing = missing_inputs(frozen, context)
+    if missing:
+        # 启动表单是发布时定死的契约，缺参数直接拒绝，不要带着 None 去调业务函数
+        raise HTTPException(status_code=400, detail=f"缺少启动参数：{', '.join(missing)}")
+
     stamp = now_iso()
     instance = Instance(
         id=new_id(),
@@ -135,7 +224,7 @@ def start_instance(
         id=new_id(),
         instance_id=instance.id,
         seq=1,
-        payload_json=json.dumps(payload.input if payload.input is not None else {}, ensure_ascii=False),
+        payload_json=json.dumps(context, ensure_ascii=False),
         source="start",
         params_json="{}",
         captured_at=stamp,
@@ -151,7 +240,7 @@ def start_instance(
         instance.id,
         flow_id,
         release.version_no,
-        brief(payload.input),
+        brief(context),
     )
 
     try:

@@ -8,6 +8,19 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base, new_id, now_iso
 
 
+class Folder(Base):
+    __tablename__ = "folders"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # 自引用外键：删除父目录时子目录由接口先拦（409），数据库不替作者做决定
+    parent_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("folders.id", ondelete="CASCADE"), nullable=True
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[str] = mapped_column(String(32), nullable=False, default=now_iso)
+
+
 class Flow(Base):
     __tablename__ = "flows"
 
@@ -15,6 +28,8 @@ class Flow(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     mode: Mapped[str] = mapped_column(String(16), nullable=False, default="parallel")
+    # 空表示未分类；老库由 init_db 补列，见 db.init_db
+    folder_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     owner_id: Mapped[str] = mapped_column(String(64), nullable=False, default="local")
     current_revision_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     editing_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -49,6 +64,8 @@ class Release(Base):
     version_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     plan_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     signature_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # 发布时冻结的启动表单（ReleaseInput[]）；老库由 init_db 补列，老版本读出空数组
+    inputs_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     published_by: Mapped[str] = mapped_column(String(64), nullable=False, default="local")
     published_at: Mapped[str] = mapped_column(String(32), nullable=False, default=now_iso)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -163,6 +180,8 @@ class Project(Base):
 
 Index("ix_revisions_flow", Revision.flow_id)
 Index("ix_releases_flow", Release.flow_id)
+Index("ix_folders_parent", Folder.parent_id)
+Index("ix_flows_folder", Flow.folder_id)
 Index("ix_instances_flow", Instance.flow_id)
 Index("ix_tokens_instance", Token.instance_id)
 Index("ix_runs_instance", Run.instance_id)

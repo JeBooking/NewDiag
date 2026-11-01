@@ -20,10 +20,11 @@ from app.models import Release, Revision
 from app.schemas import ReleaseCreate, ReleaseDetail, ReleaseSummary, make_release_detail, make_release_summary
 
 try:  # 引擎层缺席时仍允许后端启动
-    from app.services.compiler import ValidationError, compile_doc
+    from app.services.compiler import StartParams, ValidationError, compile_doc
 except ImportError as exc:  # pragma: no cover
     logging.getLogger(__name__).warning("编译器不可用，发布接口将返回 503：%s", exc)
     compile_doc = None  # type: ignore[assignment]
+    StartParams = None  # type: ignore[assignment]
 
     class ValidationError(Exception):  # type: ignore[no-redef]
         issues: list[dict] = []
@@ -39,6 +40,17 @@ except ImportError as exc:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["releases"])
+
+PARAM_TYPES = ("text", "number", "boolean", "datetime")
+# 注解只决定输入控件，不追求类型系统完备：认不出的都当文本框
+ANNOTATION_TO_PARAM = {
+    "date": "datetime",
+    "datetime": "datetime",
+    "int": "number",
+    "float": "number",
+    "bool": "boolean",
+    "boolean": "boolean",
+}
 
 
 def probe_issues(probed: dict) -> list[dict]:
@@ -59,6 +71,124 @@ def probe_issues(probed: dict) -> list[dict]:
             }
         )
     return issues
+
+
+def start_node(doc: dict) -> dict | None:
+    """doc 里唯一的开始节点；多于一个时取第一个并记警告（合法性由校验兜）。"""
+    nodes = [n for n in (doc.get("nodes") or []) if isinstance(n, dict) and n.get("kind") == "start"]
+    if len(nodes) > 1:
+        logger.warning("文档里有 %d 个开始节点，只冻结第一个的启动参数", len(nodes))
+    return nodes[0] if nodes else None
+
+
+def _signature_index(probed: dict) -> tuple[dict[str, list[dict]], dict[str, dict[str, dict]]]:
+    """把 probe_doc 的结果拆成「全局按参数名」和「按函数」两张索引。"""
+    by_name: dict[str, list[dict]] = {}
+    by_function: dict[str, dict[str, dict]] = {}
+    for key, value in (probed or {}).items():
+        if not isinstance(value, list):
+            continue
+        function = str(key).rpartition(":")[2]
+        table = by_function.setdefault(function, {})
+        for param in value:
+            if not isinstance(param, dict):
+                continue
+            name = str(param.get("name") or "")
+            if not name:
+                continue
+            table[name] = param
+            by_name.setdefault(name, []).append(param)
+    return by_name, by_function
+
+
+def _declared_type(value) -> str | None:
+    text = str(value or "").strip()
+    return text if text in PARAM_TYPES else None
+
+
+def _annotation_type(annotation) -> str:
+    text = str(annotation or "").strip().lower().replace(" ", "")
+    # Optional[X] / X | None 只是可空标记，控件类型仍看 X
+    if text.startswith("optional[") and text.endswith("]"):
+        text = text[len("optional[") : -1]
+    if text.endswith("|none"):
+        text = text.rsplit("|", 1)[0]
+    if text.startswith("none|"):
+        text = text.split("|", 1)[1]
+    return ANNOTATION_TO_PARAM.get(text, "text")
+
+
+def freeze_inputs(doc: dict, probed: dict) -> list[dict]:
+    """把开始节点声明的参数与真实签名合成执行页的启动表单。
+
+    参数清单直接用编译器的 StartParams，保证「发布时冻结的表单」和「编译期绑定的来源」
+    是同一份口径（老文档的 snapshotFields 也会被当作全局参数）。
+    冻结的意义：发布后改 doc 或改函数签名，老版本的表单不能跟着变。
+    required 取签名该参数有无默认值；作者在设计期给了默认值就不算必填，执行页预填即可。
+    """
+    specs = StartParams(doc).items
+    if not specs:
+        return []
+
+    declared = _declared_inputs(start_node(doc))
+    by_name, by_function = _signature_index(probed)
+    frozen: list[dict] = []
+    for spec in specs:
+        name = str(spec.get("name") or "")
+        if not name:
+            continue
+        scope = "function" if spec.get("scope") == "function" else "global"
+        function = (str(spec.get("function") or "").strip() or None) if scope == "function" else None
+
+        item = declared.get((scope, function or "", name), {})
+        has_declared = "default" in item
+        declared_default = item.get("default")
+
+        if scope == "function" and function:
+            signature = (by_function.get(function) or {}).get(name)
+            matched = [signature] if signature else []
+        else:
+            matched = by_name.get(name, [])
+
+        if matched:
+            required = any(bool(param.get("required", True)) for param in matched)
+            annotation = next((param.get("type") for param in matched if param.get("type")), None)
+            signature_default = next(
+                (param.get("default") for param in matched if not param.get("required", True)), None
+            )
+        else:
+            # 签名里查不到（函数没被绑定 / 探不到），只能按作者是否给了默认值判断
+            required = True
+            annotation = None
+            signature_default = None
+
+        frozen.append(
+            {
+                "name": name,
+                "scope": scope,
+                "function": function,
+                "type": _declared_type(item.get("type")) or _annotation_type(annotation),
+                "required": required and not has_declared,
+                "default": declared_default if has_declared else signature_default,
+            }
+        )
+    return frozen
+
+
+def _declared_inputs(node: dict | None) -> dict[tuple[str, str, str], dict]:
+    """开始节点原始 inputs，按 (scope, function, name) 索引，供冻结时取作者填的类型与默认值。"""
+    raw = (node or {}).get("inputs")
+    result: dict[tuple[str, str, str], dict] = {}
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        scope = "function" if item.get("scope") == "function" else "global"
+        function = str(item.get("function") or "").strip() if scope == "function" else ""
+        result.setdefault((scope, function, name), item)
+    return result
 
 
 @router.post("/flows/{flow_id}/releases", response_model=ReleaseSummary)
@@ -103,6 +233,9 @@ def publish(flow_id: str, payload: ReleaseCreate, db: Session = Depends(get_db))
         except Exception as exc:  # 签名表缺失不阻塞发布，执行前还会再比对
             logger.warning("签名采集失败（flow=%s）：%s", flow_id, exc)
 
+    # 启动表单在这里定稿：执行页只读它，之后改 doc 或改签名都不会影响已发布版本
+    inputs = freeze_inputs(doc, probed)
+
     release = Release(
         id=new_id(),
         flow_id=flow.id,
@@ -110,6 +243,7 @@ def publish(flow_id: str, payload: ReleaseCreate, db: Session = Depends(get_db))
         version_no=version_no,
         plan_json=json.dumps(plan, ensure_ascii=False),
         signature_json=json.dumps(signature, ensure_ascii=False),
+        inputs_json=json.dumps(inputs, ensure_ascii=False),
         published_by=LOCAL_ACTOR,
         published_at=now_iso(),
         note=payload.note,
@@ -119,11 +253,12 @@ def publish(flow_id: str, payload: ReleaseCreate, db: Session = Depends(get_db))
     db.commit()
     db.refresh(release)
     logger.info(
-        "发布 flow=%s 版本 v%s：%d 步，%d 个函数签名，note=%s",
+        "发布 flow=%s 版本 v%s：%d 步，%d 个函数签名，%d 个启动参数，note=%s",
         flow_id,
         version_no,
         len(plan.get("steps") or {}),
         len(signature),
+        len(inputs),
         (payload.note or "")[:60],
     )
     return make_release_summary(release)

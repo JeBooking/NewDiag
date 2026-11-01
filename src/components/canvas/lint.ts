@@ -101,31 +101,34 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
     return node ? displayName(node) : id
   }
 
-  // 1. 入口唯一且必须是排查节点
+  // 1. 入口唯一：有 start 时它就是唯一入口，否则沿用「入度为 0 的排查节点」
+  const startNode = nodes.find((n) => n.kind === 'start')
   const entries = nodes.filter((n) => (incoming.get(n.id)?.length ?? 0) === 0)
-  if (entries.length === 0) {
-    issues.push({
-      id: 'doc:entry-missing',
-      level: 'error',
-      message: '没有入口节点：所有节点都有入线，请检查是否形成环',
-    })
-  } else if (entries.length > 1) {
-    const names = entries.map(displayName).join('、')
-    for (const node of entries) {
+  if (!startNode) {
+    if (entries.length === 0) {
       issues.push({
-        id: `node:${node.id}:entry-multiple`,
+        id: 'doc:entry-missing',
         level: 'error',
-        message: `存在 ${entries.length} 个入口节点（${names}），应只保留一个`,
-        nodeId: node.id,
+        message: '没有入口节点：所有节点都有入线，请检查是否形成环',
+      })
+    } else if (entries.length > 1) {
+      const names = entries.map(displayName).join('、')
+      for (const node of entries) {
+        issues.push({
+          id: `node:${node.id}:entry-multiple`,
+          level: 'error',
+          message: `存在 ${entries.length} 个入口节点（${names}），应只保留一个`,
+          nodeId: node.id,
+        })
+      }
+    } else if (!isInvestigation(entries[0])) {
+      issues.push({
+        id: `node:${entries[0].id}:entry-kind`,
+        level: 'error',
+        message: `入口节点「${displayName(entries[0])}」必须是排查节点`,
+        nodeId: entries[0].id,
       })
     }
-  } else if (!isInvestigation(entries[0])) {
-    issues.push({
-      id: `node:${entries[0].id}:entry-kind`,
-      level: 'error',
-      message: `入口节点「${displayName(entries[0])}」必须是排查节点`,
-      nodeId: entries[0].id,
-    })
   }
 
   // 2. 连接必须符合矩阵
@@ -208,7 +211,7 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
         nodeId: node.id,
       })
     }
-    if (!node.detail?.trim()) {
+    if (!node.detail?.trim() && node.kind !== 'start') {
       issues.push({
         id: `node:${node.id}:detail`,
         level: 'error',

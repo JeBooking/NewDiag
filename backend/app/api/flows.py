@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.api import folders
 from app.db import get_db, new_id, now_iso
-from app.models import Flow, Instance, Release, Revision
+from app.models import Flow, Folder, Instance, Release, Revision
 from app.schemas import (
     CommitResult,
     FlowCreate,
@@ -18,6 +19,7 @@ from app.schemas import (
     FlowPatch,
     FlowSummary,
     ImportFlowIn,
+    ProbeIn,
     SavedAt,
     WorkingDocIn,
     make_flow_detail,
@@ -34,10 +36,19 @@ except ImportError as exc:  # pragma: no cover
         issues: list[dict] = []
 
 
+try:  # 设计期探测：仅开始节点面板展示入参用，缺席时该接口 503
+    from app.services.signatures import probe_doc
+except ImportError as exc:  # pragma: no cover
+    logging.getLogger(__name__).warning("签名探测不可用，probe 接口将返回 503：%s", exc)
+    probe_doc = None  # type: ignore[assignment]
+
+
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["flows"])
 
 LOCAL_ACTOR = "local"
+# 未分类的过滤值：root 是约定值，none/null 兼容前端直接传字面量（目录 id 是 16 位 hex，不会撞）
+UNCATEGORIZED_ALIASES = frozenset({"root", "none", "null"})
 
 
 def empty_doc(name: str, mode: str = "parallel") -> dict:
@@ -180,8 +191,24 @@ def discard_working(db: Session, flow: Flow, working: Revision, *, admin: bool =
 
 
 @router.get("/flows", response_model=list[FlowSummary])
-def list_flows(db: Session = Depends(get_db)) -> list[FlowSummary]:
-    flows = list(db.scalars(select(Flow).order_by(Flow.updated_at.desc())))
+def list_flows(
+    folder_id: str | None = Query(default=None, alias="folderId"),
+    search: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> list[FlowSummary]:
+    """folderId 传 root 表示未分类，传具体 id 只看该目录（不含子目录），不传看全部。"""
+    statement = select(Flow)
+    if folder_id:
+        if folder_id in UNCATEGORIZED_ALIASES:
+            statement = statement.where(Flow.folder_id.is_(None))
+        else:
+            statement = statement.where(Flow.folder_id == folder_id)
+    term = (search or "").strip()
+    if term:
+        pattern = f"%{term}%"
+        statement = statement.where(or_(Flow.name.ilike(pattern), Flow.description.ilike(pattern)))
+
+    flows = list(db.scalars(statement.order_by(Flow.updated_at.desc())))
     items = []
     for flow in flows:
         items.append(
@@ -195,8 +222,14 @@ def list_flows(db: Session = Depends(get_db)) -> list[FlowSummary]:
     return items
 
 
+def require_folder(db: Session, folder_id: str | None) -> None:
+    if folder_id is not None and db.get(Folder, folder_id) is None:
+        raise HTTPException(status_code=404, detail="目录不存在")
+
+
 @router.post("/flows", response_model=FlowDetail)
 def create_flow(payload: FlowCreate, db: Session = Depends(get_db)) -> FlowDetail:
+    require_folder(db, payload.folder_id)
     stamp = now_iso()
     doc = empty_doc(payload.name, payload.mode)
     flow = Flow(
@@ -204,6 +237,7 @@ def create_flow(payload: FlowCreate, db: Session = Depends(get_db)) -> FlowDetai
         name=payload.name,
         description=payload.description or "",
         mode=payload.mode,
+        folder_id=payload.folder_id,
         owner_id=LOCAL_ACTOR,
         created_at=stamp,
         updated_at=stamp,
@@ -289,6 +323,10 @@ def patch_flow(flow_id: str, payload: FlowPatch, db: Session = Depends(get_db)) 
             doc = revision_doc(working)
             doc["mode"] = payload.mode
             working.json = json.dumps(doc, ensure_ascii=False)
+    # 显式传 folderId: null 才是「移到未分类」，不传表示不动
+    if "folder_id" in payload.model_fields_set:
+        require_folder(db, payload.folder_id)
+        flow.folder_id = payload.folder_id
     flow.updated_at = now_iso()
     db.commit()
     db.refresh(flow)
@@ -369,3 +407,25 @@ def admin_discard(flow_id: str, db: Session = Depends(get_db)) -> FlowDetail:
     flow = get_flow_or_404(db, flow_id)
     working = require_lock(db, flow, admin=True)
     return discard_working(db, flow, working, admin=True)
+
+
+@router.post("/flows/{flow_id}/probe")
+def probe_flow(flow_id: str, payload: ProbeIn, db: Session = Depends(get_db)) -> dict:
+    """设计期探测：返回 {工程:函数: 参数表}，开始节点的入参面板靠它展示真实签名。
+
+    探测的是 body 里的草稿 doc，不落盘；工程路径不可导入时该函数值为 {"error": …}。
+    """
+    get_flow_or_404(db, flow_id)
+    if probe_doc is None:
+        raise HTTPException(status_code=503, detail="编译引擎尚未就绪")
+    try:
+        return probe_doc(payload.doc) or {}
+    except Exception as exc:  # 探针本身异常也不能让设计页 500
+        logger.warning("探测失败（flow=%s）：%s", flow_id, exc)
+        raise HTTPException(
+            status_code=422, detail=[{"level": "error", "message": f"接口探测失败：{exc}"}]
+        ) from exc
+
+
+# 目录接口是本模块的从属路由，由 main 统一挂在 /api 下，避免 main 再引一个模块
+router.include_router(folders.router)

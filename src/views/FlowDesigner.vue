@@ -110,12 +110,25 @@ function deleteNode(): void {
   const doc = editor.doc
   const node = editor.selectedNode
   if (!doc || !node) return
+  if (node.kind === 'start') {
+    ElMessage.warning('开始节点是流程入口，不能删除')
+    return
+  }
   editor.applyDoc({
     ...doc,
     nodes: doc.nodes.filter((item) => item.id !== node.id),
     edges: doc.edges.filter((edge) => edge.from !== node.id && edge.to !== node.id),
   })
   editor.selectedNodeId = null
+}
+
+/** 执行只认发布版本，没有版本时给出明确入口而不是让用户点进空页面 */
+function startRun(): void {
+  if ((editor.flow?.releases?.length ?? 0) === 0) {
+    ElMessage.warning('还没有发布版本，先发布再执行')
+    return
+  }
+  router.push({ name: 'flow-run', params: { id: flowId.value } })
 }
 
 function patchSnapshotFields(fields: string[]): void {
@@ -231,6 +244,7 @@ onBeforeRouteLeave(async () => {
         <el-tag v-else-if="editor.flow" size="small" type="info" effect="plain">已同步</el-tag>
       </div>
       <div class="right">
+        <el-button @click="startRun">开始执行</el-button>
         <el-button :disabled="editor.readonly" :loading="editor.saving" @click="save()">
           保存
         </el-button>
@@ -308,6 +322,8 @@ onBeforeRouteLeave(async () => {
           :successors="successors"
           :mode="editor.doc?.mode ?? 'parallel'"
           :readonly="editor.readonly"
+          :flow-id="editor.flow?.id"
+          :doc="editor.doc ?? undefined"
           @update="patchNode"
           @delete="deleteNode"
           @reorder="reorderEdge"

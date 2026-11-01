@@ -358,7 +358,9 @@ class Scheduler:
         db.flush()
 
     def _run_call(self, db, instance, plan: dict, token, step: dict, call: dict) -> None:
-        args, error = self._eval_args(db, instance, token, call.get("args") or {})
+        args, error = self._eval_args(
+            db, instance, token, call.get("args") or {}, str(call.get("function") or "")
+        )
         started = now_iso()
         t0 = time.perf_counter()
         if error is not None:
@@ -486,7 +488,9 @@ class Scheduler:
                 return None, (ERR_EXCEPTION, str(exc), attempts)
         return None, (ERR_TIMEOUT, "调用超时", attempts)
 
-    def _eval_args(self, db, instance, token, specs: dict) -> tuple[dict, str | None]:
+    def _eval_args(
+        self, db, instance, token, specs: dict, function: str = ""
+    ) -> tuple[dict, str | None]:
         snapshot = self._snapshot_payload(db, instance)
         args: dict = {}
         for name, expr in specs.items():
@@ -495,7 +499,7 @@ class Scheduler:
             if "lit" in expr:
                 args[name] = expr["lit"]
             elif "snapshot" in expr:
-                found, value = _lookup(snapshot, str(expr["snapshot"]))
+                found, value = _snapshot_value(snapshot, function, str(expr["snapshot"]))
                 if not found:
                     return {}, f"快照里找不到字段 {expr['snapshot']}"
                 args[name] = value
@@ -996,6 +1000,30 @@ def _dumps(value):
     if value is None:
         return None
     return json.dumps(value, ensure_ascii=False, default=repr)
+
+
+def _snapshot_value(snapshot: dict, function: str, name: str) -> tuple[bool, object]:
+    """启动参数取值：该函数的作用域 > 全局 > 旧扁平载荷。
+
+    新快照形如 {"global": {...}, "scope": {"judge_voltage": {...}}}，
+    旧快照是扁平 {"voltage": 12}，两种都要能取到。
+    """
+    scope = snapshot.get("scope")
+    if function and isinstance(scope, dict):
+        section = scope.get(function)
+        if isinstance(section, dict) and name in section:
+            return True, section[name]
+
+    globals_ = snapshot.get("global")
+    if isinstance(globals_, dict):
+        found, value = _lookup(globals_, name)
+        if found:
+            return True, value
+
+    layered = isinstance(globals_, dict) or isinstance(scope, dict)
+    if layered and name.split(".", 1)[0] in ("global", "scope"):
+        return False, None  # 分层载荷里这两层不是字段名，避免整层被打包传进函数
+    return _lookup(snapshot, name)
 
 
 def _lookup(root, path: str) -> tuple[bool, object]:

@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -77,6 +77,30 @@ def init_db() -> None:
     from app import models  # noqa: F401  建表前必须加载全部模型
 
     Base.metadata.create_all(engine)
+    _migrate()
+
+
+def _migrate() -> None:
+    """补齐老库缺少的列。
+
+    create_all 只建缺失的表，已有表不会加列；所以升级到带目录 / 启动表单的版本后，
+    老库启动时必须自己 ALTER，否则查询会直接报 no such column。
+    """
+    expected = {
+        "flows": {"folder_id": "VARCHAR(32)"},
+        "releases": {"inputs_json": "TEXT NOT NULL DEFAULT '[]'"},
+    }
+    with engine.begin() as conn:
+        tables = set(inspect(conn).get_table_names())
+        for table, columns in expected.items():
+            if table not in tables:
+                continue
+            existing = {str(row[1]) for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            for column, ddl in columns.items():
+                if column in existing:
+                    continue
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+                logger.info("迁移：%s 增加列 %s", table, column)
 
 
 def get_db():

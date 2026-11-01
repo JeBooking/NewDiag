@@ -11,10 +11,11 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from app.models import Flow, Instance, Project, Release, Review, Run, Snapshot, Token
+from app.models import Flow, Folder, Instance, Project, Release, Review, Run, Snapshot, Token
 
 FlowMode = Literal["parallel", "serial"]
 NodeKind = Literal[
+    "start",
     "investigation",
     "investigationAction",
     "conclusion",
@@ -24,6 +25,7 @@ NodeKind = Literal[
     "deepDiagnosis",
     "jump",
 ]
+ParamType = Literal["text", "number", "boolean", "datetime"]
 Branch = Literal["yes", "no"]
 InstanceStatus = Literal["running", "waiting", "paused", "success", "failed", "escalated"]
 TokenStatus = Literal["queued", "running", "waiting", "done", "failed", "abandoned"]
@@ -61,6 +63,8 @@ class FlowSummary(ApiModel):
     description: str = ""
     mode: FlowMode = "parallel"
     updated_at: str
+    # 空表示未分类
+    folder_id: str | None = None
     editing_by: str | None = None
     release_count: int = 0
     last_run_status: InstanceStatus | None = None
@@ -78,12 +82,36 @@ class FlowCreate(ApiModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = ""
     mode: FlowMode = "parallel"
+    folder_id: str | None = None
 
 
 class FlowPatch(ApiModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
     mode: FlowMode | None = None
+    # 显式传 null 表示移到未分类，与「不传」区分靠 model_fields_set
+    folder_id: str | None = None
+
+
+# ---------------------------------------------------------------- 目录
+
+
+class FolderOut(ApiModel):
+    id: str
+    name: str
+    parent_id: str | None = None
+    created_at: str
+    flow_count: int = 0
+
+
+class FolderCreate(ApiModel):
+    name: str = Field(min_length=1, max_length=200)
+    parent_id: str | None = None
+
+
+class FolderPatch(ApiModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    parent_id: str | None = None
 
 
 class WorkingDocIn(ApiModel):
@@ -122,17 +150,35 @@ class ReleaseSummary(ApiModel):
     note: str | None = None
 
 
+class ReleaseInput(ApiModel):
+    """发布时冻结的启动表单字段；执行页只读它，不再看当前代码。"""
+
+    name: str
+    scope: Literal["global", "function"] = "global"
+    function: str | None = None
+    type: ParamType = "text"
+    required: bool = True
+    default: Any = None
+
+
 class ReleaseDetail(ReleaseSummary):
     flow_id: str
     revision_id: str
     plan: dict[str, Any] = Field(default_factory=dict)
     signature: dict[str, str] = Field(default_factory=dict)
+    inputs: list[ReleaseInput] = Field(default_factory=list)
     # 执行页用发布时的 doc 渲染只读画布，避免流程后来被改过导致图与步骤不一致
     doc: dict[str, Any] | None = None
 
 
 class ReleaseCreate(ApiModel):
     note: str | None = None
+
+
+class ProbeIn(ApiModel):
+    """设计期探测：body 带草稿 doc，返回每个绑定函数的真实入参。"""
+
+    doc: dict[str, Any]
 
 
 # ---------------------------------------------------------------- 实例
@@ -295,6 +341,7 @@ def make_flow_summary(
         description=flow.description or "",
         mode=flow.mode,  # type: ignore[arg-type]
         updated_at=flow.updated_at,
+        folder_id=flow.folder_id,
         editing_by=flow.editing_by,
         release_count=release_count,
         last_run_status=last_run_status,  # type: ignore[arg-type]
@@ -338,7 +385,22 @@ def make_release_detail(release: Release, doc: dict[str, Any] | None = None) -> 
         revision_id=release.revision_id,
         plan=_loads(release.plan_json),
         signature=_loads(release.signature_json),
+        inputs=[
+            ReleaseInput.model_validate(item)
+            for item in _loads(release.inputs_json, [])
+            if isinstance(item, dict)
+        ],
         doc=doc,
+    )
+
+
+def make_folder(folder: Folder, flow_count: int = 0) -> FolderOut:
+    return FolderOut(
+        id=folder.id,
+        name=folder.name,
+        parent_id=folder.parent_id,
+        created_at=folder.created_at,
+        flow_count=flow_count,
     )
 
 

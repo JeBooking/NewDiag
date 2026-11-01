@@ -36,8 +36,15 @@ DOC = {
     'format': 1,
     'name': '冷却系统诊断（串行）',
     'mode': 'serial',
-    'snapshotFields': ['temperature'],
     'nodes': [
+        {
+            'id': 'start',
+            'kind': 'start',
+            'title': '开始',
+            'detail': '',
+            'inputs': [{'name': 'temperature', 'scope': 'global', 'type': 'number'}],
+            'position': {'x': 60, 'y': 220},
+        },
         {
             'id': 'n1',
             'kind': 'investigation',
@@ -65,6 +72,7 @@ DOC = {
         },
     ],
     'edges': [
+        {'id': 'e0', 'from': 'start', 'to': 'n1', 'order': 1},
         {'id': 'e1', 'from': 'n1', 'to': 'n2', 'branch': 'yes', 'order': 1},
         {'id': 'e2', 'from': 'n2', 'to': 'n3'},
         {'id': 'e3', 'from': 'n3', 'to': 'n4'},

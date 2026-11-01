@@ -50,6 +50,19 @@ class FakeSessions:
 # ---------------------------------------------------------------- 文档
 
 
+def _start(inputs: list[dict] | None = None) -> dict:
+    node = {
+        "id": "start",
+        "kind": "start",
+        "title": "开始",
+        "detail": "",
+        "position": {"x": 0, "y": 0},
+    }
+    if inputs is not None:
+        node["inputs"] = inputs
+    return node
+
+
 def _node(nid, kind, title, code: bool = False) -> dict:
     node = {
         "id": nid,
@@ -72,6 +85,7 @@ def straight_doc(mode: str = "parallel") -> dict:
         "name": "直线流程",
         "mode": mode,
         "nodes": [
+            _start(),
             _node("n1", "investigation", "查母线电压", code=True),
             _node("n3", "investigation", "人工确认现象"),
             _node("c1", "conclusion", "电压不足"),
@@ -80,6 +94,7 @@ def straight_doc(mode: str = "parallel") -> dict:
             _node("e1", "escalation", "上升"),
         ],
         "edges": [
+            {"id": "s0", "from": "start", "to": "n1", "order": 1},
             {"id": "x1", "from": "n1", "to": "n3", "branch": "yes", "order": 1},
             {"id": "x2", "from": "n1", "to": "e1", "branch": "no", "order": 2},
             {"id": "x3", "from": "n3", "to": "c1", "branch": "yes", "order": 1},
@@ -97,6 +112,7 @@ def branched_doc() -> dict:
         "name": "两条思路",
         "mode": "serial",
         "nodes": [
+            _start(),
             _node("n1", "investigation", "入口排查", code=True),
             _node("m1", "investigation", "思路一判断"),
             _node("c1", "conclusion", "思路一结论"),
@@ -109,6 +125,7 @@ def branched_doc() -> dict:
             _node("e1", "escalation", "上升"),
         ],
         "edges": [
+            {"id": "s0", "from": "start", "to": "n1", "order": 1},
             {"id": "a1", "from": "n1", "to": "m1", "branch": "yes", "order": 1},
             {"id": "a2", "from": "n1", "to": "m2", "branch": "yes", "order": 2},
             {"id": "a3", "from": "n1", "to": "e1", "branch": "no", "order": 3},
@@ -138,7 +155,7 @@ def env(tmp_path):
     db.engine.dispose()
 
 
-def seed(factory, doc: dict, mode: str | None = None) -> dict:
+def seed(factory, doc: dict, mode: str | None = None, snapshot: dict | None = None) -> dict:
     plan = compile_doc(doc, "f1", 1)
     mode = mode or doc.get("mode") or "parallel"
     session = factory()
@@ -176,7 +193,11 @@ def seed(factory, doc: dict, mode: str | None = None) -> dict:
         )
         session.add(
             models.Snapshot(
-                id="s1", instance_id="i1", seq=1, payload_json="{}", params_json="{}"
+                id="s1",
+                instance_id="i1",
+                seq=1,
+                payload_json=json.dumps(snapshot or {}, ensure_ascii=False),
+                params_json="{}",
             )
         )
         session.add(
@@ -332,6 +353,7 @@ def test_success_beats_escalation(env):
         "name": "双支路",
         "mode": "parallel",
         "nodes": [
+            _start(),
             _node("n1", "investigation", "入口", code=True),
             _node("a1", "investigation", "主路径判断"),
             _node("b1", "investigation", "备路径判断"),
@@ -341,6 +363,7 @@ def test_success_beats_escalation(env):
             _node("e1", "escalation", "上升"),
         ],
         "edges": [
+            {"id": "st0", "from": "start", "to": "n1", "order": 1},
             {"id": "s1", "from": "n1", "to": "a1", "branch": "yes", "order": 1},
             {"id": "s2", "from": "n1", "to": "b1", "branch": "yes", "order": 2},
             {"id": "s3", "from": "n1", "to": "e1", "branch": "no", "order": 3},
@@ -484,12 +507,14 @@ def test_rollback_rejected_when_other_path_active(env):
         "name": "并行两支",
         "mode": "parallel",
         "nodes": [
+            _start(),
             _node("n1", "investigation", "入口", code=True),
             _node("t1", "investigation", "自动支路", code=True),
             _node("t2", "investigation", "人工支路"),
             _node("e1", "escalation", "上升"),
         ],
         "edges": [
+            {"id": "st0", "from": "start", "to": "n1", "order": 1},
             {"id": "b1", "from": "n1", "to": "t1", "branch": "yes", "order": 1},
             {"id": "b2", "from": "n1", "to": "t2", "branch": "yes", "order": 2},
             {"id": "b3", "from": "n1", "to": "e1", "branch": "no", "order": 3},
@@ -572,3 +597,112 @@ def test_failed_path_does_not_block_other_tokens(env):
     assert token_of(env.factory, "m2").status == "done"
     assert token_of(env.factory, "n3").status == "waiting"
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="回到等待")
+
+
+# ---------------------------------------------------------------- 开始节点
+
+
+def fanout_doc(mode: str) -> dict:
+    """开始节点两条出线，分别接一个人工排查。"""
+    return {
+        "format": 1,
+        "name": "开始分叉",
+        "mode": mode,
+        "nodes": [
+            _start(),
+            _node("a1", "investigation", "第一条排查"),
+            _node("a2", "investigation", "第二条排查"),
+            _node("e1", "escalation", "上升一"),
+            _node("e2", "escalation", "上升二"),
+        ],
+        "edges": [
+            {"id": "f1", "from": "start", "to": "a1", "order": 1},
+            {"id": "f2", "from": "start", "to": "a2", "order": 2},
+            {"id": "f3", "from": "a1", "to": "e1", "branch": "yes", "order": 1},
+            {"id": "f4", "from": "a2", "to": "e2", "branch": "yes", "order": 1},
+        ],
+    }
+
+
+def test_start_fans_out_in_parallel(env):
+    seed(env.factory, fanout_doc("parallel"))
+    env.scheduler.start("i1")
+
+    wait_for(
+        env.factory,
+        lambda: len([r for r in pending_reviews(env.factory) if r.node_id in ("a1", "a2")]) == 2,
+        label="两条并行待办",
+    )
+
+    spawned = [t for t in tokens(env.factory) if t.node_id in ("a1", "a2")]
+    assert len(spawned) == 2
+    assert all(t.status == "waiting" for t in spawned)
+    assert token_of(env.factory, "start").status == "done"
+    assert runs(env.factory, "start") == []  # 开始节点不执行代码，不落 run
+    assert status_of(env.factory) == "waiting"
+
+
+def test_start_fans_out_in_serial(env):
+    seed(env.factory, fanout_doc("serial"))
+    env.scheduler.start("i1")
+
+    wait_for(
+        env.factory,
+        lambda: any(r.node_id == "a1" for r in pending_reviews(env.factory)),
+        label="队首先跑",
+    )
+
+    assert token_of(env.factory, "a1").status == "waiting"
+    assert token_of(env.factory, "a2").status == "queued"  # 串行只跑队首
+    assert len(pending_reviews(env.factory)) == 1
+
+
+def bound_doc(params: dict | None = None) -> dict:
+    """单个绑定节点，参数走启动参数快照。"""
+    doc = straight_doc()
+    node = next(item for item in doc["nodes"] if item["id"] == "n1")
+    node["params"] = params or {"voltage": {"snapshot": "voltage"}}
+    return doc
+
+
+def test_snapshot_reads_layered_payload(env):
+    seed(
+        env.factory,
+        bound_doc(),
+        snapshot={"global": {"voltage": 12}, "scope": {"judge_voltage": {"voltage": 99}}},
+    )
+    env.scheduler.start("i1")
+
+    wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工待办")
+    # 函数局部参数优先于全局
+    assert env.sessions.calls[0]["args"] == {"voltage": 99}
+
+
+def test_snapshot_falls_back_to_global(env):
+    seed(
+        env.factory,
+        bound_doc(),
+        snapshot={"global": {"voltage": 12}, "scope": {"other_function": {"voltage": 99}}},
+    )
+    env.scheduler.start("i1")
+
+    wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工待办")
+    # 别的函数的作用域不可见
+    assert env.sessions.calls[0]["args"] == {"voltage": 12}
+
+
+def test_snapshot_reads_legacy_flat_payload(env):
+    seed(env.factory, bound_doc(), snapshot={"voltage": 12})
+    env.scheduler.start("i1")
+
+    wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工待办")
+    assert env.sessions.calls[0]["args"] == {"voltage": 12}
+
+
+def test_snapshot_missing_field_fails_argument(env):
+    seed(env.factory, bound_doc(), snapshot={"global": {"current": 3}})
+    env.scheduler.start("i1")
+
+    wait_for(env.factory, lambda: status_of(env.factory) == "failed", label="参数失败")
+    failed = runs(env.factory, "n1")
+    assert failed and "execution/argument" in failed[0].error

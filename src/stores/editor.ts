@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import type { FlowDetail, FlowDoc, FlowMode, LintIssue } from '@/domain/types'
+import type { DocEdge, DocNode, FlowDetail, FlowDoc, FlowMode, LintIssue } from '@/domain/types'
 import { CURRENT_USER, isApiError } from '@/services/api'
 import {
   checkoutFlow,
@@ -23,6 +23,57 @@ function coerceDoc(raw: unknown, name: string, mode: FlowMode): FlowDoc {
     mode: record.mode === 'serial' ? 'serial' : record.mode === 'parallel' ? 'parallel' : mode,
     nodes: Array.isArray(record.nodes) ? record.nodes : [],
     edges: Array.isArray(record.edges) ? record.edges : [],
+  }
+}
+
+/**
+ * 旧文档没有开始节点时在内存里补一个：启动参数需要一个稳定落点。
+ * 同时按迁移脚本的口径把它连到所有根节点，否则发布时会报「开始节点至少需要一条出线」。
+ * 只改内存、标记 dirty，等用户保存时才落库。
+ */
+function ensureStartNode(source: FlowDoc): { doc: FlowDoc; added: boolean } {
+  if (source.nodes.some((node) => node.kind === 'start')) {
+    return { doc: source, added: false }
+  }
+  let startId = 'start'
+  let seq = 1
+  while (source.nodes.some((node) => node.id === startId)) {
+    startId = `start${seq}`
+    seq += 1
+  }
+  const xs = source.nodes.map((node) => node.position.x)
+  const start: DocNode = {
+    id: startId,
+    kind: 'start',
+    title: '开始',
+    detail: '',
+    // 固定在左上角节点面板下方，避免自动补出来的入口被浮层压住
+    position: {
+      x: xs.length ? Math.max(60, Math.min(...xs) - 260) : 60,
+      y: 220,
+    },
+  }
+
+  const incoming = new Set(source.edges.map((edge) => edge.to))
+  const roots = source.nodes
+    .filter((node) => !incoming.has(node.id))
+    .map((node) => node.id)
+    .sort()
+  const usedEdgeIds = new Set(source.edges.map((edge) => edge.id))
+  const edges: DocEdge[] = roots.map((to, index) => {
+    let edgeId = `e-${startId}-${index + 1}`
+    let suffix = 1
+    while (usedEdgeIds.has(edgeId)) {
+      edgeId = `e-${startId}-${index + 1}-${suffix}`
+      suffix += 1
+    }
+    usedEdgeIds.add(edgeId)
+    return { id: edgeId, from: startId, to, order: index + 1 }
+  })
+
+  return {
+    doc: { ...source, nodes: [start, ...source.nodes], edges: [...source.edges, ...edges] },
+    added: true,
   }
 }
 
@@ -86,7 +137,9 @@ export const useEditorStore = defineStore('editor', () => {
         readonly.value = detail.editingBy !== CURRENT_USER
       }
       flow.value = detail
-      doc.value = coerceDoc(detail.doc, detail.name, detail.mode)
+      const prepared = ensureStartNode(coerceDoc(detail.doc, detail.name, detail.mode))
+      doc.value = prepared.doc
+      if (prepared.added && !readonly.value) dirty.value = true
     } finally {
       loading.value = false
     }
@@ -94,7 +147,17 @@ export const useEditorStore = defineStore('editor', () => {
 
   function applyDoc(next: FlowDoc): void {
     if (!doc.value) return
-    doc.value = next
+    // 画布的 Delete 键也能删节点，开始节点是入口，丢了就补回来
+    const start = doc.value.nodes.find((node) => node.kind === 'start')
+    let resolved = next
+    if (start && !next.nodes.some((node) => node.kind === 'start')) {
+      resolved = {
+        ...next,
+        nodes: [...next.nodes, start],
+        edges: next.edges.filter((edge) => edge.from !== start.id && edge.to !== start.id),
+      }
+    }
+    doc.value = resolved
     if (readonly.value) return
     dirty.value = true
     scheduleAutosave()

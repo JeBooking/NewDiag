@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import AppHeader from '@/components/layout/AppHeader.vue'
+import ReleaseInputForm from '@/components/panels/ReleaseInputForm.vue'
 import type { FlowDetail, ReleaseSummary } from '@/domain/types'
 import { errorText } from '@/services/api'
 import {
@@ -29,6 +30,12 @@ const planDetail = ref<ReleaseDetail | null>(null)
 
 const startVisible = ref(false)
 const startTarget = ref<ReleaseSummary | null>(null)
+const startDetail = ref<ReleaseDetail | null>(null)
+const startLoading = ref(false)
+const startLoadError = ref<string | null>(null)
+const startMissing = ref<string[]>([])
+const startFormRef = ref<InstanceType<typeof ReleaseInputForm> | null>(null)
+/** 老版本没有冻结启动输入时退回 JSON 输入 */
 const startInput = ref('')
 const starting = ref(false)
 
@@ -69,28 +76,61 @@ async function openPlan(release: ReleaseSummary): Promise<void> {
   }
 }
 
+/** 只走发布版本冻结的输入，老版本 inputs 为空时退回 JSON */
+const startHasInputs = computed(() => (startDetail.value?.inputs?.length ?? 0) > 0)
+
+async function loadStartDetail(release: ReleaseSummary): Promise<void> {
+  startLoading.value = true
+  startLoadError.value = null
+  try {
+    startDetail.value = await getRelease(release.id)
+  } catch (error) {
+    startDetail.value = null
+    startLoadError.value = errorText(error, '读取启动参数失败')
+  } finally {
+    startLoading.value = false
+  }
+}
+
 function openStart(release: ReleaseSummary): void {
   startTarget.value = release
+  startDetail.value = null
+  startMissing.value = []
   startInput.value = ''
   startVisible.value = true
+  void loadStartDetail(release)
+}
+
+function parseStartInput(): Record<string, unknown> | null {
+  const raw = startInput.value.trim()
+  if (!raw) return {}
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      ElMessage.warning('启动输入必须是 JSON 对象')
+      return null
+    }
+    return parsed as Record<string, unknown>
+  } catch {
+    ElMessage.warning('启动输入不是合法的 JSON')
+    return null
+  }
 }
 
 async function submitStart(): Promise<void> {
   if (!startTarget.value) return
-  let input: Record<string, unknown> = {}
-  const raw = startInput.value.trim()
-  if (raw) {
-    try {
-      const parsed: unknown = JSON.parse(raw)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        ElMessage.warning('启动输入必须是 JSON 对象')
-        return
-      }
-      input = parsed as Record<string, unknown>
-    } catch {
-      ElMessage.warning('启动输入不是合法的 JSON')
+  let input: Record<string, unknown>
+  if (startHasInputs.value) {
+    const missing = startFormRef.value?.missing() ?? []
+    if (missing.length > 0) {
+      ElMessage.warning(`请填写：${missing.join('、')}`)
       return
     }
+    input = startFormRef.value?.build() ?? { global: {}, scope: {} }
+  } else {
+    const parsed = parseStartInput()
+    if (parsed === null) return
+    input = parsed
   }
   starting.value = true
   try {
@@ -183,22 +223,56 @@ const planJson = computed(() =>
       </div>
     </el-drawer>
 
-    <el-dialog v-model="startVisible" title="启动诊断" width="520px">
+    <el-dialog v-model="startVisible" title="启动诊断" width="560px">
       <div class="start">
         <p class="hint">
           将按 v{{ startTarget?.versionNo }} 的步骤表执行，启动时采集一次快照，之后只读。
         </p>
-        <label class="label">启动输入（JSON 对象，可留空）</label>
-        <el-input
-          v-model="startInput"
-          type="textarea"
-          :rows="6"
-          placeholder='{ "deviceId": "A-01" }'
+
+        <el-alert
+          v-if="startLoadError"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="startLoadError"
+        >
+          <el-button
+            link
+            type="primary"
+            @click="startTarget && loadStartDetail(startTarget)"
+          >
+            重试
+          </el-button>
+        </el-alert>
+
+        <div v-if="startLoading" class="start-loading" v-loading="true" />
+
+        <ReleaseInputForm
+          v-else-if="startHasInputs"
+          ref="startFormRef"
+          :inputs="startDetail?.inputs ?? []"
+          @update:missing="startMissing = $event"
         />
+
+        <template v-else>
+          <p class="hint">该版本没有声明启动参数，可留空直接启动；需要补充时按 JSON 填写。</p>
+          <label class="label">启动输入（JSON 对象，可留空）</label>
+          <el-input
+            v-model="startInput"
+            type="textarea"
+            :rows="6"
+            placeholder='{ "deviceId": "A-01" }'
+          />
+        </template>
       </div>
       <template #footer>
+        <span v-if="startHasInputs && startMissing.length" class="footer-note">
+          还缺 {{ startMissing.length }} 项必填
+        </span>
         <el-button @click="startVisible = false">取消</el-button>
-        <el-button type="primary" :loading="starting" @click="submitStart">启动</el-button>
+        <el-button type="primary" :loading="starting" :disabled="startLoading" @click="submitStart">
+          启动
+        </el-button>
       </template>
     </el-dialog>
   </div>
@@ -287,6 +361,17 @@ const planJson = computed(() =>
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.start-loading {
+  height: 120px;
+}
+
+.footer-note {
+  float: left;
+  font-size: 12px;
+  line-height: 32px;
+  color: var(--el-color-danger);
 }
 
 .hint {
