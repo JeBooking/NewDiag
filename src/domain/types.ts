@@ -1,6 +1,7 @@
 export type FlowMode = 'parallel' | 'serial'
 
 export type NodeKind =
+  | 'start'
   | 'investigation'
   | 'investigationAction'
   | 'conclusion'
@@ -28,6 +29,24 @@ export interface NodeBinding {
   function: string
 }
 
+/** 开始节点参数的输入控件类型，由函数签名推导，作者可覆盖 */
+export type ParamType = 'text' | 'number' | 'boolean' | 'datetime'
+
+/**
+ * 开始节点声明的一个启动参数。
+ * - scope=global：全局参数，所有函数可用
+ * - scope=function：只对该函数可见，覆盖同名全局参数
+ */
+export interface StartParam {
+  name: string
+  scope: 'global' | 'function'
+  /** scope=function 时必填，函数名（不带工程名前缀） */
+  function?: string
+  type?: ParamType
+  /** 设计时默认值；执行时可改，改完固化进本次启动上下文 */
+  default?: unknown
+}
+
 /** 参数来源：字段名（自动匹配）、快照字段、上游节点输出、常量 */
 export type ParamSource =
   | string
@@ -47,6 +66,8 @@ export interface DocNode {
   outputs?: string[]
   /** 参数名 → 来源；不填则按签名自动匹配 */
   params?: Record<string, ParamSource>
+  /** 仅 start 节点：本次诊断的启动参数声明 */
+  inputs?: StartParam[]
   position: { x: number; y: number }
 }
 
@@ -64,8 +85,21 @@ export interface FlowDoc {
   mode: FlowMode
   nodes: DocNode[]
   edges: DocEdge[]
-  /** 启动输入里可被节点引用的字段名；发布时用于参数绑定 */
+  /** 旧版全局启动字段；新文档改用 start 节点的 inputs，读取时兼容 */
   snapshotFields?: string[]
+}
+
+/** 流程目录，树形；parentId 为空表示根目录 */
+export interface Folder {
+  id: string
+  name: string
+  parentId: string | null
+  createdAt: string
+}
+
+export interface FolderNode extends Folder {
+  children: FolderNode[]
+  flowCount?: number
 }
 
 export interface LintIssue {
@@ -174,6 +208,8 @@ export interface FlowSummary {
   description: string
   mode: FlowMode
   updatedAt: string
+  /** 所属目录，空表示未分类 */
+  folderId?: string | null
   editingBy?: string | null
   releaseCount: number
   lastRunStatus?: InstanceStatus | null
@@ -188,11 +224,22 @@ export interface ReleaseSummary {
   note?: string
 }
 
+/** 发布时冻结的启动表单字段，执行页只读它，不读当前代码 */
+export interface ReleaseInput {
+  name: string
+  scope: 'global' | 'function'
+  function?: string
+  type: ParamType
+  required: boolean
+  default?: unknown
+}
+
 export interface ReleaseDetail extends ReleaseSummary {
   flowId: string
   revisionId: string
   plan: Plan
   signature: Record<string, string>
+  inputs: ReleaseInput[]
   doc: FlowDoc
 }
 

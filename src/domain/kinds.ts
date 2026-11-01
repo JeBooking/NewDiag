@@ -10,9 +10,17 @@ export interface KindMeta {
   codeCapable?: boolean
   /** 出线语义：yes/no 两组，或单出口 */
   branch: 'yesno' | 'single' | 'none'
+  /** 唯一入口节点，不出现在节点面板里 */
+  entry?: boolean
 }
 
 export const KIND_META: Record<NodeKind, KindMeta> = {
+  start: {
+    label: '开始',
+    color: '#0f766e',
+    branch: 'single',
+    entry: true,
+  },
   investigation: {
     label: '排查',
     color: '#2563eb',
