@@ -124,27 +124,21 @@ def require_lock(db: Session, flow: Flow, *, admin: bool = False) -> Revision:
     return working
 
 
-def validate_or_422(doc: dict, *, strict_binding: bool = True) -> list[dict]:
-    """有阻断级问题就抛 422，否则返回可以放过、但值得提示的问题（warning）。"""
+def collect_issues(doc: dict, *, strict_binding: bool = True) -> list[dict]:
+    """收集校验问题，不抛错：保存要落盘，问题只作提示；发布侧自己再拦。"""
     if validate_doc is None:
         return []
-    raw = validate_doc(doc, strict_binding=strict_binding) or []
-    issues = [item for item in raw if isinstance(item, dict)]
-    errors = [item for item in issues if item.get("level") == "error"]
-    # 有的人只返回 message 不给 level，按错误处理，宁可拦下也不放过
-    if not errors:
-        errors = [item for item in issues if "level" not in item]
-    if errors:
-        raise HTTPException(status_code=422, detail=errors)
-    return [item for item in issues if item.get("level") == "warning"]
+    return [
+        item for item in (validate_doc(doc, strict_binding=strict_binding) or []) if isinstance(item, dict)
+    ]
 
 
 def commit_working(
     db: Session, flow: Flow, working: Revision, *, admin: bool = False
 ) -> CommitResult:
     doc = revision_doc(working)
-    # 保存允许半成品：参数绑定问题降级为 warning，真正阻断留给发布
-    warnings = validate_or_422(doc, strict_binding=False)
+    # 保存只落盘：所有问题随响应返回，是否阻断交给发布
+    issues = collect_issues(doc, strict_binding=False)
     stamp = now_iso()
     working.status = "committed"
     working.committed_at = stamp
@@ -162,14 +156,14 @@ def commit_working(
     db.refresh(flow)
     detail = flow_detail(db, flow)
     logger.info(
-        "流程 %s 提交 revision=%s：%d 个节点，%d 条 warning%s",
+        "流程 %s 提交 revision=%s：%d 个节点，%d 条问题%s",
         flow.id,
         working.id,
         len(doc.get("nodes") or []),
-        len(warnings),
+        len(issues),
         "（管理员代存）" if admin else "",
     )
-    return CommitResult(**detail.model_dump(), revision_id=working.id, issues=warnings)
+    return CommitResult(**detail.model_dump(), revision_id=working.id, issues=issues)
 
 
 def discard_working(db: Session, flow: Flow, working: Revision, *, admin: bool = False) -> FlowDetail:
@@ -240,7 +234,8 @@ def import_flow(payload: ImportFlowIn, db: Session = Depends(get_db)) -> FlowDet
     绑定问题按半成品放行（同 commit），发布时才强制校验。
     """
     doc = payload.doc
-    validate_or_422(doc, strict_binding=False)
+    # 导入同保存：问题只提示，不阻断
+    collect_issues(doc, strict_binding=False)
 
     stamp = now_iso()
     mode = doc.get("mode") if doc.get("mode") in ("parallel", "serial") else "parallel"

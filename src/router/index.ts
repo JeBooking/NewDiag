@@ -14,7 +14,7 @@ const router = createRouter({
       name: 'flow-releases',
       component: () => import('@/views/FlowReleases.vue'),
     },
-    // 执行页按流程找到最新实例后跳转，本身不渲染画布
+    // 执行页是启动入口：填输入、点开始；历史执行去列表
     { path: '/flows/:id/run', name: 'flow-run', component: () => import('@/views/InstanceRun.vue') },
     { path: '/instances', name: 'instances', component: () => import('@/views/InstanceList.vue') },
     {

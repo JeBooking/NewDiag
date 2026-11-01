@@ -1,15 +1,21 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import type { DocNode, InvestigationFields } from '@/domain/types'
+import type { DocNode, FlowMode, InvestigationFields } from '@/domain/types'
 import { KIND_META } from '@/domain/kinds'
 import AttachmentField from './AttachmentField.vue'
 import BindingEditor from './BindingEditor.vue'
 
-const props = defineProps<{ node: DocNode; readonly?: boolean }>()
+const props = defineProps<{
+  node: DocNode
+  successors?: { edgeId: string; title: string }[]
+  mode?: FlowMode
+  readonly?: boolean
+}>()
 const emit = defineEmits<{
   (e: 'update', patch: Partial<DocNode>): void
   (e: 'delete'): void
+  (e: 'reorder', edgeId: string, delta: number): void
 }>()
 
 const meta = computed(() => KIND_META[props.node.kind])
@@ -175,6 +181,34 @@ async function confirmDelete(): Promise<void> {
       <div class="section-hint">该函数返回结构里的字段名，供下游节点绑定；判据是布尔值的函数可留空</div>
     </template>
 
+    <template v-if="(successors?.length ?? 0) > 1">
+      <div class="section-title">执行顺序</div>
+      <div class="order-list">
+        <div v-for="(item, index) in successors" :key="item.edgeId" class="order-row">
+          <span class="order-index">{{ index + 1 }}</span>
+          <span class="order-title">{{ item.title }}</span>
+          <el-button-group size="small">
+            <el-button :disabled="readonly || index === 0" @click="emit('reorder', item.edgeId, -1)">
+              ↑
+            </el-button>
+            <el-button
+              :disabled="readonly || index === (successors?.length ?? 0) - 1"
+              @click="emit('reorder', item.edgeId, 1)"
+            >
+              ↓
+            </el-button>
+          </el-button-group>
+        </div>
+      </div>
+      <div class="section-hint">
+        {{
+          mode === 'serial'
+            ? '串行模式按此顺序依次尝试，失败自动换下一条'
+            : '并行模式同时执行，顺序只影响队列排布'
+        }}
+      </div>
+    </template>
+
     <div class="section-title">附件</div>
     <AttachmentField
       :attachments="node.attachments"
@@ -249,5 +283,33 @@ async function confirmDelete(): Promise<void> {
 
 .tag-field {
   width: 100%;
+}
+
+.order-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.order-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.order-index {
+  flex: none;
+  width: 18px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  text-align: center;
+}
+
+.order-title {
+  flex: 1;
+  overflow: hidden;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 </style>

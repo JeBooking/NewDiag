@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import {
   MarkerType,
   Panel,
+  PanOnScrollMode,
   VueFlow,
   useVueFlow,
   type Connection,
@@ -18,7 +19,7 @@ import { ElMessage } from 'element-plus'
 import { KIND_META, V1_KINDS } from '@/domain/kinds'
 import { canConnect, needsBranch } from '@/domain/rules'
 import type { Branch, DocEdge, DocNode, FlowDoc, LintIssue, NodeKind, NodeVisualStatus } from '@/domain/types'
-import { NODE_DRAG_TYPE, nodeTypes, type NodeCardData } from '@/components/nodes'
+import { NODE_DRAG_TYPE, nodeTypes, type NodeCardData, type NodeIssue } from '@/components/nodes'
 import { edgeTypes, type EdgeBranchData } from '@/components/edges'
 import NodePalette from './NodePalette.vue'
 
@@ -75,15 +76,22 @@ function canonical(value: unknown): string {
 }
 
 function issueIndex(issues: LintIssue[]) {
-  const byNode = new Map<string, LintIssue>()
+  const byNode = new Map<string, NodeIssue[]>()
   const byEdge = new Map<string, LintIssue>()
-  const put = (target: Map<string, LintIssue>, id: string, issue: LintIssue) => {
-    const prev = target.get(id)
-    if (!prev || (prev.level === 'warning' && issue.level === 'error')) target.set(id, issue)
-  }
   for (const issue of issues) {
-    if (issue.nodeId) put(byNode, issue.nodeId, issue)
-    else if (issue.edgeId) put(byEdge, issue.edgeId, issue)
+    if (issue.nodeId) {
+      const list = byNode.get(issue.nodeId) ?? []
+      list.push({ level: issue.level, message: issue.message })
+      byNode.set(issue.nodeId, list)
+    } else if (issue.edgeId) {
+      const prev = byEdge.get(issue.edgeId)
+      if (!prev || (prev.level === 'warning' && issue.level === 'error')) {
+        byEdge.set(issue.edgeId, issue)
+      }
+    }
+  }
+  for (const list of byNode.values()) {
+    list.sort((a, b) => (a.level === b.level ? 0 : a.level === 'error' ? -1 : 1))
   }
   return { byNode, byEdge }
 }
@@ -136,15 +144,13 @@ function projectAll(preservePositions: boolean) {
 
   const nextNodes: Node[] = []
   for (const meta of nodeMeta.values()) {
-    const issue = byNode.get(meta.id)
     const data: NodeCardData = {
       kind: meta.kind,
       title: meta.title ?? '',
       detail: meta.detail ?? '',
       hasBinding: Boolean(meta.binding?.project && meta.binding?.function),
       hasTarget: meta.id !== entry,
-      issueLevel: issue?.level ?? null,
-      issueMessage: issue?.message ?? '',
+      issues: byNode.get(meta.id) ?? [],
       status: props.status[meta.id] ?? null,
       selected: props.selectedNodeId === meta.id,
     }
@@ -461,6 +467,10 @@ const minimapColor = (node: GraphNode) => {
       :min-zoom="0.2"
       :max-zoom="2"
       :fit-view-on-init="true"
+      :pan-on-scroll="true"
+      :pan-on-scroll-mode="PanOnScrollMode.Free"
+      :zoom-on-scroll="false"
+      zoom-activation-key-code="Control"
       @connect="onConnect"
       @node-click="onNodeClick"
       @pane-click="onPaneClick"

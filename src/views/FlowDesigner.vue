@@ -59,6 +59,43 @@ function locateIssue(issue: LintIssue): void {
   if (issue.nodeId) editor.selectedNodeId = issue.nodeId
 }
 
+const saveHasError = computed(() =>
+  editor.saveIssues.some((issue) => issue.level === 'error'),
+)
+
+/** 选中节点的出边，按 order 排好给属性面板调整 */
+const successors = computed(() => {
+  const node = editor.selectedNode
+  const doc = editor.doc
+  if (!node || !doc) return []
+  return doc.edges
+    .filter((edge) => edge.from === node.id)
+    .slice()
+    .sort((a, b) => (a.order ?? 1) - (b.order ?? 1))
+    .map((edge) => ({
+      edgeId: edge.id,
+      title: doc.nodes.find((item) => item.id === edge.to)?.title || edge.to,
+    }))
+})
+
+function reorderEdge(edgeId: string, delta: number): void {
+  const doc = editor.doc
+  if (!doc) return
+  const list = successors.value.slice()
+  const index = list.findIndex((item) => item.edgeId === edgeId)
+  const target = index + delta
+  if (index < 0 || target < 0 || target >= list.length) return
+  const [moved] = list.splice(index, 1)
+  list.splice(target, 0, moved)
+  const orderById = new Map(list.map((item, i) => [item.edgeId, i + 1]))
+  editor.applyDoc({
+    ...doc,
+    edges: doc.edges.map((edge) =>
+      orderById.has(edge.id) ? { ...edge, order: orderById.get(edge.id) } : edge,
+    ),
+  })
+}
+
 function patchNode(patch: Partial<DocNode>): void {
   const doc = editor.doc
   const node = editor.selectedNode
@@ -194,7 +231,7 @@ onBeforeRouteLeave(async () => {
         <el-tag v-else-if="editor.flow" size="small" type="info" effect="plain">已同步</el-tag>
       </div>
       <div class="right">
-        <el-button :disabled="editor.readonly || !editor.dirty" :loading="editor.saving" @click="save()">
+        <el-button :disabled="editor.readonly" :loading="editor.saving" @click="save()">
           保存
         </el-button>
         <el-button type="primary" :disabled="editor.readonly" :loading="editor.publishing" @click="publish">
@@ -215,22 +252,25 @@ onBeforeRouteLeave(async () => {
     />
 
     <el-alert
-      v-if="editor.saveWarnings.length"
-      :title="`已保存，${editor.saveWarnings.length} 处待处理（发布前需解决）`"
-      type="warning"
+      v-if="editor.saveIssues.length"
+      :title="`已保存，${editor.saveIssues.length} 处待处理（发布前需解决）`"
+      :type="saveHasError ? 'error' : 'warning'"
       :closable="true"
       show-icon
       class="banner"
-      @close="editor.clearSaveWarnings()"
+      @close="editor.clearSaveIssues()"
     >
       <div class="warning-list">
         <button
-          v-for="issue in editor.saveWarnings"
+          v-for="issue in editor.saveIssues"
           :key="issue.id"
           type="button"
           class="warning-item"
           @click="locateIssue(issue)"
         >
+          <span class="issue-level" :class="issue.level">
+            {{ issue.level === 'error' ? '错误' : '提示' }}
+          </span>
           <span v-if="issueNodeName(issue)" class="warning-node">{{ issueNodeName(issue) }}</span>
           <span>{{ issue.message }}</span>
         </button>
@@ -265,9 +305,12 @@ onBeforeRouteLeave(async () => {
         <NodePanel
           v-if="editor.selectedNode"
           :node="editor.selectedNode"
+          :successors="successors"
+          :mode="editor.doc?.mode ?? 'parallel'"
           :readonly="editor.readonly"
           @update="patchNode"
           @delete="deleteNode"
+          @reorder="reorderEdge"
         />
         <FlowPanel
           v-else-if="editor.flow"
@@ -340,6 +383,20 @@ onBeforeRouteLeave(async () => {
   flex-direction: column;
   gap: 2px;
   margin-top: 4px;
+}
+
+.issue-level {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 16px;
+  color: #fff;
+  background: var(--el-color-warning);
+}
+
+.issue-level.error {
+  background: var(--el-color-danger);
 }
 
 .warning-item {

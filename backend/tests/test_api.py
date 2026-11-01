@@ -199,8 +199,8 @@ def test_commit_then_list(client):
     assert items[0]["editingBy"] is None
 
 
-def test_commit_rejects_invalid_doc_and_keeps_lock(client):
-    """结构性问题仍然阻断保存，且不能悄悄释放编辑锁。"""
+def test_commit_saves_invalid_doc_but_reports_issues(client):
+    """保存不阻断：结构性问题随响应返回，留给发布拦截。"""
     flow = create_flow(client)
     flow_id = flow["id"]
     client.post(f"/api/flows/{flow_id}/checkout").raise_for_status()
@@ -210,14 +210,14 @@ def test_commit_rejects_invalid_doc_and_keeps_lock(client):
     ).raise_for_status()
 
     response = client.post(f"/api/flows/{flow_id}/commit")
-    assert response.status_code == 422, response.text
-    issues = response.json()["detail"]
+    assert response.status_code == 200, response.text
+    issues = response.json()["issues"]
     assert isinstance(issues, list) and issues
-    assert all(item.get("level") == "error" for item in issues)
+    assert any(item.get("level") == "error" for item in issues)
 
     detail = client.get(f"/api/flows/{flow_id}").json()
-    assert detail["editingBy"] == "local"
-    assert detail["workingRevisionId"]
+    assert detail["editingBy"] is None
+    assert detail["doc"]["nodes"] == []
 
 
 def test_commit_accepts_doc_in_body(client):

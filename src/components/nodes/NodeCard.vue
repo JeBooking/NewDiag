@@ -19,6 +19,11 @@ const meta = computed(() => KIND_META[props.data.kind])
 const isSelected = computed(() => props.selected || props.data.selected)
 const badge = computed(() => (props.data.hasBinding ? '自动' : '人工'))
 const statusClass = computed(() => (props.data.status ? `status-${props.data.status}` : ''))
+const issues = computed(() => props.data.issues ?? [])
+const worst = computed(() => {
+  if (issues.value.some((issue) => issue.level === 'error')) return 'error'
+  return issues.value.length > 0 ? 'warning' : ''
+})
 </script>
 
 <template>
@@ -51,12 +56,18 @@ const statusClass = computed(() => (props.data.status ? `status-${props.data.sta
       </div>
     </div>
 
-    <span
-      v-if="data.issueLevel"
-      class="issue"
-      :class="data.issueLevel"
-      :title="data.issueMessage"
-    />
+    <div v-if="issues.length" class="issue-wrap" :class="worst">
+      <span class="issue-badge">{{ issues.length > 9 ? '9+' : issues.length }}</span>
+      <div class="issue-pop">
+        <div class="issue-pop-head">
+          {{ worst === 'error' ? '校验错误' : '提示' }} · {{ issues.length }} 条
+        </div>
+        <div v-for="(issue, index) in issues" :key="index" class="issue-row">
+          <span class="issue-dot" :class="issue.level" />
+          <span class="issue-text">{{ issue.message }}</span>
+        </div>
+      </div>
+    </div>
 
     <template v-if="meta.branch === 'yesno'">
       <Handle id="yes" type="source" :position="Position.Right" class="h-out h-yes" />
@@ -164,22 +175,78 @@ const statusClass = computed(() => (props.data.status ? `status-${props.data.sta
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--el-color-primary) 25%, transparent);
 }
 
-.issue {
+.issue-wrap {
   position: absolute;
-  top: -5px;
-  right: -5px;
-  width: 10px;
-  height: 10px;
-  border: 1px solid #fff;
-  border-radius: 50%;
+  top: -8px;
+  right: -8px;
+  z-index: 3;
 }
 
-.issue.error {
+.issue-badge {
+  display: block;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--el-bg-color-overlay);
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 14px;
+  color: #fff;
+  text-align: center;
+  background: var(--el-color-warning);
+  cursor: default;
+}
+
+.issue-wrap.error .issue-badge {
   background: var(--el-color-danger);
 }
 
-.issue.warning {
+.issue-pop {
+  position: absolute;
+  top: 18px;
+  right: 0;
+  display: none;
+  width: 240px;
+  padding: 8px 10px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  background: var(--el-bg-color-overlay);
+  box-shadow: 0 6px 18px rgb(15 23 42 / 16%);
+}
+
+.issue-wrap:hover .issue-pop {
+  display: block;
+}
+
+.issue-pop-head {
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.issue-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 2px 0;
+  line-height: 1.5;
+}
+
+.issue-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 50%;
   background: var(--el-color-warning);
+}
+
+.issue-dot.error {
+  background: var(--el-color-danger);
+}
+
+.issue-text {
+  color: var(--el-text-color-primary);
 }
 
 .h-in {

@@ -5,6 +5,12 @@ import NodeCard from './NodeCard.vue'
 /** 面板拖拽到画布时使用的 dataTransfer 类型，palette 与画布共用 */
 export const NODE_DRAG_TYPE = 'application/x-newdiag-node-kind'
 
+/** 单个校验问题，画布上只保留展示所需的字段 */
+export interface NodeIssue {
+  level: 'error' | 'warning'
+  message: string
+}
+
 /** NodeCard 只消费渲染投影，业务字段始终留在 FlowDoc 里 */
 export interface NodeCardData {
   kind: NodeKind
@@ -13,8 +19,8 @@ export interface NodeCardData {
   hasBinding: boolean
   /** 入口节点不画左侧 target handle */
   hasTarget: boolean
-  issueLevel: 'error' | 'warning' | null
-  issueMessage: string
+  /** 该节点名下的全部校验问题，按错误优先排序 */
+  issues: NodeIssue[]
   status: NodeVisualStatus | null
   selected: boolean
 }

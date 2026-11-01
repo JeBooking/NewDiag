@@ -36,7 +36,7 @@ export const useEditorStore = defineStore('editor', () => {
   const publishing = ref(false)
   const selectedNodeId = ref<string | null>(null)
   const issues = ref<LintIssue[]>([])
-  const saveWarnings = ref<LintIssue[]>([])
+  const saveIssues = ref<LintIssue[]>([])
   const lastSavedAt = ref<string | null>(null)
 
   let autosaveTimer: ReturnType<typeof setTimeout> | null = null
@@ -61,7 +61,7 @@ export const useEditorStore = defineStore('editor', () => {
     publishing.value = false
     selectedNodeId.value = null
     issues.value = []
-    saveWarnings.value = []
+    saveIssues.value = []
     lastSavedAt.value = null
   }
 
@@ -126,7 +126,7 @@ export const useEditorStore = defineStore('editor', () => {
     issues.value = []
     try {
       const result = await commitFlow(flow.value.id, doc.value)
-      saveWarnings.value = (result.issues ?? []).filter((issue) => issue.level === 'warning')
+      saveIssues.value = result.issues ?? []
       dirty.value = false
       lastSavedAt.value = new Date().toISOString()
       // 提交会释放编辑锁，立即重新检出以便继续修改
@@ -152,7 +152,7 @@ export const useEditorStore = defineStore('editor', () => {
     issues.value = []
     try {
       const result = await publishFlow(flow.value.id, note ? { note } : {})
-      saveWarnings.value = []
+      saveIssues.value = []
       return result
     } catch (error) {
       if (isApiError(error) && error.issues.length > 0) issues.value = error.issues
@@ -182,8 +182,8 @@ export const useEditorStore = defineStore('editor', () => {
     issues.value = []
   }
 
-  function clearSaveWarnings(): void {
-    saveWarnings.value = []
+  function clearSaveIssues(): void {
+    saveIssues.value = []
   }
 
   function close(): void {
@@ -202,7 +202,7 @@ export const useEditorStore = defineStore('editor', () => {
     selectedNode,
     editable,
     issues,
-    saveWarnings,
+    saveIssues,
     lastSavedAt,
     open,
     applyDoc,
@@ -212,7 +212,7 @@ export const useEditorStore = defineStore('editor', () => {
     patchFlowMeta,
     scheduleAutosave,
     clearIssues,
-    clearSaveWarnings,
+    clearSaveIssues,
     reset,
     close,
   }

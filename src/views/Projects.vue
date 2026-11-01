@@ -25,7 +25,7 @@ const form = ref<CreateProjectPayload>({
   path: '',
   module: '',
   python: 'python',
-  factory: 'build',
+  factory: '',
 })
 
 const drawerVisible = ref(false)
@@ -50,7 +50,7 @@ onMounted(() => {
 })
 
 function openCreate(): void {
-  form.value = { name: '', path: '', module: '', python: 'python', factory: 'build' }
+  form.value = { name: '', path: '', module: '', python: 'python', factory: '' }
   createVisible.value = true
 }
 
@@ -67,7 +67,7 @@ async function submitCreate(): Promise<void> {
       path: payload.path.trim(),
       module: payload.module.trim(),
       python: payload.python.trim() || 'python',
-      factory: payload.factory.trim() || 'build',
+      factory: payload.factory.trim(),
     })
     createVisible.value = false
     ElMessage.success('工程已登记')
@@ -189,7 +189,7 @@ function signatureText(fn: ProjectFunction): string {
           <el-input v-model="form.python" placeholder="python" />
         </el-form-item>
         <el-form-item label="工厂函数">
-          <el-input v-model="form.factory" placeholder="build" />
+          <el-input v-model="form.factory" placeholder="留空则直接取模块级函数" />
         </el-form-item>
       </el-form>
       <template #footer>
