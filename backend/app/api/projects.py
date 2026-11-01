@@ -16,6 +16,7 @@ from app.schemas import (
     ProjectFunction,
     ProjectFunctions,
     ProjectOut,
+    ProjectPatch,
     make_project,
 )
 from app.services.projects import probe
@@ -66,6 +67,35 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
         raise HTTPException(status_code=409, detail=f"工程名已存在：{payload.name}") from exc
     db.refresh(project)
     return make_project(project)
+
+
+@router.patch("/projects/{project_id}", response_model=ProjectOut)
+def update_project(
+    project_id: str, payload: ProjectPatch, db: Session = Depends(get_db)
+) -> ProjectOut:
+    project = get_project_or_404(db, project_id)
+    # 只落请求里显式出现的字段：前端整表提交时未编辑的字段会带 null，误写会把已登记的值抹掉
+    fields = payload.model_fields_set
+    if "path" in fields and payload.path is not None:
+        project.path = payload.path
+    if "module" in fields and payload.module is not None:
+        project.module = payload.module
+    # 空串是用户清空解释器/工厂的意图，库里统一存 NULL，与登记时的语义一致
+    if "python" in fields:
+        project.python = payload.python or None
+    if "factory" in fields:
+        project.factory = payload.factory or None
+    db.commit()
+    db.refresh(project)
+    return make_project(project)
+
+
+@router.delete("/projects/{project_id}", status_code=204)
+def delete_project(project_id: str, db: Session = Depends(get_db)) -> None:
+    # 不做引用检查：流程只在发布/执行时按名字解析工程，删掉后由前端确认框承担后果告知
+    project = get_project_or_404(db, project_id)
+    db.delete(project)
+    db.commit()
 
 
 @router.post("/projects/{project_id}/refresh", response_model=ProjectFunctions)

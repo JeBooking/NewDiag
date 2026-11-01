@@ -17,6 +17,14 @@ export interface CreateProjectPayload {
   factory: string
 }
 
+/** 不含 name：工程名是流程 binding 的引用键，登记后不可改 */
+export interface UpdateProjectPayload {
+  path?: string
+  module?: string
+  python?: string
+  factory?: string
+}
+
 export interface ProjectFunctionParam {
   name: string
   annotation?: string | null
@@ -104,6 +112,20 @@ export async function createProject(payload: CreateProjectPayload): Promise<Proj
   const project = normalizeProject(data)
   if (!project) throw new ApiError(500, '新建工程返回的数据不完整')
   return project
+}
+
+export async function updateProject(id: string, payload: UpdateProjectPayload): Promise<Project> {
+  const data = await request<unknown>(`/projects/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+  const project = normalizeProject(data)
+  if (!project) throw new ApiError(500, '编辑工程返回的数据不完整')
+  return project
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  await request<void>(`/projects/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 export interface ProjectFunctions {

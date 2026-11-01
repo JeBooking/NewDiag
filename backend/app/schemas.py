@@ -301,6 +301,15 @@ class ProjectCreate(ApiModel):
     factory: str | None = None
 
 
+class ProjectPatch(ApiModel):
+    # 不含 name：工程名是 binding.project 的引用键，改名会让已发布的流程找不到实现
+    path: str | None = Field(default=None, min_length=1)
+    module: str | None = Field(default=None, min_length=1, max_length=200)
+    # 空串表示清空，与「不传」区分靠 model_fields_set
+    python: str | None = None
+    factory: str | None = None
+
+
 class ProjectFunctions(ApiModel):
     functions: list[ProjectFunction] = Field(default_factory=list)
     error: str | None = None

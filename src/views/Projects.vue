@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import { errorText } from '@/services/api'
 import {
   createProject,
+  deleteProject,
   fetchProjectFunctions,
   listProjects,
   refreshProject,
+  updateProject,
   type CreateProjectPayload,
   type Project,
   type ProjectFunction,
@@ -32,6 +34,13 @@ const drawerVisible = ref(false)
 const functionsLoading = ref(false)
 const activeProject = ref<Project | null>(null)
 const functions = ref<ProjectFunction[]>([])
+
+const editVisible = ref(false)
+const editSaving = ref(false)
+const editingId = ref<string | null>(null)
+const editName = ref('')
+const editForm = ref({ path: '', module: '', python: '', factory: '' })
+const deletingId = ref<string | null>(null)
 
 async function load(): Promise<void> {
   loading.value = true
@@ -76,6 +85,71 @@ async function submitCreate(): Promise<void> {
     ElMessage.error(errorText(err, '登记工程失败'))
   } finally {
     submitting.value = false
+  }
+}
+
+function openEdit(row: Project): void {
+  editingId.value = row.id
+  editName.value = row.name
+  editForm.value = {
+    path: row.path,
+    module: row.module,
+    python: row.python,
+    factory: row.factory,
+  }
+  editVisible.value = true
+}
+
+async function submitEdit(): Promise<void> {
+  const id = editingId.value
+  if (!id) return
+  const payload = editForm.value
+  if (!payload.path.trim() || !payload.module.trim()) {
+    ElMessage.warning('路径、模块为必填')
+    return
+  }
+  editSaving.value = true
+  try {
+    // 解释器留空传空串，由后端清成 NULL 回落默认解释器；这里不能跟登记一样补 'python'，否则清不掉
+    await updateProject(id, {
+      path: payload.path.trim(),
+      module: payload.module.trim(),
+      python: payload.python.trim(),
+      factory: payload.factory.trim(),
+    })
+    editVisible.value = false
+    ElMessage.success('工程已更新')
+    await load()
+  } catch (err) {
+    ElMessage.error(errorText(err, '更新工程失败'))
+  } finally {
+    editSaving.value = false
+  }
+}
+
+async function remove(row: Project): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `删除后引用该工程的流程将无法发布或执行，直到重新登记同名工程。确认删除「${row.name}」？`,
+      '删除工程',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  deletingId.value = row.id
+  try {
+    await deleteProject(row.id)
+    if (activeProject.value?.id === row.id) {
+      drawerVisible.value = false
+      activeProject.value = null
+    }
+    ElMessage.success('工程已删除')
+    await load()
+  } catch (err) {
+    ElMessage.error(errorText(err, '删除工程失败'))
+  } finally {
+    deletingId.value = null
   }
 }
 
@@ -153,7 +227,7 @@ function signatureText(fn: ProjectFunction): string {
         <el-table-column prop="module" label="模块" min-width="140" show-overflow-tooltip />
         <el-table-column prop="python" label="解释器" width="160" show-overflow-tooltip />
         <el-table-column prop="factory" label="工厂" width="100" />
-        <el-table-column label="操作" width="200" align="right">
+        <el-table-column label="操作" width="300" align="right">
           <template #default="{ row }">
             <div class="row-actions">
               <el-button link type="primary" @click="openFunctions(row)">接口</el-button>
@@ -164,6 +238,16 @@ function signatureText(fn: ProjectFunction): string {
                 @click="refresh(row)"
               >
                 重新发现
+              </el-button>
+              <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+              <el-button
+                link
+                type="danger"
+                :loading="deletingId === row.id"
+                :disabled="deletingId === row.id"
+                @click="remove(row)"
+              >
+                删除
               </el-button>
             </div>
           </template>
@@ -195,6 +279,31 @@ function signatureText(fn: ProjectFunction): string {
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
         <el-button type="primary" :loading="submitting" @click="submitCreate">登记</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="editVisible" title="编辑工程" width="520px">
+      <el-form label-position="top">
+        <el-form-item label="名称">
+          <el-input :model-value="editName" disabled />
+          <div class="hint">名称是流程绑定的引用键，登记后不可修改</div>
+        </el-form-item>
+        <el-form-item label="工程路径" required>
+          <el-input v-model="editForm.path" placeholder="D:/projects/cooling" />
+        </el-form-item>
+        <el-form-item label="模块" required>
+          <el-input v-model="editForm.module" placeholder="cooling.api" />
+        </el-form-item>
+        <el-form-item label="解释器">
+          <el-input v-model="editForm.python" placeholder="留空则使用后端默认解释器" />
+        </el-form-item>
+        <el-form-item label="工厂函数">
+          <el-input v-model="editForm.factory" placeholder="留空则直接取模块级函数" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editSaving" @click="submitEdit">保存</el-button>
       </template>
     </el-dialog>
 
@@ -260,6 +369,14 @@ function signatureText(fn: ProjectFunction): string {
   display: flex;
   justify-content: flex-end;
   gap: 4px;
+}
+
+.hint {
+  width: 100%;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
 }
 
 .functions {
