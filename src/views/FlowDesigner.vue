@@ -63,25 +63,44 @@ const saveHasError = computed(() =>
   editor.saveIssues.some((issue) => issue.level === 'error'),
 )
 
-/** 选中节点的出边，按 order 排好给属性面板调整 */
-const successors = computed(() => {
+/** 选中节点的出边按分支分组：是/否/默认各自排序，互不干扰 */
+const successorGroups = computed(() => {
   const node = editor.selectedNode
   const doc = editor.doc
   if (!node || !doc) return []
-  return doc.edges
-    .filter((edge) => edge.from === node.id)
-    .slice()
-    .sort((a, b) => (a.order ?? 1) - (b.order ?? 1))
-    .map((edge) => ({
+  const groups = new Map<string, { edgeId: string; title: string; order: number }[]>()
+  for (const edge of doc.edges) {
+    if (edge.from !== node.id) continue
+    const key = edge.branch === 'yes' || edge.branch === 'no' ? edge.branch : 'default'
+    const list = groups.get(key) ?? []
+    list.push({
       edgeId: edge.id,
       title: doc.nodes.find((item) => item.id === edge.to)?.title || edge.to,
+      order: edge.order ?? 1,
+    })
+    groups.set(key, list)
+  }
+  const rank = ['yes', 'no', 'default']
+  return [...groups.entries()]
+    .sort((a, b) => rank.indexOf(a[0]) - rank.indexOf(b[0]))
+    .map(([branch, list]) => ({
+      branch,
+      label: branch === 'yes' ? '是分支' : branch === 'no' ? '否分支' : '后续节点',
+      items: list
+        .sort((a, b) => a.order - b.order)
+        .map(({ edgeId, title }) => ({ edgeId, title })),
     }))
 })
 
 function reorderEdge(edgeId: string, delta: number): void {
   const doc = editor.doc
   if (!doc) return
-  const list = successors.value.slice()
+  // 只在同一条分支组内换位，别的组顺序不动
+  const group = successorGroups.value.find((item) =>
+    item.items.some((edge) => edge.edgeId === edgeId),
+  )
+  if (!group) return
+  const list = group.items.slice()
   const index = list.findIndex((item) => item.edgeId === edgeId)
   const target = index + delta
   if (index < 0 || target < 0 || target >= list.length) return
@@ -319,7 +338,7 @@ onBeforeRouteLeave(async () => {
         <NodePanel
           v-if="editor.selectedNode"
           :node="editor.selectedNode"
-          :successors="successors"
+          :successor-groups="successorGroups"
           :mode="editor.doc?.mode ?? 'parallel'"
           :readonly="editor.readonly"
           :flow-id="editor.flow?.id"

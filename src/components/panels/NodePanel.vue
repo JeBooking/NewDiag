@@ -18,7 +18,11 @@ import ParamValueInput from './ParamValueInput.vue'
 
 const props = defineProps<{
   node: DocNode
-  successors?: { edgeId: string; title: string }[]
+  successorGroups?: {
+    branch: string
+    label: string
+    items: { edgeId: string; title: string }[]
+  }[]
   mode?: FlowMode
   readonly?: boolean
   /** 探测函数签名需要流程 id 与当前 doc */
@@ -39,6 +43,11 @@ const outputs = computed(() => props.node.outputs ?? [])
 const outputDraft = ref('')
 
 const isStart = computed(() => props.node.kind === 'start')
+
+/** 只有同组内多于一条出边时才需要排序；不同分支之间互不影响 */
+const orderGroups = computed(() =>
+  (props.successorGroups ?? []).filter((group) => group.items.length > 1),
+)
 
 const codeHint = computed(() => {
   if (props.node.kind !== 'investigation') return '该类型由人工完成，不执行代码'
@@ -555,33 +564,41 @@ function onFunctionType(row: ParamRow, value: unknown): void {
         <div class="section-hint">该函数返回结构里的字段名，供下游节点绑定；判据是布尔值的函数可留空</div>
       </template>
 
-      <template v-if="(successors?.length ?? 0) > 1">
-        <div class="section-title">执行顺序</div>
-        <div class="order-list">
-          <div v-for="(item, index) in successors" :key="item.edgeId" class="order-row">
-            <span class="order-index">{{ index + 1 }}</span>
-            <span class="order-title">{{ item.title }}</span>
-            <el-button-group size="small">
-              <el-button :disabled="readonly || index === 0" @click="emit('reorder', item.edgeId, -1)">
-                ↑
-              </el-button>
-              <el-button
-                :disabled="readonly || index === (successors?.length ?? 0) - 1"
-                @click="emit('reorder', item.edgeId, 1)"
-              >
-                ↓
-              </el-button>
-            </el-button-group>
+    <template v-if="orderGroups.length">
+      <div class="section-title">执行顺序</div>
+      <div class="order-groups">
+        <div v-for="group in orderGroups" :key="group.branch" class="order-group">
+          <div class="order-group-head">{{ group.label }}</div>
+          <div class="order-list">
+            <div v-for="(item, index) in group.items" :key="item.edgeId" class="order-row">
+              <span class="order-index">{{ index + 1 }}</span>
+              <span class="order-title">{{ item.title }}</span>
+              <el-button-group size="small">
+                <el-button
+                  :disabled="readonly || index === 0"
+                  @click="emit('reorder', item.edgeId, -1)"
+                >
+                  ↑
+                </el-button>
+                <el-button
+                  :disabled="readonly || index === group.items.length - 1"
+                  @click="emit('reorder', item.edgeId, 1)"
+                >
+                  ↓
+                </el-button>
+              </el-button-group>
+            </div>
           </div>
         </div>
-        <div class="section-hint">
-          {{
-            mode === 'serial'
-              ? '串行模式按此顺序依次尝试，失败自动换下一条'
-              : '并行模式同时执行，顺序只影响队列排布'
-          }}
-        </div>
-      </template>
+      </div>
+      <div class="section-hint">
+        {{
+          mode === 'serial'
+            ? '串行模式按各组内的顺序依次尝试，失败自动换下一条'
+            : '并行模式同时执行，顺序只影响同组内的队列排布'
+        }}
+      </div>
+    </template>
 
       <div class="section-title">附件</div>
       <AttachmentField
@@ -679,6 +696,19 @@ function onFunctionType(row: ParamRow, value: unknown): void {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.order-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.order-group-head {
+  margin-bottom: 3px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-text-color-regular);
 }
 
 .order-row {
