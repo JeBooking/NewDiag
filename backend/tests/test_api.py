@@ -1069,6 +1069,25 @@ def test_publish_skips_untrusted_signature_default(client, tmp_path):
     # 关键：不能出现 "datetime.datetime(2020, 1, 1, 0, 0)" 这种 repr 假值
     assert inputs["when"]["default"] is None
 
+    # 留空也能跑：plan 里这个可选参数标了 optional，调度期取不到值就省略，交给函数默认值
+    started = client.post(
+        f"/api/flows/{_flow_id}/instances", json={"releaseId": release["id"], "input": {}}
+    )
+    assert started.status_code == 200, started.text
+    instance_id = started.json()["id"]
+
+    deadline = time.time() + 8
+    body = client.get(f"/api/instances/{instance_id}").json()
+    while time.time() < deadline and body["status"] in {"running", "waiting"}:
+        time.sleep(0.2)
+        body = client.get(f"/api/instances/{instance_id}").json()
+
+    assert body["status"] != "failed", [run.get("error") for run in body["runs"]]
+    call_run = next(run for run in body["runs"] if run["nodeId"] == "n1")
+    assert call_run["status"] == "ok"
+    # 参数被省略，而不是塞一个空值或 repr 字符串
+    assert "when" not in (call_run["input"] or {})
+
 
 def test_probe_returns_function_signatures(client, tmp_path):
     register_input_project(client, tmp_path, name="探测工程")

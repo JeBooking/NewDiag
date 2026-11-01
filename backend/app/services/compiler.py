@@ -573,7 +573,9 @@ def _resolve_args(
                         )
                     )
                 continue  # 可选参数交给 Python 默认值
-            args[name] = _expr_for_source(name, sources[0])
+            args[name] = _expr_for_source(
+                name, sources[0], optional=not param.get("required", True)
+            )
         unused = sorted(set(candidates) - set(param_names))
         if unused:
             issues.append(
@@ -713,10 +715,15 @@ def _expr_from_spec(
     return None
 
 
-def _expr_for_source(name: str, source: str) -> dict:
+def _expr_for_source(name: str, source: str, optional: bool = False) -> dict:
     if source == SNAPSHOT_SOURCE:
-        return {"snapshot": name}
-    return {"run": source, "path": f"output.{name}"}
+        expr: dict = {"snapshot": name}
+    else:
+        expr = {"run": source, "path": f"output.{name}"}
+    if optional:
+        # 取不到值时由调度器省略该参数，交给函数自身默认值
+        expr["optional"] = True
+    return expr
 
 
 def _declared_outputs(node: dict) -> list[str]:

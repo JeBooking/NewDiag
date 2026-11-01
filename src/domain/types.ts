@@ -114,8 +114,9 @@ export type NodeVisualStatus = 'pending' | 'running' | 'waiting' | 'success' | '
 
 export type ArgExpr =
   | { lit: unknown }
-  | { snapshot: string }
-  | { run: string; path: string }
+  /** optional=true 表示取不到值时省略该参数，交给函数自身默认值 */
+  | { snapshot: string; optional?: boolean }
+  | { run: string; path: string; optional?: boolean }
 
 export interface PlanCall {
   project: string

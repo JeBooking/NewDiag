@@ -501,6 +501,8 @@ class Scheduler:
             elif "snapshot" in expr:
                 found, value = _snapshot_value(snapshot, function, str(expr["snapshot"]))
                 if not found:
+                    if expr.get("optional"):
+                        continue  # 可选参数留空：省略，让函数用自己的默认值
                     return {}, f"快照里找不到字段 {expr['snapshot']}"
                 args[name] = value
             elif "run" in expr:
@@ -508,6 +510,8 @@ class Scheduler:
                     db, instance, token, str(expr["run"]), str(expr.get("path") or "")
                 )
                 if not found:
+                    if expr.get("optional"):
+                        continue
                     return {}, f"找不到节点 {expr['run']} 的输出 {expr.get('path')}"
                 args[name] = value
             else:

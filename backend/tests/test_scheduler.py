@@ -155,8 +155,14 @@ def env(tmp_path):
     db.engine.dispose()
 
 
-def seed(factory, doc: dict, mode: str | None = None, snapshot: dict | None = None) -> dict:
-    plan = compile_doc(doc, "f1", 1)
+def seed(
+    factory,
+    doc: dict,
+    mode: str | None = None,
+    snapshot: dict | None = None,
+    functions: dict | None = None,
+) -> dict:
+    plan = compile_doc(doc, "f1", 1, functions=functions)
     mode = mode or doc.get("mode") or "parallel"
     session = factory()
     try:
@@ -701,6 +707,58 @@ def test_snapshot_reads_legacy_flat_payload(env):
 
 def test_snapshot_missing_field_fails_argument(env):
     seed(env.factory, bound_doc(), snapshot={"global": {"current": 3}})
+    env.scheduler.start("i1")
+
+    wait_for(env.factory, lambda: status_of(env.factory) == "failed", label="参数失败")
+    failed = runs(env.factory, "n1")
+    assert failed and "execution/argument" in failed[0].error
+
+
+def with_start_inputs(doc: dict, inputs: list[dict]) -> dict:
+    start = next(item for item in doc["nodes"] if item["id"] == "start")
+    start["inputs"] = inputs
+    return doc
+
+
+def test_optional_param_omitted_when_snapshot_missing(env):
+    """可选参数留空：省略该参数，让函数用自己的默认值，不报 execution/argument。"""
+    doc = with_start_inputs(straight_doc(), [{"name": "threshold", "scope": "global"}])
+    functions = {
+        "demo:judge_voltage": [
+            {"name": "threshold", "type": "float", "required": False, "default": 210.0}
+        ]
+    }
+    seed(env.factory, doc, snapshot={"global": {}}, functions=functions)
+    env.scheduler.start("i1")
+
+    wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工待办")
+    assert env.sessions.calls[0]["args"] == {}
+    assert runs(env.factory, "n1")[0].status == "ok"
+
+
+def test_optional_param_passed_when_snapshot_has_value(env):
+    doc = with_start_inputs(straight_doc(), [{"name": "threshold", "scope": "global"}])
+    functions = {
+        "demo:judge_voltage": [
+            {"name": "threshold", "type": "float", "required": False, "default": 210.0}
+        ]
+    }
+    seed(env.factory, doc, snapshot={"global": {"threshold": 198}}, functions=functions)
+    env.scheduler.start("i1")
+
+    wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工待办")
+    assert env.sessions.calls[0]["args"] == {"threshold": 198}
+
+
+def test_required_param_missing_still_fails(env):
+    """必填参数没有 optional 标记，缺值必须报 execution/argument。"""
+    doc = with_start_inputs(straight_doc(), [{"name": "voltage", "scope": "global"}])
+    functions = {
+        "demo:judge_voltage": [
+            {"name": "voltage", "type": "float", "required": True, "default": None}
+        ]
+    }
+    seed(env.factory, doc, snapshot={"global": {}}, functions=functions)
     env.scheduler.start("i1")
 
     wait_for(env.factory, lambda: status_of(env.factory) == "failed", label="参数失败")

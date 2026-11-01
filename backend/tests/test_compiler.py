@@ -576,7 +576,9 @@ def test_signature_ignores_ambiguous_unused_field():
 
     assert errors(doc, functions=functions) == []
     plan = compile_doc(doc, "f1", 1, functions=functions)
-    assert plan["steps"]["n3"]["call"]["args"] == {"current": {"snapshot": "current"}}
+    assert plan["steps"]["n3"]["call"]["args"] == {
+        "current": {"snapshot": "current", "optional": True}
+    }
 
 
 def test_params_outside_signature_rejected():
@@ -636,6 +638,65 @@ def test_lax_binding_downgrades_missing_required_param():
     assert any(
         i["level"] == "warning" and "必填参数 voltage 没有来源" in i["message"] for i in lax
     )
+
+
+def test_optional_param_carries_optional_flag():
+    """可选参数有来源时仍然绑定，但带上 optional：运行期缺值就省略。"""
+    doc = base_doc()
+    node(doc, "n1")["outputs"] = []
+    node(doc, START_ID)["inputs"].append({"name": "threshold", "scope": "global"})
+    functions = {
+        "cooling:judge_voltage": [
+            {"name": "voltage", "type": "float", "required": True, "default": None},
+            {"name": "threshold", "type": "float", "required": False, "default": 210.0},
+        ]
+    }
+
+    plan = compile_doc(doc, "f1", 1, functions=functions)
+
+    assert plan["steps"]["n1"]["call"]["args"] == {
+        "voltage": {"snapshot": "voltage"},
+        "threshold": {"snapshot": "threshold", "optional": True},
+    }
+
+
+def test_optional_param_from_upstream_output_carries_optional_flag():
+    doc = base_doc()
+    node(doc, "n1")["outputs"] = ["rating"]
+    doc["nodes"].append(_node("n2", "investigation", "复核", "复核电压"))
+    node(doc, "n2")["binding"] = {"project": "cooling", "function": "judge_rating"}
+    doc["edges"] = [e for e in doc["edges"] if e["id"] not in ("e1", "e2")]
+    doc["edges"].append({"id": "e20", "from": "n1", "to": "n2", "branch": "yes", "order": 1})
+    doc["edges"].append({"id": "e21", "from": "n2", "to": "c1", "branch": "yes", "order": 1})
+    doc["edges"].append({"id": "e22", "from": "n2", "to": "n9", "branch": "no", "order": 2})
+    functions = {
+        "cooling:judge_rating": [
+            {"name": "rating", "type": "float", "required": False, "default": 1.0}
+        ]
+    }
+
+    plan = compile_doc(doc, "f1", 1, functions=functions)
+
+    assert plan["steps"]["n2"]["call"]["args"] == {
+        "rating": {"run": "n1", "path": "output.rating", "optional": True}
+    }
+
+
+def test_explicit_param_is_never_optional():
+    """作者显式绑定的来源就是要传，缺值必须报错。"""
+    doc = base_doc()
+    node(doc, "n1")["outputs"] = []
+    node(doc, "n1")["params"] = {"threshold": {"snapshot": "threshold"}}
+    functions = {
+        "cooling:judge_voltage": [
+            {"name": "voltage", "type": "float", "required": True, "default": None},
+            {"name": "threshold", "type": "float", "required": False, "default": 210.0},
+        ]
+    }
+
+    plan = compile_doc(doc, "f1", 1, functions=functions)
+
+    assert plan["steps"]["n1"]["call"]["args"]["threshold"] == {"snapshot": "threshold"}
 
 
 # ---------------------------------------------------------------- 探针默认值
