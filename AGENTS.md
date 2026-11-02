@@ -49,7 +49,7 @@
 
 ## 6. 推送前必须全绿
 
-- **推送到远端前必须跑 `backend/.venv/Scripts/python -m pytest backend/tests -q`，全绿才能推。**
-- 本地已装 `pre-push` 钩子自动执行；新克隆或换机器后先跑一次 `sh scripts/install-hooks.sh`。
-- 钩子被绕过（`git push --no-verify`）或环境缺 `.venv` 时，仍要手工跑一遍再推。
+- **推送到远端前必须手工执行 `backend/.venv/Scripts/python -m pytest backend/tests -q`，看到 `N passed` 且无 `failed` / `error` 才能推。**
+- 不装 `pre-push` 钩子：钩子在后台运行，pytest 清理临时目录时没有确认通道，只能靠关闭批量删除保护绕过；改为显式手工执行，把确认留在人这边。
+- 判断结果看 pytest 汇总行，不看退出码：退出码可能被收尾清理污染。
 - 前端目前没有自动化测试，`pnpm type-check` 只保证类型；改 UI 必须在交付说明里写清手工验证步骤和实际结果。
