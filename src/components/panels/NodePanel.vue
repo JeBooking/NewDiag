@@ -595,7 +595,7 @@ function onFunctionType(row: ParamRow, value: unknown): void {
         {{
           mode === 'serial'
             ? '串行模式按各组内的顺序依次尝试，失败自动换下一条'
-            : '并行模式同时执行，顺序只影响同组内的队列排布'
+            : '并行模式同组出线一起入队、按顺序逐个执行，分支之间互不阻塞'
         }}
       </div>
     </template>

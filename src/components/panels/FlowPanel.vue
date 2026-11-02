@@ -105,7 +105,7 @@ function removeField(name: string): void {
       <el-radio-button value="serial">串行</el-radio-button>
     </el-radio-group>
     <div class="section-hint">
-      并行：同组后继同时推进；串行：按出线顺序逐条尝试，遇到问题解决节点后由人决定结束或继续
+      并行：同组后继一起入队、按顺序逐个执行，分支之间互不阻塞；串行：按出线顺序逐条尝试，遇到问题解决节点后由人决定结束或继续
     </div>
 
     <div class="section-title">快照字段</div>
