@@ -6,7 +6,7 @@
 - **发布即冻结**：已经发布、正在使用的版本不受后续编辑影响
 - **全程可回查**：每次调用的参数、返回值、走的分支、人工选择和时间都有记录
 
-设计细节见 [docs/spec.md](docs/spec.md)，协作规则见 [AGENTS.md](AGENTS.md)。
+设计细节见 [docs/spec.md](docs/spec.md)，协作规则见 [AGENTS.md](AGENTS.md)，**部署到内网服务器上长期运行**看 [docs/deploy.md](docs/deploy.md)。
 
 ## 快速开始
 
