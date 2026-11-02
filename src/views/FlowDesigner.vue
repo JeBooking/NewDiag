@@ -2,11 +2,13 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { FullScreen, RefreshLeft, RefreshRight, Share, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import FlowCanvas from '@/components/canvas/FlowCanvas.vue'
 import { layoutDoc } from '@/components/canvas/autolayout'
 import FlowPanel from '@/components/panels/FlowPanel.vue'
 import NodePanel from '@/components/panels/NodePanel.vue'
+import { useLint } from '@/components/canvas/lint'
 import type { DocNode, FlowDoc, FlowMode, LintIssue } from '@/domain/types'
 import { errorText, isApiError } from '@/services/api'
 import { updateFlow } from '@/services/flows'
@@ -22,6 +24,30 @@ const canvas = ref<InstanceType<typeof FlowCanvas> | null>(null)
 
 const flowId = computed(() => String(route.params.id))
 
+/** 校验器要求一份文档，加载完成前给个空壳，避免 useLint 首次执行时报「流程为空」 */
+const EMPTY_DOC: FlowDoc = { format: 1, name: '', mode: 'parallel', nodes: [], edges: [] }
+const lintInput = computed<FlowDoc>(() => editor.doc ?? EMPTY_DOC)
+const liveIssues = useLint(() => lintInput.value)
+
+/**
+ * 编辑期靠本地校验即时反馈，保存/发布失败时后端还会回一份更严格的结果。
+ * 后端返回的条目没有 id，只能按「级别 + 节点 + 连线 + 文案」合成键去重，
+ * 否则一张 Map 会把所有后端问题压成一条。
+ */
+function issueKey(issue: LintIssue): string {
+  return (
+    issue.id ?? `${issue.level}|${issue.nodeId ?? ''}|${issue.edgeId ?? ''}|${issue.message}`
+  )
+}
+
+const allIssues = computed<LintIssue[]>(() => {
+  if (!editor.doc) return []
+  const merged = new Map<string, LintIssue>()
+  for (const issue of liveIssues.value) merged.set(issueKey(issue), issue)
+  for (const issue of editor.issues) merged.set(issueKey(issue), issue)
+  return [...merged.values()]
+})
+
 async function load(id: string): Promise<void> {
   loadError.value = null
   try {
@@ -35,10 +61,6 @@ onMounted(() => {
   void load(flowId.value)
 })
 
-onBeforeUnmount(() => {
-  editor.close()
-})
-
 watch(flowId, (id) => {
   if (id && id !== editor.flow?.id) void load(id)
 })
@@ -50,6 +72,55 @@ function onDocUpdate(next: FlowDoc): void {
 function onSelect(nodeId: string | null): void {
   editor.selectedNodeId = nodeId
 }
+
+/* ---------- 画布基础操作 ---------- */
+
+/** 缩放读数与按钮都落在画布组件里，这里只做转发 */
+const zoomPercent = computed(() => canvas.value?.zoomPercent ?? 100)
+
+function zoomInCanvas(): void {
+  void canvas.value?.zoomIn()
+}
+
+function zoomOutCanvas(): void {
+  void canvas.value?.zoomOut()
+}
+
+function resetZoom(): void {
+  canvas.value?.resetZoom()
+}
+
+function fitCanvas(): void {
+  void canvas.value?.fitView()
+}
+
+/** 焦点在输入框时把撤销让给浏览器，否则打字会把整份文档退回去 */
+function isTyping(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null
+  if (!element) return false
+  if (element.isContentEditable) return true
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName)
+}
+
+function onKeydown(event: KeyboardEvent): void {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || isTyping(event.target)) return
+  const key = event.key.toLowerCase()
+  if (key === 'z') {
+    event.preventDefault()
+    if (event.shiftKey) editor.redo()
+    else editor.undo()
+  } else if (key === 'y') {
+    event.preventDefault()
+    editor.redo()
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  editor.close()
+})
 
 /** 整图重排：坐标覆盖式写入，dirty 与取锁都交给 applyDoc */
 async function autoLayout(): Promise<void> {
@@ -70,11 +141,8 @@ function issueNodeName(issue: LintIssue): string {
 
 function locateIssue(issue: LintIssue): void {
   if (issue.nodeId) editor.selectedNodeId = issue.nodeId
+  issuesVisible.value = false
 }
-
-const saveHasError = computed(() =>
-  editor.saveIssues.some((issue) => issue.level === 'error'),
-)
 
 /** 选中节点的出边按分支分组：是/否/默认各自排序，互不干扰 */
 const successorGroups = computed(() => {
@@ -277,7 +345,6 @@ onBeforeRouteLeave(async () => {
       </div>
       <div class="right">
         <el-button @click="startRun">开始执行</el-button>
-        <el-button :disabled="!editor.editable" @click="autoLayout">自动布局</el-button>
         <el-button :disabled="editor.readonly" :loading="editor.saving" @click="save()">
           保存
         </el-button>
@@ -299,32 +366,6 @@ onBeforeRouteLeave(async () => {
     />
 
     <el-alert
-      v-if="editor.saveIssues.length"
-      :title="`已保存，${editor.saveIssues.length} 处待处理（发布前需解决）`"
-      :type="saveHasError ? 'error' : 'warning'"
-      :closable="true"
-      show-icon
-      class="banner"
-      @close="editor.clearSaveIssues()"
-    >
-      <div class="warning-list">
-        <button
-          v-for="issue in editor.saveIssues"
-          :key="issue.id"
-          type="button"
-          class="warning-item"
-          @click="locateIssue(issue)"
-        >
-          <span class="issue-level" :class="issue.level">
-            {{ issue.level === 'error' ? '错误' : '提示' }}
-          </span>
-          <span v-if="issueNodeName(issue)" class="warning-node">{{ issueNodeName(issue) }}</span>
-          <span>{{ issue.message }}</span>
-        </button>
-      </div>
-    </el-alert>
-
-    <el-alert
       v-if="loadError"
       :title="loadError"
       type="error"
@@ -332,6 +373,49 @@ onBeforeRouteLeave(async () => {
       show-icon
       class="banner"
     />
+
+    <!-- 画布基础操作：撤销重做只动文档，与保存/发布这类流程级动作分开 -->
+    <div class="opsbar">
+      <el-button-group>
+        <el-tooltip content="撤销 (Ctrl+Z)" placement="bottom">
+          <el-button
+            :icon="RefreshLeft"
+            :disabled="!editor.editable || !editor.canUndo"
+            @click="editor.undo()"
+          />
+        </el-tooltip>
+        <el-tooltip content="重做 (Ctrl+Shift+Z)" placement="bottom">
+          <el-button
+            :icon="RefreshRight"
+            :disabled="!editor.editable || !editor.canRedo"
+            @click="editor.redo()"
+          />
+        </el-tooltip>
+      </el-button-group>
+
+      <span class="opsbar-divider" />
+
+      <el-button-group>
+        <el-tooltip content="缩小" placement="bottom">
+          <el-button
+            :icon="ZoomOut"
+            :disabled="!canvas || zoomPercent <= 20"
+            @click="zoomOutCanvas"
+          />
+        </el-tooltip>
+        <el-tooltip content="恢复 100%" placement="bottom">
+          <el-button class="zoom-readout" :disabled="!canvas" @click="resetZoom">
+            {{ zoomPercent }}%
+          </el-button>
+        </el-tooltip>
+        <el-tooltip content="放大" placement="bottom">
+          <el-button :icon="ZoomIn" :disabled="!canvas || zoomPercent >= 200" @click="zoomInCanvas" />
+        </el-tooltip>
+      </el-button-group>
+
+      <el-button :icon="FullScreen" :disabled="!canvas" @click="fitCanvas">适应画布</el-button>
+      <el-button :icon="Share" :disabled="!editor.editable" @click="autoLayout">自动布局</el-button>
+    </div>
 
     <div class="body" v-loading="editor.loading">
       <div class="canvas-area">
@@ -375,15 +459,22 @@ onBeforeRouteLeave(async () => {
       </aside>
     </div>
 
-    <el-dialog v-model="issuesVisible" title="校验未通过" width="560px">
+    <el-dialog v-model="issuesVisible" title="校验问题" width="560px">
       <div class="issue-list">
-        <div v-for="issue in editor.issues" :key="issue.id" class="issue">
+        <button
+          v-for="issue in allIssues"
+          :key="issueKey(issue)"
+          type="button"
+          class="issue"
+          @click="locateIssue(issue)"
+        >
           <el-tag size="small" :type="issue.level === 'warning' ? 'warning' : 'danger'" effect="plain">
             {{ issue.level === 'warning' ? '提示' : '错误' }}
           </el-tag>
           <span class="issue-text">{{ issue.message }}</span>
-          <span v-if="issue.nodeId" class="issue-node">{{ issue.nodeId }}</span>
-        </div>
+          <span v-if="issueNodeName(issue)" class="issue-node">{{ issueNodeName(issue) }}</span>
+        </button>
+        <div v-if="!allIssues.length" class="issue-empty">没有发现问题</div>
       </div>
       <template #footer>
         <el-button type="primary" @click="issuesVisible = false">知道了</el-button>
@@ -418,6 +509,32 @@ onBeforeRouteLeave(async () => {
   gap: 8px;
 }
 
+/* 第二条栏只放画布级动作，视觉上比顶部流程栏低一档 */
+.opsbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  background: var(--el-bg-color);
+  border-bottom: 1px solid var(--el-border-color-light);
+  flex: none;
+}
+
+.opsbar :deep(.el-button-group) {
+  display: inline-flex;
+}
+
+.opsbar-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--el-border-color);
+}
+
+.zoom-readout {
+  min-width: 58px;
+  font-variant-numeric: tabular-nums;
+}
+
 .flow-name {
   font-size: 14px;
   font-weight: 600;
@@ -426,52 +543,6 @@ onBeforeRouteLeave(async () => {
 .banner {
   flex: none;
   border-radius: 0;
-}
-
-.warning-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: 4px;
-}
-
-.issue-level {
-  flex: none;
-  padding: 0 4px;
-  border-radius: 3px;
-  font-size: 11px;
-  line-height: 16px;
-  color: #fff;
-  background: var(--el-color-warning);
-}
-
-.issue-level.error {
-  background: var(--el-color-danger);
-}
-
-.warning-item {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  padding: 2px 0;
-  border: none;
-  background: none;
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--el-text-color-regular);
-  text-align: left;
-  cursor: pointer;
-}
-
-.warning-item:hover {
-  color: var(--el-color-primary);
-}
-
-.warning-node {
-  flex: none;
-  font-weight: 500;
-  color: var(--el-color-warning-dark-2);
 }
 
 .body {
@@ -508,8 +579,24 @@ onBeforeRouteLeave(async () => {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  padding: 4px 0;
+  border: none;
+  background: none;
+  font: inherit;
   font-size: 12px;
   line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+}
+
+.issue:hover {
+  color: var(--el-color-primary);
+}
+
+.issue-empty {
+  padding: 12px 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .issue-text {

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import { ensureLayout } from '@/components/canvas/autolayout'
 import type { DocEdge, DocNode, FlowDetail, FlowDoc, FlowMode, LintIssue } from '@/domain/types'
 import { CURRENT_USER, isApiError } from '@/services/api'
@@ -14,6 +14,14 @@ import {
 } from '@/services/flows'
 
 const AUTOSAVE_DELAY = 2000
+/** 撤销栈最多留这么多步，再多也没人点 */
+const HISTORY_LIMIT = 60
+/** 连续输入/拖拽会在极短时间内反复 applyDoc，这个窗口内的改动合成一条历史 */
+const HISTORY_MERGE = 400
+
+function cloneDoc(doc: FlowDoc): FlowDoc {
+  return JSON.parse(JSON.stringify(doc)) as FlowDoc
+}
 
 /** 后端在没有 revision 时可能返回 {}，补齐成画布能消费的空文档 */
 function coerceDoc(raw: unknown, name: string, mode: FlowMode): FlowDoc {
@@ -92,6 +100,13 @@ export const useEditorStore = defineStore('editor', () => {
   const issues = ref<LintIssue[]>([])
   const saveIssues = ref<LintIssue[]>([])
   const lastSavedAt = ref<string | null>(null)
+  /** 历史里存的是整份文档快照，不做深响应式，省得 60 份文档全被代理 */
+  const undoStack = shallowRef<FlowDoc[]>([])
+  const redoStack = shallowRef<FlowDoc[]>([])
+  let lastPushAt = 0
+
+  const canUndo = computed(() => undoStack.value.length > 0)
+  const canRedo = computed(() => redoStack.value.length > 0)
 
   let autosaveTimer: ReturnType<typeof setTimeout> | null = null
   /** 进行中的检出请求；连续改动共用同一次 checkout */
@@ -107,8 +122,15 @@ export const useEditorStore = defineStore('editor', () => {
     autosaveTimer = null
   }
 
+  function clearHistory(): void {
+    undoStack.value = []
+    redoStack.value = []
+    lastPushAt = 0
+  }
+
   function reset(): void {
     clearAutosave()
+    clearHistory()
     flow.value = null
     doc.value = null
     readonly.value = false
@@ -174,8 +196,37 @@ export const useEditorStore = defineStore('editor', () => {
     return lockPromise
   }
 
+  /** 记一步历史；时间窗口内的连击只在第一次留底，撤销时整段回退 */
+  function snapshot(before: FlowDoc): void {
+    const now = Date.now()
+    if (now - lastPushAt < HISTORY_MERGE && undoStack.value.length > 0) {
+      lastPushAt = now
+      redoStack.value = []
+      return
+    }
+    const next = [...undoStack.value, cloneDoc(before)]
+    if (next.length > HISTORY_LIMIT) next.shift()
+    undoStack.value = next
+    redoStack.value = []
+    lastPushAt = now
+  }
+
+  /** 落一批文档改动；history 由调用方决定记不记，undo/redo 自己不走这里 */
+  function commitDoc(next: FlowDoc): void {
+    doc.value = next
+    // 撤销可能删掉当前选中的节点，属性面板不能挂在一个已经不存在的 id 上
+    if (selectedNodeId.value && !next.nodes.some((node) => node.id === selectedNodeId.value)) {
+      selectedNodeId.value = null
+    }
+    if (readonly.value) return
+    dirty.value = true
+    // 改动即抢锁，抢不到会转只读；autosave 复用同一个 Promise
+    void ensureLock().catch(() => {})
+    scheduleAutosave()
+  }
+
   function applyDoc(next: FlowDoc): void {
-    if (!doc.value) return
+    if (!doc.value || next === doc.value) return
     // 画布的 Delete 键也能删节点，开始节点是入口，丢了就补回来
     const start = doc.value.nodes.find((node) => node.kind === 'start')
     let resolved = next
@@ -186,12 +237,27 @@ export const useEditorStore = defineStore('editor', () => {
         edges: next.edges.filter((edge) => edge.from !== start.id && edge.to !== start.id),
       }
     }
-    doc.value = resolved
-    if (readonly.value) return
-    dirty.value = true
-    // 改动即抢锁，抢不到会转只读；autosave 复用同一个 Promise
-    void ensureLock().catch(() => {})
-    scheduleAutosave()
+    snapshot(doc.value)
+    commitDoc(resolved)
+  }
+
+  function undo(): void {
+    if (!doc.value || readonly.value || undoStack.value.length === 0) return
+    const previous = undoStack.value[undoStack.value.length - 1]
+    redoStack.value = [...redoStack.value, cloneDoc(doc.value)]
+    undoStack.value = undoStack.value.slice(0, -1)
+    // 撤销/重做本身就是历史边界，紧接着的改动必须新开一条，不能并进刚回退的那一步
+    lastPushAt = 0
+    commitDoc(previous)
+  }
+
+  function redo(): void {
+    if (!doc.value || readonly.value || redoStack.value.length === 0) return
+    const next = redoStack.value[redoStack.value.length - 1]
+    undoStack.value = [...undoStack.value, cloneDoc(doc.value)]
+    redoStack.value = redoStack.value.slice(0, -1)
+    lastPushAt = 0
+    commitDoc(next)
   }
 
   async function autosave(): Promise<void> {
@@ -299,8 +365,12 @@ export const useEditorStore = defineStore('editor', () => {
     issues,
     saveIssues,
     lastSavedAt,
+    canUndo,
+    canRedo,
     open,
     applyDoc,
+    undo,
+    redo,
     save,
     publish,
     discard,

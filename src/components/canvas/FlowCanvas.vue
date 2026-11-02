@@ -30,6 +30,7 @@ import type {
 } from '@/domain/types'
 import { NODE_DRAG_TYPE, nodeTypes, type NodeCardData, type NodeIssue } from '@/components/nodes'
 import { edgeTypes, type EdgeBranchData } from '@/components/edges'
+import { ICON_ERROR, ICON_WARNING } from './issue-icons'
 import NodePalette from './NodePalette.vue'
 
 const NODE_WIDTH = 220
@@ -104,8 +105,17 @@ const emit = defineEmits<{
 
 // 父组件也要 project/坐标换算，必须与 <VueFlow> 共用同一个 store
 const flowId = `canvas-${Math.random().toString(36).slice(2, 8)}`
-const { project, dimensions, viewport, setCenter, connectionStartHandle, fitView } =
-  useVueFlow(flowId)
+const {
+  project,
+  dimensions,
+  viewport,
+  setCenter,
+  connectionStartHandle,
+  fitView,
+  zoomIn,
+  zoomOut,
+  zoomTo,
+} = useVueFlow(flowId)
 
 const wrapper = ref<HTMLElement | null>(null)
 const nodes = ref<Node[]>([])
@@ -407,6 +417,20 @@ const activeLabel = computed(() => {
   const prefix = props.status[activeIds.value[0]] === 'running' ? '运行中' : '待处理'
   return activeIds.value.length > 1 ? `${prefix} ${activeIds.value.length}` : prefix
 })
+
+/** 全局校验角标：整张图还剩几处问题，挂在画布左上空白处，和旧项目一样不占节点位置 */
+const globalWorst = computed(() =>
+  props.issues.some((issue) => issue.level === 'error') ? 'error' : 'warning',
+)
+
+function issueNodeTitle(nodeId?: string): string {
+  if (!nodeId) return ''
+  return nodeMeta.get(nodeId)?.title || nodeId
+}
+
+function locateIssue(issue: LintIssue) {
+  if (issue.nodeId) emit('select-node', issue.nodeId)
+}
 
 function focusActive() {
   const id = activeIds.value[0]
@@ -775,8 +799,15 @@ onBeforeUnmount(() => {
   clearCloseTimer()
 })
 
+/** 缩放百分比给父组件的操作栏读数用，取整避免 99.999% 这种抖动 */
+const zoomPercent = computed(() => Math.round(viewport.value.zoom * 100))
+
+function resetZoom() {
+  void zoomTo(1, { duration: 200 })
+}
+
 // 自动布局后坐标整批换掉，需要外部触发重新取景；fitView 只在本组件的 store 上有效
-defineExpose({ fitView })
+defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom })
 </script>
 
 <template>
@@ -817,7 +848,36 @@ defineExpose({ fitView })
       <Controls :show-interactive="!readonly" />
       <MiniMap pannable zoomable :node-color="minimapColor" :width="160" :height="110" />
       <Panel v-if="!readonly" position="top-left" class="palette-panel">
-        <NodePalette :disabled="readonly" @add="(kind) => addNode(kind, centerPosition())" />
+        <div class="palette-stack">
+          <NodePalette :disabled="readonly" @add="(kind) => addNode(kind, centerPosition())" />
+          <div v-if="issues.length" class="issue-global-wrap" :class="globalWorst">
+            <span class="issue-global-badge">
+              <svg v-if="globalWorst === 'error'" viewBox="0 0 512 512" aria-hidden="true">
+                <path :d="ICON_ERROR" fill="currentColor" />
+              </svg>
+              <svg v-else viewBox="0 0 512 512" aria-hidden="true">
+                <path :d="ICON_WARNING" fill="currentColor" />
+              </svg>
+            </span>
+            <span class="issue-global-count">{{ issues.length }} 处问题</span>
+            <div class="issue-global-pop">
+              <div class="issue-global-head">整图校验 · {{ issues.length }} 处</div>
+              <button
+                v-for="(issue, index) in issues"
+                :key="index"
+                type="button"
+                class="issue-global-row"
+                @click="locateIssue(issue)"
+              >
+                <span class="issue-global-dot" :class="issue.level" />
+                <span class="issue-global-text">{{ issue.message }}</span>
+                <span v-if="issueNodeTitle(issue.nodeId)" class="issue-global-node">
+                  {{ issueNodeTitle(issue.nodeId) }}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
       </Panel>
       <Panel v-if="activeIds.length" position="top-right" class="focus-panel">
         <button type="button" class="focus-chip" @click="focusActive">
@@ -865,6 +925,126 @@ defineExpose({ fitView })
 
 .palette-panel {
   margin: 12px;
+}
+
+/* 同一位置的 Panel 会互相重叠，所以面板与全局角标放进同一个栈里纵向排列 */
+.palette-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.issue-global-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 3px;
+  border-radius: 12px;
+  background: var(--el-bg-color-overlay);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 10%);
+  cursor: default;
+}
+
+.issue-global-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 5px;
+  border-radius: 50%;
+  color: #fff;
+  background: #f7c71a;
+}
+
+.issue-global-wrap.error .issue-global-badge {
+  background: #cc0000;
+}
+
+.issue-global-badge svg {
+  width: 100%;
+  height: 100%;
+}
+
+.issue-global-count {
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+}
+
+.issue-global-pop {
+  position: absolute;
+  top: 28px;
+  left: 0;
+  z-index: 20;
+  display: none;
+  width: 300px;
+  max-height: 280px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  background: #fafafa;
+  box-shadow: 0 6px 16px rgb(0 0 0 / 12%);
+  font-size: 12px;
+}
+
+.issue-global-wrap:hover .issue-global-pop {
+  display: block;
+}
+
+.issue-global-head {
+  padding: 2px 4px 6px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.issue-global-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  width: 100%;
+  padding: 4px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+
+.issue-global-row:hover {
+  background: var(--el-fill-color-light);
+}
+
+.issue-global-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #f7c71a;
+}
+
+.issue-global-dot.error {
+  background: #cc0000;
+}
+
+.issue-global-text {
+  flex: 1;
+  color: var(--el-text-color-primary);
+}
+
+.issue-global-node {
+  flex: none;
+  max-width: 96px;
+  overflow: hidden;
+  color: var(--el-text-color-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 画布缩到看不清卡片时，这颗按钮是唯一的「当前在哪」硬入口 */

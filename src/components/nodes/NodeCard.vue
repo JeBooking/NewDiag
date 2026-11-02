@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { KIND_META } from '@/domain/kinds'
 import type { NodeVisualStatus } from '@/domain/types'
+import { ICON_ERROR, ICON_WARNING } from '@/components/canvas/issue-icons'
 import type { NodeCardData } from './index'
 
 // 画布会把 position/dimensions 等内部字段一并透传，避免它们落到 DOM 属性上
@@ -119,7 +120,14 @@ const worst = computed(() => {
     </div>
 
     <div v-if="issues.length" class="issue-wrap" :class="worst">
-      <span class="issue-badge">{{ issues.length > 9 ? '9+' : issues.length }}</span>
+      <span class="issue-badge">
+        <svg v-if="worst === 'error'" viewBox="0 0 512 512" aria-hidden="true">
+          <path :d="ICON_ERROR" fill="currentColor" />
+        </svg>
+        <svg v-else viewBox="0 0 512 512" aria-hidden="true">
+          <path :d="ICON_WARNING" fill="currentColor" />
+        </svg>
+      </span>
       <div class="issue-pop">
         <div class="issue-pop-head">
           {{ worst === 'error' ? '校验错误' : '提示' }} · {{ issues.length }} 条
@@ -356,28 +364,31 @@ const worst = computed(() => {
 
 .issue-wrap {
   position: absolute;
-  top: -8px;
-  right: -8px;
+  top: -7px;
+  right: -7px;
   z-index: 3;
 }
 
+/* 与旧项目一致：20px 圆形角标、内边距 5px、白图标，错误红底、提示黄底，不显示条数 */
 .issue-badge {
-  display: block;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border: 1px solid var(--el-bg-color-overlay);
-  border-radius: 8px;
-  font-size: 10px;
-  line-height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 5px;
+  border-radius: 50%;
   color: #fff;
-  text-align: center;
-  background: var(--el-color-warning);
-  cursor: default;
+  background: #f7c71a;
 }
 
 .issue-wrap.error .issue-badge {
-  background: var(--el-color-danger);
+  background: #cc0000;
+}
+
+.issue-badge svg {
+  width: 100%;
+  height: 100%;
 }
 
 .issue-pop {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type Position } from '@vue-flow/core'
+import { ICON_ERROR, ICON_WARNING } from '@/components/canvas/issue-icons'
 import type { EdgeBranchData } from './index'
 
 defineOptions({ inheritAttrs: false })
@@ -24,6 +25,10 @@ const branch = computed(() => props.data?.branch ?? null)
 const color = computed(() => (branch.value ? BRANCH_COLOR[branch.value] : '#94a3b8'))
 const label = computed(() => (branch.value === 'yes' ? '是' : branch.value === 'no' ? '否' : ''))
 
+/** 连线自身的问题：矩阵不允许、缺分支、悬空，就地标叉，不要求用户先去列表里找 */
+const issueLevel = computed(() => props.data?.issueLevel ?? null)
+const issueText = computed(() => props.data?.issueMessage ?? '')
+
 const bezier = computed(() =>
   getBezierPath({
     sourceX: props.sourceX,
@@ -37,17 +42,27 @@ const bezier = computed(() =>
 
 const path = computed(() => bezier.value[0])
 
+/** 叉号压在一条有「是/否」标签的边上时要让开标签，否则两者重叠成一团 */
+const issueStyle = computed(() => {
+  const offset = label.value ? 16 : 0
+  return {
+    transform: `translate(-50%, -50%) translate(${bezier.value[1]}px, ${bezier.value[2] - offset}px)`,
+  }
+})
+
 /** 选中节点直连的边走虚线动画，方向天然是 from → to */
 const edgeStyle = computed(() => {
   const flowing = props.data?.flowing === true
   const trail = props.data?.trail ?? null
   const faded = props.data?.faded === true
+  const issue = issueLevel.value
   return {
-    stroke: color.value,
-    strokeWidth: props.selected || flowing ? 2.4 : trail === 'taken' ? 2.2 : 1.6,
+    stroke: issue ? (issue === 'error' ? '#dc2626' : '#d97706') : color.value,
+    strokeWidth: issue ? 2.2 : props.selected || flowing ? 2.4 : trail === 'taken' ? 2.2 : 1.6,
     // 走过的路径保持实线到底，没走的一律压淡：跑完之后「走了哪条」是画布要回答的首要问题
-    opacity: faded ? 0.28 : trail === 'dropped' ? 0.45 : 1,
+    opacity: faded && !issue ? 0.28 : trail === 'dropped' ? 0.45 : 1,
     ...(trail === 'dropped' ? { strokeDasharray: '5 4' } : {}),
+    ...(issue ? { strokeDasharray: '6 4' } : {}),
     ...(flowing && trail !== 'dropped'
       ? { strokeDasharray: '7 5', animation: 'edge-flow 0.7s linear infinite' }
       : {}),
@@ -75,6 +90,20 @@ const edgeStyle = computed(() => {
     >
       {{ label }}
     </div>
+    <div
+      v-if="issueLevel"
+      class="edge-issue"
+      :class="issueLevel"
+      :style="issueStyle"
+      :title="issueText"
+    >
+      <svg v-if="issueLevel === 'error'" viewBox="0 0 512 512" aria-hidden="true">
+        <path :d="ICON_ERROR" fill="currentColor" />
+      </svg>
+      <svg v-else viewBox="0 0 512 512" aria-hidden="true">
+        <path :d="ICON_WARNING" fill="currentColor" />
+      </svg>
+    </div>
   </EdgeLabelRenderer>
 </template>
 
@@ -89,6 +118,34 @@ const edgeStyle = computed(() => {
   line-height: 14px;
   pointer-events: none;
   user-select: none;
+}
+
+/* 与节点上的角标同一套形状：20px 圆形、内边距 5px、白图标，错误红底、提示黄底 */
+.edge-issue {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 5px;
+  border-radius: 50%;
+  color: #fff;
+  pointer-events: none;
+  user-select: none;
+}
+
+.edge-issue.error {
+  background: #cc0000;
+}
+
+.edge-issue.warning {
+  background: #f7c71a;
+}
+
+.edge-issue svg {
+  width: 100%;
+  height: 100%;
 }
 </style>
 
