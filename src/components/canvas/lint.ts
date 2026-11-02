@@ -183,13 +183,14 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
       }
     } else if (isSingleSuccessor(node.kind)) {
       if (outs.length !== 1) {
+        const label = KIND_META[node.kind]?.label ?? '节点'
         issues.push({
           id: `node:${node.id}:single-out`,
           level: 'error',
           message:
             outs.length === 0
-              ? `结论「${displayName(node)}」必须有一条出线`
-              : `结论「${displayName(node)}」只能有一条出线，当前有 ${outs.length} 条`,
+              ? `${label}「${displayName(node)}」必须有一条出线`
+              : `${label}「${displayName(node)}」只能有一条出线，当前有 ${outs.length} 条`,
           nodeId: node.id,
         })
       }

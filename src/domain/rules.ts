@@ -7,14 +7,15 @@ import { KIND_META } from './kinds'
  */
 export const CONNECTION_RULES: Record<NodeKind, NodeKind[]> = {
   start: ['investigation'],
-  investigation: ['investigation', 'investigationAction', 'conclusion', 'escalation'],
+  investigation: ['investigation', 'investigationAction', 'conclusion', 'escalation', 'jump'],
   investigationAction: ['investigation'],
-  conclusion: ['remediation', 'escalation'],
-  remediation: ['remediation', 'problemSolved', 'escalation'],
+  conclusion: ['remediation', 'escalation', 'jump'],
+  remediation: ['remediation', 'problemSolved', 'escalation', 'jump'],
   problemSolved: [],
   escalation: [],
   deepDiagnosis: ['investigation'],
-  jump: ['investigation'],
+  // 转交成功后只能接问题解决；转交失败由人工待办回退，不另设分支
+  jump: ['problemSolved'],
 }
 
 export function canConnect(from: NodeKind, to: NodeKind): boolean {

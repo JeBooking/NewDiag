@@ -67,7 +67,10 @@ export const KIND_META: Record<NodeKind, KindMeta> = {
   jump: {
     label: '跳转',
     color: '#64748b',
+    // 转交给另一条诊断链路：当前是人工确认的文本节点，确认成功后接问题解决
+    humanOnly: true,
     branch: 'single',
+    singleSuccessor: true,
   },
 }
 
@@ -76,6 +79,7 @@ export const V1_KINDS: NodeKind[] = [
   'investigationAction',
   'conclusion',
   'remediation',
+  'jump',
   'problemSolved',
   'escalation',
 ]

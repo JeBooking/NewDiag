@@ -244,26 +244,30 @@ SQLite（WAL）。时间统一 ISO8601 UTC。除 `files` 用内容哈希作主�
 | investigation | 排查 | 菱形 | 有绑定则自动，无绑定则人工判断 | 是 / 否两组 |
 | investigationAction | 排查动作 | 正梯形 | 否，人工 | 完成后接排查 |
 | conclusion | 结论 | 矩形 | 否，展示设计时文本后继续 | 恰好一条，接处置或上升 |
-| remediation | 处置措施 | 倒梯形 | 否，人工 | 处置 / 问题解决 / 上升 |
+| remediation | 处置措施 | 倒梯形 | 否，人工 | 处置 / 问题解决 / 上升 / 跳转 |
+| jump | 跳转 | —（文本节点） | 否，人工 | 恰好一条，接问题解决 |
 | problemSolved | 问题解决 | 三角形 | 否 | 无 |
 | escalation | 上升 | 五角星 | 否 | 无 |
 
 `形状` 列只保留旧项目的视觉语义：v1 的画布统一把节点渲染为定宽卡片（见第 8 节），编译与调度都不依赖它。
 
-v1 不实现：`deepDiagnosis`（深度诊断）、`jump`（跳转）。枚举保留，属性面板不提供入口。理由：旧项目中 `jump` 仅返回转交状态、并未真正跳转，属于半成品。
+**跳转节点**：把当前诊断转交给另一条诊断链路，本质是 import 另一个流程。当前阶段先做成人工确认的文本节点——节点说明写清转交给谁，执行到它时生成待办；人工确认转交完成则接「问题解决」，转交不出去则回退（继续尝试其他思路）。后续再接入真实的跨流程调用，届时由被调用链路的成功/失败回填到本节点。
+
+v1 不实现：`deepDiagnosis`（深度诊断）。枚举保留，属性面板不提供入口。
 
 ### 连接规则
 
-沿用旧项目的矩阵，去掉未实现的类型：
+沿用旧项目的矩阵：
 
 ```json
 {
   "start": ["investigation", "generic"],
   "generic": ["remediation", "problemSolved", "escalation", "generic"],
-  "investigation": ["investigation", "investigationAction", "conclusion", "escalation"],
+  "investigation": ["investigation", "investigationAction", "conclusion", "escalation", "jump"],
   "investigationAction": ["investigation"],
-  "conclusion": ["remediation", "escalation"],
-  "remediation": ["remediation", "problemSolved", "escalation"],
+  "conclusion": ["remediation", "escalation", "jump"],
+  "remediation": ["remediation", "problemSolved", "escalation", "jump"],
+  "jump": ["problemSolved"],
   "problemSolved": [],
   "escalation": []
 }

@@ -12,12 +12,14 @@ from __future__ import annotations
 CONNECTION_RULES: dict[str, list[str]] = {
     "start": ["investigation", "generic"],
     "generic": ["remediation", "problemSolved", "escalation", "generic"],
-    "investigation": ["investigation", "investigationAction", "conclusion", "escalation"],
+    "investigation": ["investigation", "investigationAction", "conclusion", "escalation", "jump"],
     "investigationAction": ["investigation"],
-    "conclusion": ["remediation", "escalation"],
-    "remediation": ["remediation", "problemSolved", "escalation"],
+    "conclusion": ["remediation", "escalation", "jump"],
+    "remediation": ["remediation", "problemSolved", "escalation", "jump"],
     "problemSolved": [],
     "escalation": [],
+    # 转交成功后只能接问题解决；转交失败由人工待办回退，不另设分支
+    "jump": ["problemSolved"],
 }
 
 START_KIND = "start"
@@ -34,7 +36,8 @@ KIND_SPECS: dict[str, dict[str, bool | str]] = {
     "problemSolved": {"branch": "none", "terminal": True, "success": True},
     "escalation": {"branch": "none", "terminal": True},
     "deepDiagnosis": {"branch": "single"},
-    "jump": {"branch": "single"},
+    # 转交给另一条诊断链路：当前是人工确认的文本节点，确认成功后接问题解决
+    "jump": {"branch": "single", "human_only": True, "single_successor": True},
 }
 
 V1_KINDS = (
@@ -43,6 +46,7 @@ V1_KINDS = (
     "investigationAction",
     "conclusion",
     "remediation",
+    "jump",
     "problemSolved",
     "escalation",
 )

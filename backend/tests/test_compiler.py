@@ -394,6 +394,66 @@ def test_conclusion_with_two_outgoing_rejected():
     assert "恰好一条出线" in messages(doc)
 
 
+# ---------------------------------------------------------------- 跳转节点
+
+
+def jump_doc() -> dict:
+    """排查：是 → 跳转（转交别的链路）→ 问题解决；否 → 上升。"""
+    return {
+        "format": 1,
+        "name": "转交流程",
+        "mode": "parallel",
+        "nodes": [
+            _start_node([]),
+            _node("n1", "investigation", "判断能否本流程处理", "本流程处理不了就转交"),
+            _node("j1", "jump", "转交整机链路", "转交给整机诊断流程继续排查"),
+            _node("p1", "problemSolved", "问题解决", "转交后确认解决"),
+            _node("e1", "escalation", "上升", "其余情况上升"),
+        ],
+        "edges": [
+            {"id": "s1", "from": START_ID, "to": "n1", "order": 1},
+            {"id": "e1", "from": "n1", "to": "j1", "branch": "yes", "order": 1},
+            {"id": "e2", "from": "n1", "to": "e1", "branch": "no", "order": 2},
+            {"id": "e3", "from": "j1", "to": "p1", "order": 1},
+        ],
+    }
+
+
+def test_jump_compiles_to_human_step():
+    doc = jump_doc()
+    assert errors(doc) == []
+
+    plan = compile_doc(doc, "f1", 3)
+
+    step = plan["steps"]["j1"]
+    assert step["kind"] == "jump"
+    assert step["human"] is True
+    assert step["next"] == {"default": ["p1"]}
+    # 转交是中间节点，不能标成终态，否则不会投递到问题解决
+    assert "terminal" not in step
+
+
+def test_jump_only_connects_problem_solved():
+    doc = jump_doc()
+    edge(doc, "e3")["to"] = "n1"
+
+    assert "不允许的连接" in messages(doc)
+
+
+def test_jump_requires_exactly_one_outgoing():
+    doc = jump_doc()
+    doc["edges"].append({"id": "e4", "from": "j1", "to": "p1", "order": 2})
+
+    assert "跳转节点必须恰好一条出线" in messages(doc)
+
+
+def test_jump_requires_detail():
+    doc = jump_doc()
+    node(doc, "j1")["detail"] = ""
+
+    assert "跳转缺少说明" in messages(doc)
+
+
 def test_unreachable_terminal_rejected():
     doc = base_doc()
     doc["nodes"].append(_node("x1", "investigation", "孤立排查", "不在主路径上"))

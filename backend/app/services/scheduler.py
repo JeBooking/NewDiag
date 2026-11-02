@@ -662,9 +662,13 @@ class Scheduler:
             "title": meta.get("title") or token.node_id,
             "detail": meta.get("detail") or "",
             "attachments": meta.get("attachments") or [],
+            "nodeKind": step.get("kind"),
         }
         if kind == "decision":
             request["instructions"] = "按节点的判定依据选择「是」或「否」"
+        elif step.get("kind") == "jump":
+            # 转交是「把问题交出去」，不是在本流程里做一个动作，提示要区分开
+            request["instructions"] = "转交给对应链路后选「完成」；转交不出去请回退"
         else:
             request["instructions"] = "完成动作后选「完成」；没做成请回退"
         review = models.Review(

@@ -72,7 +72,9 @@ const formatTime = (value?: string | null): string =>
 
 function kindLabel(review: ReviewTask): string {
   if (review.request.type === 'after_success') return '串行决策'
-  return review.kind === 'decision' ? '判断' : '处置'
+  if (review.kind === 'decision') return '判断'
+  // 转交节点的「完成」语义是把问题交给别的链路，不是处置动作，标签要区分
+  return review.request.nodeKind === 'jump' ? '转交' : '处置'
 }
 
 async function decide(result: 'yes' | 'no' | 'done' | 'continue'): Promise<void> {

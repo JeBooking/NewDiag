@@ -764,3 +764,53 @@ def test_required_param_missing_still_fails(env):
     wait_for(env.factory, lambda: status_of(env.factory) == "failed", label="参数失败")
     failed = runs(env.factory, "n1")
     assert failed and "execution/argument" in failed[0].error
+
+
+# ---------------------------------------------------------------- 跳转节点
+
+
+def jump_doc() -> dict:
+    """排查：是 → 跳转（转交别的链路）→ 问题解决；否 → 上升。"""
+    return {
+        "format": 1,
+        "name": "转交流程",
+        "mode": "parallel",
+        "nodes": [
+            _start(),
+            _node("n1", "investigation", "判断能否本流程处理", code=True),
+            _node("j1", "jump", "转交整机链路"),
+            _node("p1", "problemSolved", "问题解决"),
+            _node("e1", "escalation", "上升"),
+        ],
+        "edges": [
+            {"id": "s0", "from": "start", "to": "n1", "order": 1},
+            {"id": "x1", "from": "n1", "to": "j1", "branch": "yes", "order": 1},
+            {"id": "x2", "from": "n1", "to": "e1", "branch": "no", "order": 2},
+            {"id": "x3", "from": "j1", "to": "p1", "order": 1},
+        ],
+    }
+
+
+def test_jump_waits_review_then_reaches_success(env):
+    seed(env.factory, jump_doc())
+    env.sessions.results["judge_voltage"] = True
+
+    env.scheduler.start("i1")
+    wait_for(
+        env.factory,
+        lambda: any(r.node_id == "j1" for r in pending_reviews(env.factory)),
+        label="转交待办",
+    )
+
+    review = next(r for r in pending_reviews(env.factory) if r.node_id == "j1")
+    assert review.kind == "action"
+    request = json.loads(review.request_json)
+    assert request["nodeKind"] == "jump"
+    assert "转交" in request["instructions"]
+    assert token_of(env.factory, "j1").status == "waiting"
+
+    env.scheduler.submit_review("i1", review.id, {"result": "done"})
+    wait_for(env.factory, lambda: status_of(env.factory) == "success", label="转交后成功")
+
+    assert token_of(env.factory, "j1").status == "done"
+    assert token_of(env.factory, "p1").status == "done"

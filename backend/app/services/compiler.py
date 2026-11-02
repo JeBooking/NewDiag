@@ -293,7 +293,9 @@ def _check_out_edges(
                 )
         elif rules.is_single_successor(kind):
             if len(out_edges) != 1:
-                issues.append(_issue(LEVEL_ERROR, "结论节点必须恰好一条出线", node_id=nid))
+                issues.append(
+                    _issue(LEVEL_ERROR, f"{_kind_label(kind)}节点必须恰好一条出线", node_id=nid)
+                )
         elif len(_unique(targets)) > 1 and not rules.allows_multiple_targets(kind):
             issues.append(_issue(LEVEL_ERROR, "不支持隐式分叉，请为每个后继单独建节点", node_id=nid))
 
@@ -865,6 +867,7 @@ def _kind_label(kind: str) -> str:
         "investigationAction": "排查动作",
         "conclusion": "结论",
         "remediation": "处置措施",
+        "jump": "跳转",
         "problemSolved": "问题解决",
         "escalation": "上升",
     }.get(kind, str(kind))
