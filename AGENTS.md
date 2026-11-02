@@ -2,6 +2,9 @@
 
 本文件约束所有参与本仓库开发的 agent。`docs/spec.md` 是唯一设计依据，冲突时以 spec 为准，并在此处登记偏差。
 
+## 0. 沟通风格（重要）
+- **高信息密度（2026-10-30 两次强调）**：像真人对话一样，先想清楚再说，把话浓缩到最少字数。追求**每句话的信息熵**，不是砍掉结论只留干条——是删废话、删铺垫、删重复、删总结式收尾。宁短勿长。
+
 ## 1. 技术栈
 
 - 前端：Vue 3.5 + TypeScript 5.9 + Vite 7 + Vue Router 4 + Pinia 3 + Element Plus 2 + `@vue-flow/core` 1.x
@@ -43,3 +46,10 @@
 - 前端：`pnpm type-check` 通过；自己的组件能在 `pnpm dev` 下渲染
 - 后端：`backend/.venv/Scripts/python -m pytest` 通过；`uvicorn` 能起
 - 改动后只跑与自己相关的检查，不要全仓库格式化
+
+## 6. 推送前必须全绿
+
+- **推送到远端前必须跑 `backend/.venv/Scripts/python -m pytest backend/tests -q`，全绿才能推。**
+- 本地已装 `pre-push` 钩子自动执行；新克隆或换机器后先跑一次 `sh scripts/install-hooks.sh`。
+- 钩子被绕过（`git push --no-verify`）或环境缺 `.venv` 时，仍要手工跑一遍再推。
+- 前端目前没有自动化测试，`pnpm type-check` 只保证类型；改 UI 必须在交付说明里写清手工验证步骤和实际结果。

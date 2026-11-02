@@ -1,0 +1,25 @@
+#!/bin/sh
+# 推送前跑后端测试：测试挂了就拦住推送，避免把红着的代码推到远端。
+# 确需绕过时用 git push --no-verify。
+root=$(git rev-parse --show-toplevel) || exit 1
+cd "$root" || exit 1
+
+if [ -x backend/.venv/Scripts/python.exe ]; then
+  PY=backend/.venv/Scripts/python.exe
+elif [ -x backend/.venv/bin/python ]; then
+  PY=backend/.venv/bin/python
+else
+  # 没有虚拟环境时不假装通过，明确提示让推送方自己决定
+  echo "[pre-push] 找不到 backend/.venv，无法运行测试，请手工执行 pytest" >&2
+  exit 1
+fi
+
+echo "[pre-push] 运行后端测试 backend/tests …" >&2
+"$PY" -m pytest backend/tests -q
+status=$?
+
+if [ "$status" -ne 0 ]; then
+  echo "[pre-push] 测试未通过，已阻止推送。确要推送请用 git push --no-verify" >&2
+fi
+
+exit "$status"
