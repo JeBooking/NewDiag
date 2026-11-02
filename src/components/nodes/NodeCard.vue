@@ -199,18 +199,19 @@ const worst = computed(() => {
 
 /* 执行入口独立一行：既保住点击面积，也不和「自动/人工」挤在同一行 */
 .run-chip {
-  padding: 0 5px;
-  border: 1px solid color-mix(in srgb, var(--el-color-primary) 45%, transparent);
-  border-radius: 3px;
-  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 11px;
   line-height: 15px;
-  color: var(--el-color-primary);
-  background: color-mix(in srgb, var(--el-color-primary) 10%, transparent);
+  color: #fff;
+  background: var(--el-color-primary);
   cursor: pointer;
 }
 
 .run-chip:hover {
-  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-dark-2);
 }
 
 .flow-upstream {
