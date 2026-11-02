@@ -1,4 +1,5 @@
 import type { NodeKind } from './types'
+import { KIND_META } from './kinds'
 
 /**
  * 与后端 app/services/rules.py 保持一致的连接矩阵。
@@ -22,8 +23,11 @@ export function canConnect(from: NodeKind, to: NodeKind): boolean {
   return targets.includes(to)
 }
 
-/** 结论只允许一个后继；其余节点允许多条 */
-export const isSingleSuccessor = (kind: NodeKind) => kind === 'conclusion'
+/**
+ * 分支语义只认 KIND_META.branch 一处：卡片画几个出口、连线记不记 branch 必须同源。
+ * 否则新增是/否类型时，卡片长出两个出口、边却按默认分支落库，两条路会被静默合并。
+ */
+export const needsBranch = (kind: NodeKind) => KIND_META[kind].branch === 'yesno'
 
-/** 排查需要是/否分组，其余节点单出口 */
-export const needsBranch = (kind: NodeKind) => kind === 'investigation'
+/** 结论只允许一个后继；由 KIND_META 声明，不再按类型名写死 */
+export const isSingleSuccessor = (kind: NodeKind) => Boolean(KIND_META[kind].singleSuccessor)

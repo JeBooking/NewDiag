@@ -1,6 +1,8 @@
-"""与前端 src/domain/rules.ts 一一对应的连接与必填规则。
+"""与前端 src/domain/kinds.ts、src/domain/rules.ts 一一对应的连接与必填规则。
 
 两端共用同一张表，避免「前端放过、后端拒绝」。规则改动必须同时改两处。
+节点类型的属性（是否分是/否、是否单后继、是否终止）只写在 KIND_SPECS 里，
+上面的集合与判定函数全部由它派生，不再按类型名散落写死。
 """
 
 from __future__ import annotations
@@ -20,6 +22,21 @@ CONNECTION_RULES: dict[str, list[str]] = {
 
 START_KIND = "start"
 
+# 单个类型的出线语义与能力声明，对应前端 KindMeta。
+# deepDiagnosis / jump 已在前端 KIND_META 里声明，但 V1 面板不暴露，矩阵里也没有它们，
+# 因此导入含这两种节点的文档仍会在编译期被拒绝（快速失败，不留到执行时）。
+KIND_SPECS: dict[str, dict[str, bool | str]] = {
+    START_KIND: {"branch": "single", "entry": True},
+    "investigation": {"branch": "yesno", "code_capable": True},
+    "investigationAction": {"branch": "single", "human_only": True},
+    "conclusion": {"branch": "single", "single_successor": True},
+    "remediation": {"branch": "single", "human_only": True},
+    "problemSolved": {"branch": "none", "terminal": True, "success": True},
+    "escalation": {"branch": "none", "terminal": True},
+    "deepDiagnosis": {"branch": "single"},
+    "jump": {"branch": "single"},
+}
+
 V1_KINDS = (
     START_KIND,
     "investigation",
@@ -30,12 +47,12 @@ V1_KINDS = (
     "escalation",
 )
 
-TERMINAL_KINDS = frozenset({"problemSolved", "escalation"})
-SUCCESS_KINDS = frozenset({"problemSolved"})
+TERMINAL_KINDS = frozenset(k for k, spec in KIND_SPECS.items() if spec.get("terminal"))
+SUCCESS_KINDS = frozenset(k for k, spec in KIND_SPECS.items() if spec.get("success"))
 # 只由人完成、不调代码的节点
-HUMAN_ONLY_KINDS = frozenset({"investigationAction", "remediation"})
+HUMAN_ONLY_KINDS = frozenset(k for k, spec in KIND_SPECS.items() if spec.get("human_only"))
 # 可绑定 Python 函数的节点
-CODE_CAPABLE_KINDS = frozenset({"investigation"})
+CODE_CAPABLE_KINDS = frozenset(k for k, spec in KIND_SPECS.items() if spec.get("code_capable"))
 
 BRANCHES = ("yes", "no")
 DEFAULT_BRANCH = "default"
@@ -74,8 +91,8 @@ def is_start_param_scope(scope: object) -> bool:
 
 
 def needs_branch(kind: str) -> bool:
-    """排查按是/否两组出线，其余节点单出口。"""
-    return kind == "investigation"
+    """排查按是/否两组出线，其余节点单出口。判定与前端 KIND_META.branch 同源。"""
+    return KIND_SPECS.get(kind, {}).get("branch") == "yesno"
 
 
 def allows_multiple_targets(kind: str) -> bool:
@@ -85,7 +102,7 @@ def allows_multiple_targets(kind: str) -> bool:
 
 def is_single_successor(kind: str) -> bool:
     """结论只允许一条出边，其余节点可多条（诊断节点按自身语义豁免）。"""
-    return kind == "conclusion"
+    return bool(KIND_SPECS.get(kind, {}).get("single_successor"))
 
 
 def outgoing_groups(edges: list[dict], node_id: str, kind: str) -> dict[str, list[dict]]:
