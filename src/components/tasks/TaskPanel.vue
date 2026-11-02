@@ -12,6 +12,8 @@ const props = defineProps<{
   reviews: ReviewTask[]
   detail: InstanceDetail | null
   doc: FlowDoc | null
+  /** 画布上选中的节点：待办列表跟着高亮，形成「节点 ↔ 待办」双向指向 */
+  focusNodeId?: string | null
 }>()
 const emit = defineEmits<{
   (e: 'select', nodeId: string | null): void
@@ -26,11 +28,12 @@ const rollbackVisible = ref(false)
 
 const selected = computed(() => props.reviews.find((item) => item.id === selectedId.value) ?? null)
 
-const selectedTitle = computed(() => {
-  if (!selected.value) return ''
-  const node = props.doc?.nodes.find((item) => item.id === selected.value?.nodeId)
-  return node?.title || node?.id || selected.value.nodeId
-})
+function nodeTitle(nodeId: string): string {
+  const node = props.doc?.nodes.find((item) => item.id === nodeId)
+  return node?.title || nodeId
+}
+
+const selectedTitle = computed(() => (selected.value ? nodeTitle(selected.value.nodeId) : ''))
 
 watch(
   () => props.reviews,
@@ -41,6 +44,16 @@ watch(
     if (!selectedId.value && reviews.length > 0) {
       select(reviews[0])
     }
+  },
+)
+
+// 画布上点了某个节点，列表就跳到它名下的待办；父级已经知道选中，这里不再回抛
+watch(
+  () => props.focusNodeId,
+  (nodeId) => {
+    if (!nodeId) return
+    const target = props.reviews.find((item) => item.nodeId === nodeId)
+    if (target && target.id !== selectedId.value) selectedId.value = target.id
   },
 )
 
@@ -122,9 +135,12 @@ function onRolledBack(): void {
             <el-tag size="small" :type="review.kind === 'decision' ? 'primary' : 'success'" effect="plain">
               {{ kindLabel(review) }}
             </el-tag>
-            <span class="review-title">{{ review.request.title || review.nodeId }}</span>
+            <span class="review-title">{{ review.request.title || nodeTitle(review.nodeId) }}</span>
           </div>
-          <div class="review-time">{{ formatTime(review.createdAt) }}</div>
+          <div class="review-meta">
+            <span class="review-node">{{ nodeTitle(review.nodeId) }}</span>
+            <span>{{ formatTime(review.createdAt) }}</span>
+          </div>
         </button>
       </div>
 
@@ -193,17 +209,30 @@ function onRolledBack(): void {
 }
 
 .review-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
   width: 100%;
-  padding: 8px;
+  padding: 8px 8px 8px 10px;
   border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--el-bg-color);
   cursor: pointer;
   text-align: left;
   font: inherit;
+}
+
+/* 未处理的待办统一用警示色左条：列表里一眼能数出还有几件在等人 */
+.review-item::before {
+  content: '';
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--el-color-warning);
 }
 
 .review-item:hover {
@@ -228,9 +257,23 @@ function onRolledBack(): void {
   white-space: nowrap;
 }
 
-.review-time {
+.review-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   color: var(--el-text-color-secondary);
+}
+
+/* 节点名是「这条待办画在哪」的锚点，比创建时间重要，所以给它独立样式而不是拼在时间前面 */
+.review-node {
+  overflow: hidden;
+  padding: 0 4px;
+  border-radius: 2px;
+  color: var(--el-text-color-regular);
+  background: var(--el-fill-color-light);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .detail {

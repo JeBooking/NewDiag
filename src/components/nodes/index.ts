@@ -27,6 +27,8 @@ export interface NodeCardData {
   flow?: 'upstream' | 'downstream' | null
   status: NodeVisualStatus | null
   selected: boolean
+  /** 未进入执行路径（无 token 或已回退）：执行页把这类节点压暗，让活跃路径跳出来 */
+  dimmed?: boolean
   /** 该节点名下的运行记录条数；只有执行页会传，设计器不传即不渲染入口 */
   runCount?: number
   /** 该节点名下的人工待办数；人工节点不产生 run，执行详情只能靠待办记录 */

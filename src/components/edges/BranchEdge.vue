@@ -40,10 +40,15 @@ const path = computed(() => bezier.value[0])
 /** 选中节点直连的边走虚线动画，方向天然是 from → to */
 const edgeStyle = computed(() => {
   const flowing = props.data?.flowing === true
+  const trail = props.data?.trail ?? null
+  const faded = props.data?.faded === true
   return {
     stroke: color.value,
-    strokeWidth: props.selected || flowing ? 2.4 : 1.6,
-    ...(flowing
+    strokeWidth: props.selected || flowing ? 2.4 : trail === 'taken' ? 2.2 : 1.6,
+    // 走过的路径保持实线到底，没走的一律压淡：跑完之后「走了哪条」是画布要回答的首要问题
+    opacity: faded ? 0.28 : trail === 'dropped' ? 0.45 : 1,
+    ...(trail === 'dropped' ? { strokeDasharray: '5 4' } : {}),
+    ...(flowing && trail !== 'dropped'
       ? { strokeDasharray: '7 5', animation: 'edge-flow 0.7s linear infinite' }
       : {}),
   }

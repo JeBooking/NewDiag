@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type {
+  EdgeTrail,
   FlowDoc,
   InstanceDetail,
   InstanceSummary,
@@ -35,7 +36,8 @@ const TOKEN_PRIORITY: Record<TokenStatus, number> = {
 const TOKEN_VISUAL: Record<TokenStatus, NodeVisualStatus> = {
   running: 'running',
   waiting: 'waiting',
-  queued: 'pending',
+  // 排队和执行中必须分开，否则「即将执行」的节点和「没进流程」的节点长得一样
+  queued: 'queued',
   done: 'success',
   failed: 'failed',
   abandoned: 'pending',
@@ -97,6 +99,32 @@ export const useInstancesStore = defineStore('instances', () => {
         (token) => token.status === 'running' || token.status === 'waiting' || token.status === 'queued',
       ).length,
   )
+
+  /**
+   * 走过的边：靠 token 的父子关系还原，parent_token_id 由调度器在投递后继时写入。
+   * 不能按「两端节点都执行过」推断分支路径，同一个排查节点的 yes/no 两条边会被同时点亮。
+   */
+  const walkedEdges = computed<Record<string, EdgeTrail>>(() => {
+    const result: Record<string, EdgeTrail> = {}
+    const tokens = detail.value?.tokens ?? []
+    const edges = doc.value?.edges ?? []
+    if (!tokens.length || !edges.length) return result
+    const byId = new Map(tokens.map((token) => [token.id, token]))
+    for (const token of tokens) {
+      const parent = token.parentTokenId ? byId.get(token.parentTokenId) : undefined
+      if (!parent) continue
+      const edge = edges.find(
+        (item) =>
+          item.from === parent.nodeId &&
+          item.to === token.nodeId &&
+          (item.branch ?? null) === (token.branch ?? null),
+      )
+      if (!edge) continue
+      if (result[edge.id] === 'taken') continue
+      result[edge.id] = token.status === 'abandoned' ? 'dropped' : 'taken'
+    }
+    return result
+  })
 
   function runSequence(token: Token): RunRecord[] {
     return (detail.value?.runs ?? [])
@@ -221,6 +249,7 @@ export const useInstancesStore = defineStore('instances', () => {
     pendingReviews,
     nodeStatus,
     activeTokenCount,
+    walkedEdges,
     runSequence,
     loadList,
     open,

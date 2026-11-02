@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { KIND_META } from '@/domain/kinds'
+import type { NodeVisualStatus } from '@/domain/types'
 import type { NodeCardData } from './index'
 
 // 画布会把 position/dimensions 等内部字段一并透传，避免它们落到 DOM 属性上
@@ -15,21 +16,38 @@ const props = withDefaults(
   { selected: false },
 )
 
+/** 执行状态的唯一取色表：浅底 + 深字 + 同色点，与全局状态标签规范一致 */
+const STATUS_META: Record<NodeVisualStatus, { text: string; color: string; bg: string }> = {
+  running: { text: '运行中', color: '#0958D9', bg: '#E6F4FF' },
+  waiting: { text: '待处理', color: '#D48806', bg: '#FFFBE6' },
+  success: { text: '已完成', color: '#389E0D', bg: '#F6FFED' },
+  failed: { text: '失败', color: '#CF1322', bg: '#FFF1F0' },
+  queued: { text: '排队中', color: '#595959', bg: '#F5F5F5' },
+  pending: { text: '已回退', color: '#8C8C8C', bg: '#F5F5F5' },
+}
+
 const meta = computed(() => KIND_META[props.data.kind])
 const isSelected = computed(() => props.selected || props.data.selected)
 const isStart = computed(() => props.data.kind === 'start')
 const badge = computed(() => (props.data.hasBinding ? '自动' : '人工'))
-const statusClass = computed(() => (props.data.status ? `status-${props.data.status}` : ''))
 const flowClass = computed(() => (props.data.flow ? `flow-${props.data.flow}` : ''))
 const issues = computed(() => props.data.issues ?? [])
 const runCount = computed(() => props.data.runCount ?? 0)
 const reviewCount = computed(() => props.data.reviewCount ?? 0)
-/** 有代码执行就给执行条数，纯人工节点给待办条数 */
-const entryLabel = computed(() => {
-  if (runCount.value > 0) return `执行 ${runCount.value}`
-  if (reviewCount.value > 0) return `处理 ${reviewCount.value}`
-  return ''
+const status = computed(() => (props.data.status ? STATUS_META[props.data.status] : null))
+
+/** 待办优先于历史记录：有待办时节点上只留「处理 N」这一个动作，点了才进得去处理 */
+const action = computed<{ text: string; tone: 'todo' | 'history' } | null>(() => {
+  if (reviewCount.value > 0) return { text: `处理 ${reviewCount.value}`, tone: 'todo' }
+  if (runCount.value > 0) return { text: `记录 ${runCount.value}`, tone: 'history' }
+  return null
 })
+
+/** 待处理 / 运行中再用左侧色带做第二重提示，避免只靠右上角一个小标签 */
+const accent = computed(() =>
+  props.data.status === 'waiting' || props.data.status === 'running' ? props.data.status : null,
+)
+
 /** start 卡片副标题换成启动参数摘要，其余节点仍显示说明 */
 const subtitle = computed(() => {
   if (isStart.value) {
@@ -38,6 +56,7 @@ const subtitle = computed(() => {
   }
   return props.data.detail || '暂无说明'
 })
+
 const worst = computed(() => {
   if (issues.value.some((issue) => issue.level === 'error')) return 'error'
   return issues.value.length > 0 ? 'warning' : ''
@@ -47,10 +66,23 @@ const worst = computed(() => {
 <template>
   <div
     class="node-card"
-    :class="[statusClass, flowClass, { 'is-selected': isSelected }]"
-    :style="{ '--kind-color': meta.color }"
+    :class="[
+      flowClass,
+      accent ? `accent-${accent}` : '',
+      {
+        'is-selected': isSelected,
+        'is-dim': data.dimmed,
+        'is-running': data.status === 'running',
+      },
+    ]"
+    :style="{
+      '--kind-color': meta.color,
+      '--status-color': status?.color ?? 'transparent',
+      '--status-bg': status?.bg ?? 'transparent',
+    }"
   >
     <span class="stripe" />
+    <span v-if="status" class="status-bar" :class="`bar-${data.status}`" />
 
     <Handle
       id="in"
@@ -63,17 +95,26 @@ const worst = computed(() => {
     <div class="content">
       <div class="row-head">
         <span class="kind">{{ meta.label }}</span>
-        <span class="dot" />
+        <span v-if="status" class="status-tag">
+          <span class="status-dot" />
+          {{ status.text }}
+        </span>
       </div>
       <div class="title">{{ data.title || '未命名节点' }}</div>
       <div class="detail" :class="{ 'is-param': isStart }">
         {{ subtitle }}
       </div>
-      <div v-if="!isStart" class="row-foot">
-        <span class="badge" :class="{ 'is-auto': data.hasBinding }">{{ badge }}</span>
-      </div>
-      <div v-if="entryLabel" class="row-run">
-        <span class="run-chip">{{ entryLabel }}</span>
+      <div v-if="!isStart || action" class="row-foot">
+        <span v-if="!isStart" class="badge" :class="{ 'is-auto': data.hasBinding }">{{ badge }}</span>
+        <button
+          v-if="action"
+          type="button"
+          class="node-action"
+          :class="`tone-${action.tone}`"
+          @click.stop
+        >
+          {{ action.text }}
+        </button>
       </div>
     </div>
 
@@ -110,14 +151,17 @@ const worst = computed(() => {
   position: relative;
   width: 220px;
   min-height: 96px;
-  padding: 8px 12px 8px 16px;
-  border: 1px solid var(--el-border-color);
-  border-radius: 6px;
+  padding: 12px 12px 10px 16px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
   background: var(--el-bg-color-overlay);
-  box-shadow: 0 1px 2px rgb(15 23 42 / 8%);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 3%);
   font-size: 12px;
   line-height: 1.4;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition:
+    opacity 0.2s,
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 
 .stripe {
@@ -126,35 +170,79 @@ const worst = computed(() => {
   left: 0;
   bottom: 0;
   width: 4px;
-  border-radius: 6px 0 0 6px;
+  border-radius: 8px 0 0 8px;
   background: var(--kind-color);
+}
+
+/* 状态条只占顶部 3px，把「1px 边框」这个通道整个让给选中态，两种语义不再互相覆盖 */
+.status-bar {
+  position: absolute;
+  top: 0;
+  left: 4px;
+  right: 0;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 0 8px 0 0;
+  background: color-mix(in srgb, var(--status-color) 26%, transparent);
+}
+
+.bar-running {
+  background: #1677ff;
+}
+
+.bar-running::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 42%;
+  background: rgb(255 255 255 / 70%);
+  animation: run-sweep 1.5s ease-in-out infinite;
 }
 
 .content {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 
 .row-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 6px;
 }
 
 .kind {
   padding: 0 5px;
-  border-radius: 3px;
+  border-radius: 2px;
   font-size: 11px;
   color: var(--kind-color);
   background: color-mix(in srgb, var(--kind-color) 12%, transparent);
 }
 
-.dot {
-  width: 6px;
-  height: 6px;
+.status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 0 5px;
+  border-radius: 2px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--status-color);
+  background: var(--status-bg);
+}
+
+.status-dot {
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: var(--el-text-color-placeholder);
+  background: currentcolor;
+}
+
+.is-running .status-dot {
+  animation: pulse 1.2s ease-in-out infinite;
 }
 
 .title {
@@ -183,13 +271,16 @@ const worst = computed(() => {
 
 .row-foot {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 16px;
 }
 
 .badge {
   padding: 0 4px;
   border: 1px solid var(--el-border-color);
-  border-radius: 3px;
+  border-radius: 2px;
   font-size: 10px;
   color: var(--el-text-color-secondary);
 }
@@ -199,26 +290,53 @@ const worst = computed(() => {
   color: var(--kind-color);
 }
 
-.row-run {
-  display: flex;
-  justify-content: flex-end;
-}
-
-/* 执行入口独立一行：既保住点击面积，也不和「自动/人工」挤在同一行 */
-.run-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 7px;
+/* 动作入口：有待办时是实心警示按钮，只有历史记录时降为文字链，不和主操作抢注意力 */
+.node-action {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid transparent;
   border-radius: 4px;
+  font: inherit;
   font-size: 11px;
-  line-height: 15px;
-  color: #fff;
-  background: var(--el-color-primary);
+  line-height: 16px;
   cursor: pointer;
 }
 
-.run-chip:hover {
-  background: var(--el-color-primary-dark-2);
+.node-action.tone-todo {
+  color: #fff;
+  background: #faad14;
+}
+
+.node-action.tone-todo:hover {
+  background: #d48806;
+}
+
+.node-action.tone-history {
+  padding: 1px 4px;
+  color: var(--el-color-primary);
+  background: none;
+}
+
+.node-action.tone-history:hover {
+  text-decoration: underline;
+}
+
+/* 未进入执行路径的节点整体压暗，让当前节点成为画面里最亮的一块 */
+.is-dim {
+  opacity: 0.42;
+}
+
+.is-dim .status-bar {
+  opacity: 0.5;
+}
+
+/* 待处理 / 运行中用左侧色带覆盖类型色：这一屏里「它在等我」比「它是什么类型」更重要 */
+.accent-waiting .stripe {
+  background: #faad14;
+}
+
+.accent-running .stripe {
+  background: #1677ff;
 }
 
 .flow-upstream {
@@ -233,7 +351,7 @@ const worst = computed(() => {
 
 .is-selected {
   border-color: var(--el-color-primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--el-color-primary) 25%, transparent);
+  box-shadow: 0 0 0 1px var(--el-color-primary);
 }
 
 .issue-wrap {
@@ -270,9 +388,9 @@ const worst = computed(() => {
   width: 240px;
   padding: 8px 10px;
   border: 1px solid var(--el-border-color);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--el-bg-color-overlay);
-  box-shadow: 0 6px 18px rgb(15 23 42 / 16%);
+  box-shadow: 0 6px 16px rgb(0 0 0 / 8%);
 }
 
 .issue-wrap:hover .issue-pop {
@@ -354,43 +472,31 @@ const worst = computed(() => {
   color: #dc2626;
 }
 
-.status-running {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 2px rgb(37 99 235 / 22%);
-}
-
-.status-running .dot {
-  background: #2563eb;
-  animation: pulse 1.2s infinite;
-}
-
-.status-waiting {
-  border-color: #d97706;
-}
-
-.status-waiting .dot {
-  background: #d97706;
-}
-
-.status-success {
-  border-color: #16a34a;
-}
-
-.status-success .dot {
-  background: #16a34a;
-}
-
-.status-failed {
-  border-color: #dc2626;
-}
-
-.status-failed .dot {
-  background: #dc2626;
-}
-
 @keyframes pulse {
   50% {
     opacity: 0.25;
+  }
+}
+
+@keyframes run-sweep {
+  from {
+    transform: translateX(-105%);
+  }
+
+  to {
+    transform: translateX(240%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar-running::after,
+  .is-running .status-dot {
+    animation: none;
+  }
+
+  /* 减少动效时直接去掉扫光，纯色顶条本身已经足够说明「在跑」 */
+  .bar-running::after {
+    display: none;
   }
 }
 </style>

@@ -80,11 +80,28 @@ const reviewsByNode = computed<Record<string, ReviewTask[]>>(() => {
   return grouped
 })
 
-const reviewCounts = computed<Record<string, number>>(() => {
+/** 节点上只挂未处理的待办数：已处理完的待办仍留在 reviews 里，不能算成「在等我」 */
+const pendingCounts = computed<Record<string, number>>(() => {
   const counts: Record<string, number> = {}
-  for (const [nodeId, list] of Object.entries(reviewsByNode.value)) counts[nodeId] = list.length
+  for (const review of detail.value?.reviews ?? []) {
+    if (review.status !== 'pending') continue
+    counts[review.nodeId] = (counts[review.nodeId] ?? 0) + 1
+  }
   return counts
 })
+
+/** 进度按「已完成的节点 / 全部节点」算，比 token 数直观，且能一眼看出还剩多少 */
+const nodeTotal = computed(() => store.doc?.nodes.length ?? 0)
+const nodeDone = computed(() => {
+  const done = new Set<string>()
+  for (const token of detail.value?.tokens ?? []) {
+    if (token.status === 'done') done.add(token.nodeId)
+  }
+  return done.size
+})
+const progressPct = computed(() =>
+  nodeTotal.value > 0 ? Math.round((nodeDone.value / nodeTotal.value) * 100) : 0,
+)
 
 const inspectNode = computed(() => {
   const nodeId = inspectNodeId.value
@@ -154,6 +171,12 @@ function onInspect(nodeId: string): void {
         </router-link>
         <el-tag v-if="detail.releaseNo" size="small" effect="plain">v{{ detail.releaseNo }}</el-tag>
         <el-tag size="small" :type="STATUS_TYPE[detail.status]">{{ STATUS_TEXT[detail.status] }}</el-tag>
+        <div v-if="nodeTotal" class="progress" :title="`已完成 ${nodeDone} 个节点，共 ${nodeTotal} 个`">
+          <div class="progress-track">
+            <div class="progress-fill" :style="{ width: `${progressPct}%` }" />
+          </div>
+          <span class="meta">{{ nodeDone }}/{{ nodeTotal }}</span>
+        </div>
       </div>
       <div class="head-right">
         <span class="meta">开始 {{ formatTime(detail.startedAt) }}</span>
@@ -194,7 +217,8 @@ function onInspect(nodeId: string): void {
           :status="store.nodeStatus"
           :selected-node-id="selectedNodeId"
           :run-counts="runCounts"
-          :review-counts="reviewCounts"
+          :review-counts="pendingCounts"
+          :trails="store.walkedEdges"
           @select-node="onSelect"
           @inspect-node="onInspect"
           @update:doc="() => undefined"
@@ -217,6 +241,7 @@ function onInspect(nodeId: string): void {
           :reviews="store.pendingReviews"
           :detail="detail"
           :doc="store.doc"
+          :focus-node-id="selectedNodeId"
           @select="onSelect"
           @changed="reload"
         />
@@ -287,6 +312,26 @@ function onInspect(nodeId: string): void {
 .meta {
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.progress-track {
+  width: 72px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--el-fill-color);
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--el-color-primary);
+  transition: width 0.3s;
 }
 
 .banner {

@@ -110,7 +110,14 @@ export interface LintIssue {
   edgeId?: string
 }
 
-export type NodeVisualStatus = 'pending' | 'running' | 'waiting' | 'success' | 'failed'
+/**
+ * pending 现在只由 abandoned 映射而来，语义是「回退作废」，与 queued（排队等待执行）区分开：
+ * 两者在画布上一个该压暗、一个该保持可读，共用一种状态会导致排队节点看不出「即将执行」。
+ */
+export type NodeVisualStatus = 'pending' | 'queued' | 'running' | 'waiting' | 'success' | 'failed'
+
+/** 边是否被实际走过；dropped 表示走过但随回退作废 */
+export type EdgeTrail = 'taken' | 'dropped'
 
 export type ArgExpr =
   | { lit: unknown }

@@ -1,5 +1,5 @@
 import type { EdgeComponent, EdgeTypesObject } from '@vue-flow/core'
-import type { Branch } from '@/domain/types'
+import type { Branch, EdgeTrail } from '@/domain/types'
 import BranchEdge from './BranchEdge.vue'
 
 /** 边的渲染投影；branch 为 null 表示普通单出口连线 */
@@ -9,6 +9,10 @@ export interface EdgeBranchData {
   issueMessage: string
   /** 选中节点直连的边：走虚线流动动画，方向始终是 from → to */
   flowing?: boolean
+  /** 本次执行是否走过这条边 */
+  trail?: EdgeTrail | null
+  /** 执行页里既没走过也不会走的边：压淡，让实际路径浮出来 */
+  faded?: boolean
 }
 
 export const edgeTypes: EdgeTypesObject = { branch: BranchEdge as unknown as EdgeComponent }

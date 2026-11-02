@@ -18,14 +18,23 @@ import { MiniMap } from '@vue-flow/minimap'
 import { ElMessage } from 'element-plus'
 import { KIND_META, V1_KINDS } from '@/domain/kinds'
 import { canConnect, isSingleSuccessor, needsBranch } from '@/domain/rules'
-import type { Branch, DocEdge, DocNode, FlowDoc, LintIssue, NodeKind, NodeVisualStatus } from '@/domain/types'
+import type {
+  Branch,
+  DocEdge,
+  DocNode,
+  EdgeTrail,
+  FlowDoc,
+  LintIssue,
+  NodeKind,
+  NodeVisualStatus,
+} from '@/domain/types'
 import { NODE_DRAG_TYPE, nodeTypes, type NodeCardData, type NodeIssue } from '@/components/nodes'
 import { edgeTypes, type EdgeBranchData } from '@/components/edges'
 import NodePalette from './NodePalette.vue'
 
 const NODE_WIDTH = 220
 const NODE_HEIGHT = 96
-const EDGE_COLOR = { yes: '#16a34a', no: '#dc2626', none: '#94a3b8' } as const
+const EDGE_COLOR = { yes: '#16a34a', no: '#dc2626', none: '#94a3b8', faded: '#cbd5e1' } as const
 
 /** 老流程（doc 里没有 start）在投影层补的占位开始节点，不回写 doc */
 const START_GHOST_ID = '__start__'
@@ -73,6 +82,8 @@ const props = withDefaults(
     runCounts?: Record<string, number>
     /** 每个节点名下的人工待办数；人工节点没有 run，只能靠它给入口 */
     reviewCounts?: Record<string, number>
+    /** 本次执行实际走过的边；传了才在画布上区分「走过」与「没走」 */
+    trails?: Record<string, EdgeTrail>
   }>(),
   {
     readonly: false,
@@ -81,6 +92,7 @@ const props = withDefaults(
     selectedNodeId: null,
     runCounts: () => ({}),
     reviewCounts: () => ({}),
+    trails: () => ({}),
   },
 )
 
@@ -210,11 +222,14 @@ function projectAll(preservePositions: boolean) {
   }
 
   const nextNodes: Node[] = []
+  // 只有执行页会传 status；编辑页没数据时不能压暗，否则整张图都是灰的
+  const hasRun = Object.keys(props.status).length > 0
   const pushNode = (
     meta: DocNode,
     extra: { ghost?: boolean } = {},
   ) => {
     const isStart = meta.kind === 'start'
+    const status = props.status[meta.id] ?? null
     const data: NodeCardData = {
       kind: meta.kind,
       title: meta.title ?? '',
@@ -231,8 +246,9 @@ function projectAll(preservePositions: boolean) {
             : downstream.has(meta.id)
               ? 'downstream'
               : null,
-      status: props.status[meta.id] ?? null,
+      status,
       selected: props.selectedNodeId === meta.id,
+      dimmed: hasRun && (status === null || status === 'pending'),
       runCount: props.runCounts[meta.id] ?? 0,
       reviewCount: props.reviewCounts[meta.id] ?? 0,
     }
@@ -257,11 +273,15 @@ function projectAll(preservePositions: boolean) {
     const sourceKind = nodeMeta.get(meta.from)?.kind
     const issue = byEdge.get(meta.id)
     const branch = meta.branch ?? null
+    const trail = props.trails[meta.id] ?? null
+    const faded = hasRun && !trail
     const data: EdgeBranchData = {
       branch,
       issueLevel: issue?.level ?? null,
       issueMessage: issue?.message ?? '',
       flowing: flowingEdges.has(meta.id),
+      trail,
+      faded,
     }
     nextEdges.push({
       id: meta.id,
@@ -273,7 +293,8 @@ function projectAll(preservePositions: boolean) {
       deletable: !props.readonly,
       markerEnd: {
         type: MarkerType.ArrowClosed,
-        color: branch ? EDGE_COLOR[branch] : EDGE_COLOR.none,
+        // 箭头是独立 marker，不跟着 path 的 opacity 变淡，得单独给灰
+        color: faded ? EDGE_COLOR.faded : branch ? EDGE_COLOR[branch] : EDGE_COLOR.none,
         width: 16,
         height: 16,
       },
@@ -328,39 +349,69 @@ watch(
     props.readonly,
     props.runCounts,
     props.reviewCounts,
+    props.trails,
   ],
   () => projectAll(true),
   { deep: true },
 )
 
-// 外部选中（如执行页点待办定位）只在节点跑到视口外时才移过去，避免点谁跳谁
+/** 视口外的节点移进来；已在视口内时保持不动，避免点谁跳谁 */
+function centerOn(id: string, force = false) {
+  // 只取取景需要的两个字段，也避开 Array.find 对 GraphNode 深层泛型的推导
+  let node: { position: { x: number; y: number }; dimensions?: { width?: number; height?: number } } | undefined
+  for (const item of nodes.value) {
+    if (item.id === id) {
+      node = item as unknown as typeof node
+      break
+    }
+  }
+  if (!node) return
+  const { zoom } = viewport.value
+  const width = node.dimensions?.width || NODE_WIDTH
+  const height = node.dimensions?.height || NODE_HEIGHT
+  const left = node.position.x * zoom + viewport.value.x
+  const top = node.position.y * zoom + viewport.value.y
+  const view = dimensions.value
+  const margin = 32
+  const visible =
+    left >= margin &&
+    top >= margin &&
+    left + width * zoom <= view.width - margin &&
+    top + height * zoom <= view.height - margin
+  if (visible && !force) return
+  void setCenter(node.position.x + width / 2, node.position.y + height / 2, { zoom, duration: 300 })
+}
+
+// 外部选中（如执行页点待办定位）只在节点跑到视口外时才移过去
 watch(
   () => props.selectedNodeId,
   (id) => {
     if (!id) return
-    const node = nodes.value.find((item) => item.id === id) as GraphNode | undefined
-    if (!node) return
-
-    const { zoom } = viewport.value
-    const width = node.dimensions?.width || NODE_WIDTH
-    const height = node.dimensions?.height || NODE_HEIGHT
-    const left = node.position.x * zoom + viewport.value.x
-    const top = node.position.y * zoom + viewport.value.y
-    const view = dimensions.value
-    const margin = 32
-    const visible =
-      left >= margin &&
-      top >= margin &&
-      left + width * zoom <= view.width - margin &&
-      top + height * zoom <= view.height - margin
-    if (visible) return
-
-    void setCenter(node.position.x + width / 2, node.position.y + height / 2, {
-      zoom,
-      duration: 300,
-    })
+    centerOn(id)
   },
 )
+
+/** 执行中的节点：并行时可能不止一个，运行中优先于待处理 */
+const activeIds = computed(() => {
+  const running: string[] = []
+  const waiting: string[] = []
+  for (const [id, value] of Object.entries(props.status)) {
+    if (value === 'running') running.push(id)
+    else if (value === 'waiting') waiting.push(id)
+  }
+  return running.length > 0 ? running : waiting
+})
+
+const activeLabel = computed(() => {
+  if (!activeIds.value.length) return ''
+  const prefix = props.status[activeIds.value[0]] === 'running' ? '运行中' : '待处理'
+  return activeIds.value.length > 1 ? `${prefix} ${activeIds.value.length}` : prefix
+})
+
+function focusActive() {
+  const id = activeIds.value[0]
+  if (id) centerOn(id, true)
+}
 
 function commit() {
   const docNodes: DocNode[] = []
@@ -678,7 +729,7 @@ function tipCreate(kind: NodeKind) {
 function onNodeClick(event: NodeMouseEvent) {
   hideTip()
   const target = event.event?.target as HTMLElement | null
-  if (target?.closest?.('.run-chip')) {
+  if (target?.closest?.('.node-action')) {
     emit('inspect-node', event.node.id)
     return
   }
@@ -768,6 +819,12 @@ defineExpose({ fitView })
       <Panel v-if="!readonly" position="top-left" class="palette-panel">
         <NodePalette :disabled="readonly" @add="(kind) => addNode(kind, centerPosition())" />
       </Panel>
+      <Panel v-if="activeIds.length" position="top-right" class="focus-panel">
+        <button type="button" class="focus-chip" @click="focusActive">
+          <span class="focus-dot" />
+          定位{{ activeLabel }}
+        </button>
+      </Panel>
     </VueFlow>
 
     <div
@@ -808,6 +865,44 @@ defineExpose({ fitView })
 
 .palette-panel {
   margin: 12px;
+}
+
+/* 画布缩到看不清卡片时，这颗按钮是唯一的「当前在哪」硬入口 */
+.focus-panel {
+  margin: 12px;
+}
+
+.focus-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 6px;
+  background: var(--el-color-primary-light-9);
+  font: inherit;
+  font-size: 12px;
+  color: var(--el-color-primary-dark-2);
+  cursor: pointer;
+}
+
+.focus-chip:hover {
+  border-color: var(--el-color-primary-light-5);
+  background: var(--el-color-primary-light-8);
+}
+
+.focus-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--el-color-primary);
+  animation: focus-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes focus-pulse {
+  50% {
+    opacity: 0.3;
+  }
 }
 
 /* 端口候选面板挂在画布容器上，绝对定位，不受画布缩放影响 */
