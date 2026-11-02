@@ -24,20 +24,16 @@ const canvas = ref<InstanceType<typeof FlowCanvas> | null>(null)
 
 const flowId = computed(() => String(route.params.id))
 
-/** 校验器要求一份文档，加载完成前给个空壳，避免 useLint 首次执行时报「流程为空」 */
-const EMPTY_DOC: FlowDoc = { format: 1, name: '', mode: 'parallel', nodes: [], edges: [] }
-const lintInput = computed<FlowDoc>(() => editor.doc ?? EMPTY_DOC)
-const liveIssues = useLint(() => lintInput.value)
+/** 实时校验：editor.doc 每次变更都重算，不依赖保存 */
+const liveIssues = useLint(() => editor.doc)
 
 /**
  * 编辑期靠本地校验即时反馈，保存/发布失败时后端还会回一份更严格的结果。
- * 后端返回的条目没有 id，只能按「级别 + 节点 + 连线 + 文案」合成键去重，
- * 否则一张 Map 会把所有后端问题压成一条。
+ * 两端文案可能不同但语义相同，统一按「级别 + 节点 + 连线 + 文案」合成键去重，
+ * 不用后端条目缺失的 id，否则同一处问题会被算成两条。
  */
 function issueKey(issue: LintIssue): string {
-  return (
-    issue.id ?? `${issue.level}|${issue.nodeId ?? ''}|${issue.edgeId ?? ''}|${issue.message}`
-  )
+  return `${issue.level}|${issue.nodeId ?? ''}|${issue.edgeId ?? ''}|${issue.message}`
 }
 
 const allIssues = computed<LintIssue[]>(() => {
@@ -424,7 +420,7 @@ onBeforeRouteLeave(async () => {
           ref="canvas"
           :doc="editor.doc"
           :readonly="editor.readonly"
-          :issues="editor.issues"
+          :issues="allIssues"
           :status="{}"
           :selected-node-id="editor.selectedNodeId"
           @update:doc="onDocUpdate"

@@ -305,26 +305,21 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
   return issues
 }
 
-/** 输入变化后 150ms 才重算，避免拖拽/输入过程里反复全量校验 */
-export function useLint(getDoc: () => FlowDoc): Ref<LintIssue[]> {
-  const issues = ref<LintIssue[]>(lintDoc(getDoc()))
-  let timer: ReturnType<typeof setTimeout> | null = null
-
+/**
+ * 文档一变就同步重算，和旧项目 bpmn-js-bpmnlint 监听 elements.changed 的语义一致。
+ * lintDoc 是纯同步遍历（Tarjan + 连线扫描），几十个节点耗时可忽略，不需要防抖；
+ * 防抖反而会让「改完标题、角标要等一下才亮」变成可感知的延迟。
+ * doc 为 null（还没加载出来）时给空结果，避免拿空壳文档算出一条「流程为空」。
+ */
+export function useLint(getDoc: () => FlowDoc | null): Ref<LintIssue[]> {
+  const issues = ref<LintIssue[]>([])
   const stop = watch(
     getDoc,
     (doc) => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(() => {
-        issues.value = lintDoc(doc)
-      }, 150)
+      issues.value = doc ? lintDoc(doc) : []
     },
-    { deep: true },
+    { deep: true, immediate: true },
   )
-
-  onScopeDispose(() => {
-    if (timer) clearTimeout(timer)
-    stop()
-  })
-
+  onScopeDispose(() => stop())
   return issues
 }
