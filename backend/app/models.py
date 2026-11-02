@@ -63,6 +63,8 @@ class Release(Base):
     revision_id: Mapped[str] = mapped_column(String(32), nullable=False)
     version_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     plan_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # 发布时生成的工程源码 {文件名: 源码}；执行期只认它，不再解释 plan
+    code_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     signature_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     # 发布时冻结的启动表单（ReleaseInput[]）；老库由 init_db 补列，老版本读出空数组
     inputs_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")

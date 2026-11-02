@@ -88,7 +88,10 @@ def _migrate() -> None:
     """
     expected = {
         "flows": {"folder_id": "VARCHAR(32)"},
-        "releases": {"inputs_json": "TEXT NOT NULL DEFAULT '[]'"},
+        "releases": {
+            "inputs_json": "TEXT NOT NULL DEFAULT '[]'",
+            "code_json": "TEXT NOT NULL DEFAULT '{}'",
+        },
     }
     with engine.begin() as conn:
         tables = set(inspect(conn).get_table_names())

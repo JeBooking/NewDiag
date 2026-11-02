@@ -28,11 +28,11 @@ from app.schemas import (
 )
 
 try:  # 引擎层缺席时接口仍在，只是不推进
-    from app.services.scheduler import scheduler
+    from app.services.runner import runner
 except ImportError as exc:  # pragma: no cover
-    logging.getLogger(__name__).warning("调度器不可用，实例不会自动推进：%s", exc)
+    logging.getLogger(__name__).warning("执行引擎不可用，实例不会自动推进：%s", exc)
 
-    class _NullScheduler:
+    class _NullRunner:
         def start(self, instance_id: str) -> None:
             return None
 
@@ -42,7 +42,7 @@ except ImportError as exc:  # pragma: no cover
         def rollback(self, instance_id: str, target: str, branch: str, reason: str | None) -> None:
             return None
 
-    scheduler = _NullScheduler()  # type: ignore[assignment]
+    runner = _NullRunner()  # type: ignore[assignment]
 
 
 logger = logging.getLogger(__name__)
@@ -244,7 +244,7 @@ def start_instance(
     )
 
     try:
-        scheduler.start(instance.id)
+        runner.start(instance.id)
     except Exception as exc:  # 调度起不来只影响推进，实例记录仍保留给人排查
         logger.exception("实例 %s 启动调度失败", instance.id)
         instance.status = "failed"
@@ -329,7 +329,7 @@ def submit_review(
     )
 
     try:
-        scheduler.submit_review(instance_id, review_id, decision)
+        runner.submit_review(instance_id, review_id, decision)
     except Exception as exc:
         logger.exception("实例 %s 待办 %s 提交调度失败", instance_id, review_id)
         raise HTTPException(status_code=500, detail=f"提交待办失败：{exc}") from exc
@@ -353,7 +353,7 @@ def rollback(
         (payload.reason or "")[:80],
     )
     try:
-        scheduler.rollback(instance_id, payload.target, payload.branch, payload.reason)
+        runner.rollback(instance_id, payload.target, payload.branch, payload.reason)
     except Exception as exc:
         logger.warning("实例 %s 回退失败：%s", instance_id, exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc

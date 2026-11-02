@@ -16,8 +16,9 @@ from app.api.flows import (
     revision_doc,
 )
 from app.db import get_db, new_id, now_iso
-from app.models import Release, Revision
+from app.models import Project, Release, Revision
 from app.schemas import ReleaseCreate, ReleaseDetail, ReleaseSummary, make_release_detail, make_release_summary
+from app.services import codegen
 
 try:  # 引擎层缺席时仍允许后端启动
     from app.services.compiler import StartParams, ValidationError, compile_doc
@@ -199,6 +200,29 @@ def _declared_inputs(node: dict | None) -> dict[tuple[str, str, str], dict]:
     return result
 
 
+def _collect_projects(db: Session, plan: dict) -> dict[str, dict]:
+    """从 plan 的调用里提取绑定的工程，按登记信息收集，供代码生成器写进工程。
+
+    工程名是绑定的唯一口径；这里只收生成代码真正 import 得到的登记项。
+    """
+    projects: dict[str, dict] = {}
+    for step in (plan.get("steps") or {}).values():
+        call = step.get("call") if isinstance(step, dict) else None
+        if not call:
+            continue
+        name = str(call.get("project") or "")
+        if not name or name in projects:
+            continue
+        record = db.scalars(select(Project).where(Project.name == name)).first()
+        if record is not None:
+            projects[name] = {
+                "path": record.path or "",
+                "module": record.module or "",
+                "factory": record.factory or "",
+            }
+    return projects
+
+
 @router.post("/flows/{flow_id}/releases", response_model=ReleaseSummary)
 def publish(flow_id: str, payload: ReleaseCreate, db: Session = Depends(get_db)) -> ReleaseSummary:
     flow = get_flow_or_404(db, flow_id)
@@ -244,12 +268,24 @@ def publish(flow_id: str, payload: ReleaseCreate, db: Session = Depends(get_db))
     # 启动表单在这里定稿：执行页只读它，之后改 doc 或改签名都不会影响已发布版本
     inputs = freeze_inputs(doc, probed)
 
+    # 把 plan 编译成可运行工程源码，随发布版本一起冻结；执行期只认 code_json
+    projects = _collect_projects(db, plan)
+    try:
+        code = codegen.generate(plan, title=flow.name, release_no=version_no, projects=projects)
+    except Exception as exc:
+        logger.warning("代码生成失败（flow=%s）：%s", flow_id, exc)
+        raise HTTPException(
+            status_code=422,
+            detail=[{"level": "error", "message": f"代码生成失败：{exc}"}],
+        ) from exc
+
     release = Release(
         id=new_id(),
         flow_id=flow.id,
         revision_id=revision.id,
         version_no=version_no,
         plan_json=json.dumps(plan, ensure_ascii=False),
+        code_json=json.dumps(code, ensure_ascii=False),
         signature_json=json.dumps(signature, ensure_ascii=False),
         inputs_json=json.dumps(inputs, ensure_ascii=False),
         published_by=LOCAL_ACTOR,
