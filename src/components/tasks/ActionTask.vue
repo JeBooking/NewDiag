@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ReviewTask } from '@/domain/types'
-import { fileUrl } from '@/services/files'
+import AttachmentList from '@/components/panels/AttachmentList.vue'
 
 defineProps<{ review: ReviewTask; busy?: boolean }>()
 const emit = defineEmits<{
@@ -30,18 +30,11 @@ function pretty(value: unknown): string {
       <pre>{{ pretty(review.request.evidence) }}</pre>
     </div>
 
-    <div v-if="review.request.attachments?.length" class="attachments">
-      <a
-        v-for="item in review.request.attachments"
-        :key="item.hash"
-        :href="fileUrl(item.hash)"
-        target="_blank"
-        rel="noopener"
-        class="attachment"
-      >
-        {{ item.name }}
-      </a>
-    </div>
+    <AttachmentList
+      v-if="review.request.attachments?.length"
+      :attachments="review.request.attachments"
+      dense
+    />
 
     <div class="actions">
       <el-button type="success" :loading="busy" @click="emit('complete')">完成</el-button>
@@ -95,17 +88,6 @@ function pretty(value: unknown): string {
   border-radius: 4px;
   font-size: 11px;
   line-height: 1.6;
-}
-
-.attachments {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.attachment {
-  font-size: 12px;
-  color: var(--el-color-primary);
 }
 
 .actions {
