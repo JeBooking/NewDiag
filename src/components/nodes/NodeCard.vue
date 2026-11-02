@@ -119,7 +119,12 @@ const worst = computed(() => {
     </div>
 
     <div v-if="issues.length" class="issue-wrap" :class="worst">
-      <span class="issue-badge">{{ issues.length > 9 ? '9+' : issues.length }}</span>
+      <span class="issue-badge">
+        <svg class="issue-cross" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M5 5L11 11M11 5L5 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        <span v-if="issues.length > 1" class="issue-count">{{ issues.length > 9 ? '9+' : issues.length }}</span>
+      </span>
       <div class="issue-pop">
         <div class="issue-pop-head">
           {{ worst === 'error' ? '校验错误' : '提示' }} · {{ issues.length }} 条
@@ -356,28 +361,40 @@ const worst = computed(() => {
 
 .issue-wrap {
   position: absolute;
-  top: -8px;
-  right: -8px;
+  top: -9px;
+  right: -9px;
   z-index: 3;
 }
 
+/* 错误直接画成叉号挂在卡片外沿：一眼定位到出问题的节点，不用先点保存再看列表 */
 .issue-badge {
-  display: block;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border: 1px solid var(--el-bg-color-overlay);
-  border-radius: 8px;
-  font-size: 10px;
-  line-height: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 18px;
+  min-width: 18px;
+  padding: 0 3px;
+  border: 2px solid var(--el-bg-color-overlay);
+  border-radius: 9px;
   color: #fff;
-  text-align: center;
   background: var(--el-color-warning);
   cursor: default;
 }
 
 .issue-wrap.error .issue-badge {
   background: var(--el-color-danger);
+}
+
+.issue-cross {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.issue-count {
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .issue-pop {

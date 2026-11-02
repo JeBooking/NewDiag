@@ -8,6 +8,7 @@ import FlowCanvas from '@/components/canvas/FlowCanvas.vue'
 import { layoutDoc } from '@/components/canvas/autolayout'
 import FlowPanel from '@/components/panels/FlowPanel.vue'
 import NodePanel from '@/components/panels/NodePanel.vue'
+import { useLint } from '@/components/canvas/lint'
 import type { DocNode, FlowDoc, FlowMode, LintIssue } from '@/domain/types'
 import { errorText, isApiError } from '@/services/api'
 import { updateFlow } from '@/services/flows'
@@ -22,6 +23,32 @@ const issuesVisible = ref(false)
 const canvas = ref<InstanceType<typeof FlowCanvas> | null>(null)
 
 const flowId = computed(() => String(route.params.id))
+
+/** 校验器要求一份文档，加载完成前给个空壳，避免 useLint 首次执行时报「流程为空」 */
+const EMPTY_DOC: FlowDoc = { format: 1, name: '', mode: 'parallel', nodes: [], edges: [] }
+const lintInput = computed<FlowDoc>(() => editor.doc ?? EMPTY_DOC)
+const liveIssues = useLint(() => lintInput.value)
+
+/**
+ * 编辑期靠本地校验即时反馈，保存/发布失败时后端还会回一份更严格的结果。
+ * 后端返回的条目没有 id，只能按「级别 + 节点 + 连线 + 文案」合成键去重，
+ * 否则一张 Map 会把所有后端问题压成一条。
+ */
+function issueKey(issue: LintIssue): string {
+  return (
+    issue.id ?? `${issue.level}|${issue.nodeId ?? ''}|${issue.edgeId ?? ''}|${issue.message}`
+  )
+}
+
+const allIssues = computed<LintIssue[]>(() => {
+  if (!editor.doc) return []
+  const merged = new Map<string, LintIssue>()
+  for (const issue of liveIssues.value) merged.set(issueKey(issue), issue)
+  for (const issue of editor.issues) merged.set(issueKey(issue), issue)
+  return [...merged.values()]
+})
+
+const errorCount = computed(() => allIssues.value.filter((item) => item.level === 'error').length)
 
 async function load(id: string): Promise<void> {
   loadError.value = null
@@ -116,11 +143,8 @@ function issueNodeName(issue: LintIssue): string {
 
 function locateIssue(issue: LintIssue): void {
   if (issue.nodeId) editor.selectedNodeId = issue.nodeId
+  issuesVisible.value = false
 }
-
-const saveHasError = computed(() =>
-  editor.saveIssues.some((issue) => issue.level === 'error'),
-)
 
 /** 选中节点的出边按分支分组：是/否/默认各自排序，互不干扰 */
 const successorGroups = computed(() => {
@@ -322,6 +346,18 @@ onBeforeRouteLeave(async () => {
         <el-tag v-else-if="editor.flow" size="small" type="info" effect="plain">已同步</el-tag>
       </div>
       <div class="right">
+        <button
+          v-if="allIssues.length"
+          type="button"
+          class="issue-chip"
+          :class="{ 'is-error': errorCount > 0 }"
+          @click="issuesVisible = true"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M5 5L11 11M11 5L5 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </svg>
+          {{ allIssues.length }} 处待处理
+        </button>
         <el-button @click="startRun">开始执行</el-button>
         <el-button :disabled="editor.readonly" :loading="editor.saving" @click="save()">
           保存
@@ -342,32 +378,6 @@ onBeforeRouteLeave(async () => {
       show-icon
       class="banner"
     />
-
-    <el-alert
-      v-if="editor.saveIssues.length"
-      :title="`已保存，${editor.saveIssues.length} 处待处理（发布前需解决）`"
-      :type="saveHasError ? 'error' : 'warning'"
-      :closable="true"
-      show-icon
-      class="banner"
-      @close="editor.clearSaveIssues()"
-    >
-      <div class="warning-list">
-        <button
-          v-for="issue in editor.saveIssues"
-          :key="issue.id"
-          type="button"
-          class="warning-item"
-          @click="locateIssue(issue)"
-        >
-          <span class="issue-level" :class="issue.level">
-            {{ issue.level === 'error' ? '错误' : '提示' }}
-          </span>
-          <span v-if="issueNodeName(issue)" class="warning-node">{{ issueNodeName(issue) }}</span>
-          <span>{{ issue.message }}</span>
-        </button>
-      </div>
-    </el-alert>
 
     <el-alert
       v-if="loadError"
@@ -463,15 +473,22 @@ onBeforeRouteLeave(async () => {
       </aside>
     </div>
 
-    <el-dialog v-model="issuesVisible" title="校验未通过" width="560px">
+    <el-dialog v-model="issuesVisible" title="校验问题" width="560px">
       <div class="issue-list">
-        <div v-for="issue in editor.issues" :key="issue.id" class="issue">
+        <button
+          v-for="issue in allIssues"
+          :key="issueKey(issue)"
+          type="button"
+          class="issue"
+          @click="locateIssue(issue)"
+        >
           <el-tag size="small" :type="issue.level === 'warning' ? 'warning' : 'danger'" effect="plain">
             {{ issue.level === 'warning' ? '提示' : '错误' }}
           </el-tag>
           <span class="issue-text">{{ issue.message }}</span>
-          <span v-if="issue.nodeId" class="issue-node">{{ issue.nodeId }}</span>
-        </div>
+          <span v-if="issueNodeName(issue)" class="issue-node">{{ issueNodeName(issue) }}</span>
+        </button>
+        <div v-if="!allIssues.length" class="issue-empty">没有发现问题</div>
       </div>
       <template #footer>
         <el-button type="primary" @click="issuesVisible = false">知道了</el-button>
@@ -542,50 +559,38 @@ onBeforeRouteLeave(async () => {
   border-radius: 0;
 }
 
-.warning-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: 4px;
-}
-
-.issue-level {
-  flex: none;
-  padding: 0 4px;
-  border-radius: 3px;
-  font-size: 11px;
-  line-height: 16px;
-  color: #fff;
-  background: var(--el-color-warning);
-}
-
-.issue-level.error {
-  background: var(--el-color-danger);
-}
-
-.warning-item {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  padding: 2px 0;
-  border: none;
-  background: none;
+/* 常驻的问题计数：校验结果一直可见，不必先点保存才知道有错 */
+.issue-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border: 1px solid var(--el-color-warning-light-5);
+  border-radius: 6px;
+  background: var(--el-color-warning-light-9);
   font: inherit;
   font-size: 12px;
-  line-height: 1.6;
-  color: var(--el-text-color-regular);
-  text-align: left;
+  color: var(--el-color-warning-dark-2);
   cursor: pointer;
 }
 
-.warning-item:hover {
-  color: var(--el-color-primary);
+.issue-chip:hover {
+  border-color: var(--el-color-warning);
 }
 
-.warning-node {
-  flex: none;
-  font-weight: 500;
-  color: var(--el-color-warning-dark-2);
+.issue-chip.is-error {
+  border-color: var(--el-color-danger-light-5);
+  color: var(--el-color-danger);
+  background: var(--el-color-danger-light-9);
+}
+
+.issue-chip.is-error:hover {
+  border-color: var(--el-color-danger);
+}
+
+.issue-chip svg {
+  width: 12px;
+  height: 12px;
 }
 
 .body {
@@ -622,8 +627,24 @@ onBeforeRouteLeave(async () => {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  padding: 4px 0;
+  border: none;
+  background: none;
+  font: inherit;
   font-size: 12px;
   line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+}
+
+.issue:hover {
+  color: var(--el-color-primary);
+}
+
+.issue-empty {
+  padding: 12px 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .issue-text {
