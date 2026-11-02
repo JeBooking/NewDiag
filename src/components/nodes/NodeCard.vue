@@ -23,6 +23,13 @@ const statusClass = computed(() => (props.data.status ? `status-${props.data.sta
 const flowClass = computed(() => (props.data.flow ? `flow-${props.data.flow}` : ''))
 const issues = computed(() => props.data.issues ?? [])
 const runCount = computed(() => props.data.runCount ?? 0)
+const reviewCount = computed(() => props.data.reviewCount ?? 0)
+/** 有代码执行就给执行条数，纯人工节点给待办条数 */
+const entryLabel = computed(() => {
+  if (runCount.value > 0) return `执行 ${runCount.value}`
+  if (reviewCount.value > 0) return `处理 ${reviewCount.value}`
+  return ''
+})
 /** start 卡片副标题换成启动参数摘要，其余节点仍显示说明 */
 const subtitle = computed(() => {
   if (isStart.value) {
@@ -65,8 +72,8 @@ const worst = computed(() => {
       <div v-if="!isStart" class="row-foot">
         <span class="badge" :class="{ 'is-auto': data.hasBinding }">{{ badge }}</span>
       </div>
-      <div v-if="runCount > 0" class="row-run">
-        <span class="run-chip">执行 {{ runCount }}</span>
+      <div v-if="entryLabel" class="row-run">
+        <span class="run-chip">{{ entryLabel }}</span>
       </div>
     </div>
 

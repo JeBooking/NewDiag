@@ -71,6 +71,8 @@ const props = withDefaults(
     selectedNodeId?: string | null
     /** 每个节点名下的运行记录条数；执行页传入后节点上才出现执行入口 */
     runCounts?: Record<string, number>
+    /** 每个节点名下的人工待办数；人工节点没有 run，只能靠它给入口 */
+    reviewCounts?: Record<string, number>
   }>(),
   {
     readonly: false,
@@ -78,6 +80,7 @@ const props = withDefaults(
     status: () => ({}),
     selectedNodeId: null,
     runCounts: () => ({}),
+    reviewCounts: () => ({}),
   },
 )
 
@@ -231,6 +234,7 @@ function projectAll(preservePositions: boolean) {
       status: props.status[meta.id] ?? null,
       selected: props.selectedNodeId === meta.id,
       runCount: props.runCounts[meta.id] ?? 0,
+      reviewCount: props.reviewCounts[meta.id] ?? 0,
     }
     nextNodes.push({
       id: meta.id,
@@ -317,7 +321,14 @@ watch(
 
 // 渲染投影（问题标记、执行状态、选中）变化时只重排投影，位置取自画布当前值
 watch(
-  () => [props.issues, props.status, props.selectedNodeId, props.readonly, props.runCounts],
+  () => [
+    props.issues,
+    props.status,
+    props.selectedNodeId,
+    props.readonly,
+    props.runCounts,
+    props.reviewCounts,
+  ],
   () => projectAll(true),
   { deep: true },
 )

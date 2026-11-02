@@ -7,7 +7,7 @@ import PathList from '@/components/history/PathList.vue'
 import RunDetailCard from '@/components/history/RunDetailCard.vue'
 import RunTimeline from '@/components/history/RunTimeline.vue'
 import TaskPanel from '@/components/tasks/TaskPanel.vue'
-import type { InstanceStatus, RunRecord } from '@/domain/types'
+import type { InstanceStatus, ReviewTask, RunRecord } from '@/domain/types'
 import { errorText } from '@/services/api'
 import { useInstancesStore } from '@/stores/instances'
 
@@ -66,6 +66,26 @@ const runCounts = computed<Record<string, number>>(() => {
   return counts
 })
 
+/** 人工节点不写 run，执行情况只存在待办里；按节点聚合后给入口和卡片用 */
+const reviewsByNode = computed<Record<string, ReviewTask[]>>(() => {
+  const grouped: Record<string, ReviewTask[]> = {}
+  for (const review of detail.value?.reviews ?? []) {
+    const list = grouped[review.nodeId] ?? []
+    list.push(review)
+    grouped[review.nodeId] = list
+  }
+  for (const list of Object.values(grouped)) {
+    list.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }
+  return grouped
+})
+
+const reviewCounts = computed<Record<string, number>>(() => {
+  const counts: Record<string, number> = {}
+  for (const [nodeId, list] of Object.entries(reviewsByNode.value)) counts[nodeId] = list.length
+  return counts
+})
+
 const inspectNode = computed(() => {
   const nodeId = inspectNodeId.value
   if (!nodeId) return null
@@ -74,6 +94,10 @@ const inspectNode = computed(() => {
 
 const inspectRuns = computed(() =>
   inspectNodeId.value ? (runsByNode.value[inspectNodeId.value] ?? []) : [],
+)
+
+const inspectReviews = computed(() =>
+  inspectNodeId.value ? (reviewsByNode.value[inspectNodeId.value] ?? []) : [],
 )
 
 onMounted(async () => {
@@ -170,6 +194,7 @@ function onInspect(nodeId: string): void {
           :status="store.nodeStatus"
           :selected-node-id="selectedNodeId"
           :run-counts="runCounts"
+          :review-counts="reviewCounts"
           @select-node="onSelect"
           @inspect-node="onInspect"
           @update:doc="() => undefined"
@@ -177,7 +202,12 @@ function onInspect(nodeId: string): void {
         <el-empty v-else-if="!store.loading" description="流程快照不可用" :image-size="80" />
 
         <div v-if="inspectNode" class="run-card-layer">
-          <RunDetailCard :node="inspectNode" :runs="inspectRuns" @close="inspectNodeId = null" />
+          <RunDetailCard
+            :node="inspectNode"
+            :runs="inspectRuns"
+            :reviews="inspectReviews"
+            @close="inspectNodeId = null"
+          />
         </div>
       </div>
 

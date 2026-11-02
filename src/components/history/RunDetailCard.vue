@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { KIND_META } from '@/domain/kinds'
-import type { DocNode, RunRecord, RunStatus } from '@/domain/types'
+import type { DocNode, ReviewDecision, ReviewStatus, ReviewTask, RunRecord, RunStatus } from '@/domain/types'
 import { fileUrl } from '@/services/files'
 
-const props = defineProps<{ node: DocNode; runs: RunRecord[] }>()
+const props = defineProps<{
+  node: DocNode
+  runs: RunRecord[]
+  /** 人工节点没有 run，执行情况只能靠待办记录 */
+  reviews: ReviewTask[]
+}>()
 const emit = defineEmits<{ (event: 'close'): void }>()
 
 const STATUS_TEXT: Record<RunStatus, string> = {
@@ -19,6 +24,26 @@ const STATUS_TYPE: Record<RunStatus, 'success' | 'danger' | 'info'> = {
   abandoned: 'info',
 }
 
+const REVIEW_STATUS_TEXT: Record<ReviewStatus, string> = {
+  pending: '等待处理',
+  done: '已处理',
+  cancelled: '已取消',
+}
+
+const REVIEW_STATUS_TYPE: Record<ReviewStatus, 'warning' | 'success' | 'info'> = {
+  pending: 'warning',
+  done: 'success',
+  cancelled: 'info',
+}
+
+const DECISION_TEXT: Record<string, string> = {
+  yes: '是',
+  no: '否',
+  done: '完成',
+  rollback: '回退',
+  continue: '继续',
+}
+
 /** 设计节点时填的三段说明，就是这次执行所依据的参考数据 */
 const REFERENCE_ROWS = [
   { key: 'observation', label: '观察' },
@@ -26,19 +51,49 @@ const REFERENCE_ROWS = [
   { key: 'assessment', label: '评估' },
 ] as const
 
+type Entry =
+  | { kind: 'run'; id: string; at: string; run: RunRecord }
+  | { kind: 'review'; id: string; at: string; review: ReviewTask }
+
 const meta = computed(() => KIND_META[props.node.kind])
 const activeId = ref<string | null>(null)
 
-/** runs 已按开始时间倒序，默认看最新一次 */
+/** 机器执行和人工处理揉成一条时间线，节点上只露一个入口 */
+const entries = computed<Entry[]>(() => {
+  const list: Entry[] = [
+    ...props.runs.map((run) => ({
+      kind: 'run' as const,
+      id: `run:${run.id}`,
+      at: run.startedAt,
+      run,
+    })),
+    ...props.reviews.map((review) => ({
+      kind: 'review' as const,
+      id: `review:${review.id}`,
+      at: review.createdAt,
+      review,
+    })),
+  ]
+  return list.sort((a, b) => b.at.localeCompare(a.at))
+})
+
+/** 默认看最新一条 */
 const current = computed(
-  () => props.runs.find((run) => run.id === activeId.value) ?? props.runs[0] ?? null,
+  () => entries.value.find((entry) => entry.id === activeId.value) ?? entries.value[0] ?? null,
+)
+
+const currentRun = computed(() => (current.value?.kind === 'run' ? current.value.run : null))
+const currentReview = computed(() =>
+  current.value?.kind === 'review' ? current.value.review : null,
 )
 
 watch(
-  () => props.runs,
-  (runs) => {
+  () => [props.runs, props.reviews],
+  () => {
     // 刷新后选中项可能已不存在（回退换了代），退回最新一条
-    if (activeId.value && !runs.some((run) => run.id === activeId.value)) activeId.value = null
+    if (activeId.value && !entries.value.some((entry) => entry.id === activeId.value)) {
+      activeId.value = null
+    }
   },
 )
 
@@ -56,7 +111,7 @@ const hasReference = computed(
 )
 
 const verdict = computed(() => {
-  const evidence = current.value?.evidence
+  const evidence = currentRun.value?.evidence
   if (!evidence || typeof evidence !== 'object') return ''
   const branch = (evidence as { branch?: unknown }).branch
   if (branch === 'yes') return '是'
@@ -64,14 +119,61 @@ const verdict = computed(() => {
   return pretty(evidence)
 })
 
+const headTag = computed(() => {
+  const run = currentRun.value
+  if (run) return { text: STATUS_TEXT[run.status], type: STATUS_TYPE[run.status] }
+  const review = currentReview.value
+  if (review) {
+    return { text: REVIEW_STATUS_TEXT[review.status], type: REVIEW_STATUS_TYPE[review.status] }
+  }
+  return null
+})
+
+const headMeta = computed<string[]>(() => {
+  const run = currentRun.value
+  if (run) {
+    return [
+      `第 ${run.generation} 代 · 尝试 ${run.attempt}`,
+      `${formatTime(run.startedAt)} → ${run.endedAt ? formatTime(run.endedAt) : '进行中'}`,
+      `耗时 ${duration(run)}`,
+    ]
+  }
+  const review = currentReview.value
+  if (!review) return []
+  const rows = [reviewKindText(review), `发起 ${formatTime(review.createdAt)}`]
+  if (review.decidedAt) rows.push(`处理 ${formatTime(review.decidedAt)}`)
+  if (review.decidedBy) rows.push(`处理人 ${review.decidedBy}`)
+  return rows
+})
+
+function reviewKindText(review: ReviewTask): string {
+  if (review.request.type === 'after_success') return '串行决策'
+  return review.kind === 'decision' ? '人工判断' : '人工处置'
+}
+
+function decisionText(decision?: ReviewDecision): string {
+  if (!decision) return ''
+  const label = DECISION_TEXT[decision.result] ?? decision.result
+  return decision.target ? `${label} → ${decision.target}` : label
+}
+
+function entryLabel(entry: Entry): string {
+  if (entry.kind === 'run') return `第${entry.run.generation}代·${entry.run.attempt}次`
+  return `${entry.review.kind === 'decision' ? '判断' : '处置'}·${shortTime(entry.at)}`
+}
+
 const formatTime = (value?: string | null): string =>
   value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
+
+const shortTime = (value: string): string =>
+  new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
 
 function duration(run: RunRecord): string {
   if (!run.endedAt) return '进行中'
   const ms = new Date(run.endedAt).getTime() - new Date(run.startedAt).getTime()
   if (!Number.isFinite(ms) || ms < 0) return '—'
-  if (ms < 1000) return `${ms}ms`
+  // 调度器按秒级时间戳落库，快调用取整后就是 0，写 0ms 看着像坏了
+  if (ms < 1000) return '<1s'
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
   const minutes = Math.floor(ms / 60000)
   const seconds = Math.round((ms % 60000) / 1000)
@@ -87,10 +189,6 @@ function pretty(value: unknown): string {
     return String(value)
   }
 }
-
-function runLabel(run: RunRecord): string {
-  return `第${run.generation}代·${run.attempt}次`
-}
 </script>
 
 <template>
@@ -102,42 +200,40 @@ function runLabel(run: RunRecord): string {
         <div class="head-row">
           <span class="kind">{{ meta.label }}</span>
           <span class="title">{{ node.title || '未命名节点' }}</span>
-          <el-tag v-if="current" size="small" :type="STATUS_TYPE[current.status]" effect="plain">
-            {{ STATUS_TEXT[current.status] }}
+          <el-tag v-if="headTag" size="small" :type="headTag.type" effect="plain">
+            {{ headTag.text }}
           </el-tag>
         </div>
-        <div v-if="current" class="head-meta">
-          <span>{{ runLabel(current) }}</span>
-          <span>{{ formatTime(current.startedAt) }} → {{ current.endedAt ? formatTime(current.endedAt) : '进行中' }}</span>
-          <span>耗时 {{ duration(current) }}</span>
+        <div v-if="headMeta.length" class="head-meta">
+          <span v-for="item in headMeta" :key="item">{{ item }}</span>
         </div>
       </div>
       <button type="button" class="close" aria-label="关闭" @click="emit('close')">×</button>
     </div>
 
-    <div v-if="runs.length > 1" class="switcher">
+    <div v-if="entries.length > 1" class="switcher">
       <button
-        v-for="run in runs"
-        :key="run.id"
+        v-for="entry in entries"
+        :key="entry.id"
         type="button"
         class="switch-item"
-        :class="{ active: run.id === current?.id }"
-        @click="activeId = run.id"
+        :class="{ active: entry.id === current?.id }"
+        @click="activeId = entry.id"
       >
-        <span class="dot" :class="run.status" />
-        {{ runLabel(run) }}
+        <span class="dot" :class="entry.kind === 'run' ? entry.run.status : entry.review.status" />
+        {{ entryLabel(entry) }}
       </button>
     </div>
 
-    <div v-if="current" class="body">
-      <div v-if="current.error" class="block">
+    <div v-if="currentRun" class="body">
+      <div v-if="currentRun.error" class="block">
         <div class="label is-error">错误</div>
-        <pre class="error-text">{{ current.error }}</pre>
+        <pre class="error-text">{{ currentRun.error }}</pre>
       </div>
 
-      <div v-if="current.input !== undefined" class="block">
+      <div v-if="currentRun.input !== undefined" class="block">
         <div class="label">输入</div>
-        <pre>{{ pretty(current.input) }}</pre>
+        <pre>{{ pretty(currentRun.input) }}</pre>
       </div>
 
       <div v-if="hasReference" class="block">
@@ -162,14 +258,74 @@ function runLabel(run: RunRecord): string {
         </div>
       </div>
 
-      <div v-if="current.output !== undefined" class="block">
+      <div v-if="currentRun.output !== undefined" class="block">
         <div class="label">输出</div>
-        <pre>{{ pretty(current.output) }}</pre>
+        <pre>{{ pretty(currentRun.output) }}</pre>
       </div>
 
       <div v-if="verdict" class="block">
         <div class="label">判定</div>
         <div class="verdict">{{ verdict }}</div>
+      </div>
+    </div>
+
+    <div v-else-if="currentReview" class="body">
+      <div class="block">
+        <div class="label">待办</div>
+        <div class="request">
+          <div class="request-title">{{ currentReview.request.title || node.title }}</div>
+          <div v-if="currentReview.request.detail" class="request-text">
+            {{ currentReview.request.detail }}
+          </div>
+          <div v-if="currentReview.request.instructions" class="request-hint">
+            {{ currentReview.request.instructions }}
+          </div>
+          <div v-if="currentReview.request.attachments?.length" class="ref-files">
+            <a
+              v-for="file in currentReview.request.attachments"
+              :key="file.hash"
+              :href="fileUrl(file.hash)"
+              target="_blank"
+              rel="noopener"
+              class="ref-file"
+            >
+              {{ file.name }}
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="label">处理结果</div>
+        <div v-if="currentReview.decision" class="decision">
+          <span class="decision-result">{{ decisionText(currentReview.decision) }}</span>
+          <span v-if="currentReview.decision.reason" class="decision-reason">
+            {{ currentReview.decision.reason }}
+          </span>
+        </div>
+        <div v-else class="decision is-pending">等待人工处理</div>
+      </div>
+
+      <div v-if="hasReference" class="block">
+        <div class="label">参考数据</div>
+        <div class="ref">
+          <div v-for="row in referenceRows" :key="row.label" class="ref-row">
+            <span class="ref-label">{{ row.label }}</span>
+            <span class="ref-text">{{ row.value }}</span>
+          </div>
+          <div v-if="attachments.length" class="ref-files">
+            <a
+              v-for="file in attachments"
+              :key="file.hash"
+              :href="fileUrl(file.hash)"
+              target="_blank"
+              rel="noopener"
+              class="ref-file"
+            >
+              {{ file.name }}
+            </a>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -299,12 +455,17 @@ function runLabel(run: RunRecord): string {
   background: var(--el-text-color-placeholder);
 }
 
-.dot.ok {
+.dot.ok,
+.dot.done {
   background: var(--el-color-success);
 }
 
 .dot.failed {
   background: var(--el-color-danger);
+}
+
+.dot.pending {
+  background: var(--el-color-warning);
 }
 
 .body {
@@ -391,5 +552,55 @@ pre {
   font-weight: 600;
   color: var(--el-text-color-primary);
   background: var(--el-fill-color-light);
+}
+
+.request {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+}
+
+.request-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.request-text {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--el-text-color-regular);
+}
+
+.request-hint {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.decision {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+}
+
+.decision-result {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.decision-reason {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
+}
+
+.decision.is-pending {
+  font-size: 12px;
+  color: var(--el-color-warning);
 }
 </style>

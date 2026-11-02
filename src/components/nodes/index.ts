@@ -29,6 +29,8 @@ export interface NodeCardData {
   selected: boolean
   /** 该节点名下的运行记录条数；只有执行页会传，设计器不传即不渲染入口 */
   runCount?: number
+  /** 该节点名下的人工待办数；人工节点不产生 run，执行详情只能靠待办记录 */
+  reviewCount?: number
 }
 
 /** 单一卡片渲染器承担 6 种类型；将来换成几何形状只需替换此注册项 */
