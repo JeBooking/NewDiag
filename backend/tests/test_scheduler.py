@@ -1,4 +1,9 @@
-"""调度状态机测试：假会话管理器 + 临时 SQLite，跑真实 db/token/run/review 写入。"""
+"""进程树执行集成测试：真实 demo 工程 + 临时 SQLite，跑真实子进程。
+
+覆盖直线流程、人工分支、自动上升、回退、并行分叉、串行队列、启动参数。
+执行引擎是 runner：发布时把 plan 生成 Python 工程，运行时起子进程逐节点跑，
+人工节点停在 input() 上，后端把决定写回 stdin。
+"""
 
 from __future__ import annotations
 
@@ -18,33 +23,24 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app import db, models
 from app.services.compiler import compile_doc
-from app.services.scheduler import Scheduler
+from app.services.runner import Runner
 
-TIMEOUT = 8.0
+# 业务工程按环境变量控制行为，测试里用 monkeypatch 注入真/假/异常
+DEMO_SOURCE = '''"""测试用业务工程。"""
+import os
 
 
-# ---------------------------------------------------------------- 假工程
-
-
-class FakeSessions:
-    """不碰子进程，只记录调用并返回预设值。"""
-
-    def __init__(self, results: dict | None = None) -> None:
-        self.results = dict(results or {})
-        self.calls: list[dict] = []
-        self.closed: list[str] = []
-
-    def call(self, instance_id, project, function, args, timeout=120):
-        self.calls.append({"instance": instance_id, "function": function, "args": args})
-        value = self.results.get(function)
-        if isinstance(value, Exception):
-            raise value
-        if callable(value):
-            return value(args)
-        return value
-
-    def close(self, instance_id):
-        self.closed.append(instance_id)
+def judge_voltage(voltage=None, threshold=210.0):
+    ctl = os.environ.get("DIAG_JUDGE_RESULT", "")
+    if ctl == "error":
+        raise RuntimeError("设备离线")
+    if ctl == "false":
+        return False
+    if ctl == "true":
+        return True
+    value = voltage if isinstance(voltage, (int, float)) else threshold
+    return value >= threshold
+'''
 
 
 # ---------------------------------------------------------------- 文档
@@ -141,22 +137,69 @@ def branched_doc() -> dict:
     }
 
 
+def fanout_doc(mode: str) -> dict:
+    """开始节点两条出线，分别接一个人工排查。"""
+    return {
+        "format": 1,
+        "name": "开始分叉",
+        "mode": mode,
+        "nodes": [
+            _start(),
+            _node("a1", "investigation", "第一条排查"),
+            _node("a2", "investigation", "第二条排查"),
+            _node("e1", "escalation", "上升一"),
+            _node("e2", "escalation", "上升二"),
+        ],
+        "edges": [
+            {"id": "f1", "from": "start", "to": "a1", "order": 1},
+            {"id": "f2", "from": "start", "to": "a2", "order": 2},
+            {"id": "f3", "from": "a1", "to": "e1", "branch": "yes", "order": 1},
+            {"id": "f4", "from": "a2", "to": "e2", "branch": "yes", "order": 1},
+        ],
+    }
+
+
+def bound_doc(params: dict | None = None) -> dict:
+    """单个绑定节点，参数走启动参数快照。"""
+    doc = straight_doc()
+    node = next(item for item in doc["nodes"] if item["id"] == "n1")
+    node["params"] = params or {"voltage": {"snapshot": "voltage"}}
+    return doc
+
+
+def with_start_inputs(doc: dict, inputs: list[dict]) -> dict:
+    start = next(item for item in doc["nodes"] if item["id"] == "start")
+    start["inputs"] = inputs
+    return doc
+
+
 # ---------------------------------------------------------------- 夹具
 
 
 @pytest.fixture()
-def env(tmp_path):
+def env(tmp_path, monkeypatch):
+    demo_dir = tmp_path / "demo"
+    package = demo_dir / "cooling"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "diagnosis.py").write_text(DEMO_SOURCE, encoding="utf-8")
+
     db.configure(f"sqlite:///{(tmp_path / 'diag.db').as_posix()}")
     db.init_db()
-    factory = db.SessionLocal
-    sessions = FakeSessions({"judge_voltage": True})
-    sched = Scheduler(factory, sessions=sessions, timeout=TIMEOUT)
-    yield SimpleNamespace(factory=factory, sessions=sessions, scheduler=sched, tmp=tmp_path)
+    runner = Runner(db.SessionLocal)
+    yield SimpleNamespace(
+        factory=db.SessionLocal,
+        runner=runner,
+        tmp=tmp_path,
+        demo_dir=demo_dir,
+        monkeypatch=monkeypatch,
+    )
+    runner.close()
     db.engine.dispose()
 
 
 def seed(
-    factory,
+    env,
     doc: dict,
     mode: str | None = None,
     snapshot: dict | None = None,
@@ -164,6 +207,7 @@ def seed(
 ) -> dict:
     plan = compile_doc(doc, "f1", 1, functions=functions)
     mode = mode or doc.get("mode") or "parallel"
+    factory = env.factory
     session = factory()
     try:
         session.add(models.Flow(id="f1", name="流程", description="", mode=mode, owner_id="local"))
@@ -207,7 +251,14 @@ def seed(
             )
         )
         session.add(
-            models.Project(id="pr1", name="demo", path="", module="", python=None, factory=None)
+            models.Project(
+                id="pr1",
+                name="demo",
+                path=str(env.demo_dir),
+                module="cooling.diagnosis",
+                python=None,
+                factory=None,
+            )
         )
         session.commit()
     finally:
@@ -226,7 +277,7 @@ def read(factory, fn):
         session.close()
 
 
-def wait_for(factory, predicate, timeout: float = 5.0, label: str = "条件") -> None:
+def wait_for(factory, predicate, timeout: float = 10.0, label: str = "条件") -> None:
     deadline = time.monotonic() + timeout
     last: Exception | None = None
     while time.monotonic() < deadline:
@@ -261,6 +312,12 @@ def token_of(factory, node_id: str):
     return candidates[-1] if candidates else None
 
 
+def token_status(factory, node_id: str):
+    """token 是异步创建的，可能还没出现；返回 None 而不是让 predicate 崩掉。"""
+    token = token_of(factory, node_id)
+    return token.status if token else None
+
+
 def pending_reviews(factory) -> list:
     return read(
         factory,
@@ -284,19 +341,24 @@ def runs(factory, node_id: str | None = None) -> list:
     return read(factory, query)
 
 
+def call_args(factory, node_id: str = "n1") -> dict:
+    """调用参数记录在 run 的 input_json 里，取第一条。"""
+    rows = runs(factory, node_id)
+    assert rows, f"节点 {node_id} 没有调用记录"
+    return json.loads(rows[0].input_json or "{}")
+
+
 # ---------------------------------------------------------------- 测试
 
 
 def test_parallel_flow_reaches_success(env):
-    seed(env.factory, straight_doc())
-    env.sessions.results["judge_voltage"] = True
-
-    env.scheduler.start("i1")
+    seed(env, straight_doc())
+    env.runner.start("i1")
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工排查待办")
 
     assert token_of(env.factory, "n1").status == "done"
     assert token_of(env.factory, "n3").status == "waiting"
-    assert env.sessions.calls == [{"instance": "i1", "function": "judge_voltage", "args": {}}]
+    assert call_args(env.factory, "n1") == {}
     judge_runs = runs(env.factory, "n1")
     assert [run.status for run in judge_runs] == ["ok"]
     assert json.loads(judge_runs[0].output_json) is True
@@ -308,7 +370,7 @@ def test_parallel_flow_reaches_success(env):
     request = json.loads(review.request_json)
     assert request["title"] == "人工确认现象"
 
-    env.scheduler.submit_review("i1", review.id, {"result": "yes"})
+    env.runner.submit_review("i1", review.id, {"result": "yes"})
     wait_for(
         env.factory,
         lambda: any(r.node_id == "r1" for r in pending_reviews(env.factory)),
@@ -319,20 +381,19 @@ def test_parallel_flow_reaches_success(env):
     assert token_of(env.factory, "c1").status == "done"
     assert token_of(env.factory, "r1").status == "waiting"
 
-    env.scheduler.submit_review("i1", action.id, {"result": "done"})
+    env.runner.submit_review("i1", action.id, {"result": "done"})
     wait_for(env.factory, lambda: status_of(env.factory) == "success", label="实例成功")
 
     assert token_of(env.factory, "p1").status == "done"
-    assert env.sessions.closed == ["i1"]
 
 
 def test_manual_no_branch_goes_to_escalation(env):
-    seed(env.factory, straight_doc())
-    env.scheduler.start("i1")
+    seed(env, straight_doc())
+    env.runner.start("i1")
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting")
 
     review = pending_reviews(env.factory)[0]
-    env.scheduler.submit_review("i1", review.id, {"result": "no"})
+    env.runner.submit_review("i1", review.id, {"result": "no"})
     wait_for(env.factory, lambda: status_of(env.factory) == "escalated", label="实例上升")
 
     assert token_of(env.factory, "e1").status == "done"
@@ -341,15 +402,14 @@ def test_manual_no_branch_goes_to_escalation(env):
 
 def test_auto_escalation_is_not_failure(env):
     """自动排查判否直达上升：结果是 escalated，不是 failed。"""
-    seed(env.factory, straight_doc())
-    env.sessions.results["judge_voltage"] = False
+    env.monkeypatch.setenv("DIAG_JUDGE_RESULT", "false")
+    seed(env, straight_doc())
 
-    env.scheduler.start("i1")
+    env.runner.start("i1")
     wait_for(env.factory, lambda: status_of(env.factory) == "escalated", label="自动上升")
 
     assert token_of(env.factory, "e1").status == "done"
     assert token_of(env.factory, "n3") is None
-    assert env.sessions.closed == ["i1"]
 
 
 def test_success_beats_escalation(env):
@@ -381,34 +441,34 @@ def test_success_beats_escalation(env):
             {"id": "s9", "from": "r1", "to": "p1"},
         ],
     }
-    seed(env.factory, doc)
-    env.scheduler.start("i1")
+    seed(env, doc)
+    env.runner.start("i1")
     wait_for(env.factory, lambda: len(pending_reviews(env.factory)) == 2, label="两条待办")
 
     backup = [r for r in pending_reviews(env.factory) if r.node_id == "b1"][0]
-    env.scheduler.submit_review("i1", backup.id, {"result": "no"})
-    wait_for(env.factory, lambda: token_of(env.factory, "e1").status == "done", label="上升完成")
+    env.runner.submit_review("i1", backup.id, {"result": "no"})
+    wait_for(env.factory, lambda: token_status(env.factory, "e1") == "done", label="上升完成")
     assert status_of(env.factory) == "waiting"
 
     main = [r for r in pending_reviews(env.factory) if r.node_id == "a1"][0]
-    env.scheduler.submit_review("i1", main.id, {"result": "yes"})
+    env.runner.submit_review("i1", main.id, {"result": "yes"})
     wait_for(
         env.factory,
         lambda: any(r.node_id == "r1" for r in pending_reviews(env.factory)),
         label="处置待办",
     )
     fix = [r for r in pending_reviews(env.factory) if r.node_id == "r1"][0]
-    env.scheduler.submit_review("i1", fix.id, {"result": "done"})
+    env.runner.submit_review("i1", fix.id, {"result": "done"})
 
     wait_for(env.factory, lambda: status_of(env.factory) == "success", label="实例成功")
     assert token_of(env.factory, "e1").status == "done"
 
 
 def test_business_error_marks_run_failed(env):
-    seed(env.factory, straight_doc())
-    env.sessions.results["judge_voltage"] = RuntimeError("设备离线")
+    env.monkeypatch.setenv("DIAG_JUDGE_RESULT", "error")
+    seed(env, straight_doc())
 
-    env.scheduler.start("i1")
+    env.runner.start("i1")
     wait_for(env.factory, lambda: status_of(env.factory) == "failed", label="执行失败")
 
     failed = runs(env.factory, "n1")
@@ -419,13 +479,13 @@ def test_business_error_marks_run_failed(env):
 
 
 def test_rollback_abandons_path_and_bumps_generation(env):
-    seed(env.factory, straight_doc())
-    env.scheduler.start("i1")
+    seed(env, straight_doc())
+    env.runner.start("i1")
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting")
     first_review = pending_reviews(env.factory)[0]
     assert first_review.node_id == "n3"
 
-    env.scheduler.rollback("i1", "n1", "yes", "电压判断有误，需要重查")
+    env.runner.rollback("i1", "n1", "yes", "电压判断有误，需要重查")
     wait_for(
         env.factory,
         lambda: any(
@@ -452,10 +512,10 @@ def test_rollback_abandons_path_and_bumps_generation(env):
 
 def test_rollback_to_passthrough_node(env):
     """结论节点不产生 run，但令牌走过它就该能作为回退目标。"""
-    seed(env.factory, straight_doc())
-    env.scheduler.start("i1")
+    seed(env, straight_doc())
+    env.runner.start("i1")
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工排查待办")
-    env.scheduler.submit_review("i1", pending_reviews(env.factory)[0].id, {"result": "yes"})
+    env.runner.submit_review("i1", pending_reviews(env.factory)[0].id, {"result": "yes"})
     wait_for(
         env.factory,
         lambda: any(r.node_id == "r1" for r in pending_reviews(env.factory)),
@@ -464,7 +524,7 @@ def test_rollback_to_passthrough_node(env):
     old_action = [t for t in tokens(env.factory) if t.node_id == "r1"][0]
     assert old_action.status == "waiting"
 
-    env.scheduler.rollback("i1", "c1", "default", "结论判错了")
+    env.runner.rollback("i1", "c1", "default", "结论判错了")
     wait_for(
         env.factory,
         lambda: any(r.node_id == "r1" and r.id != old_action.id for r in pending_reviews(env.factory)),
@@ -481,10 +541,10 @@ def test_rollback_to_passthrough_node(env):
 
 def test_rollback_to_waiting_node_redoes_it(env):
     """回退目标正是当前等人工的节点：重排一个令牌重做，而不是 409。"""
-    seed(env.factory, straight_doc())
-    env.scheduler.start("i1")
+    seed(env, straight_doc())
+    env.runner.start("i1")
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工排查待办")
-    env.scheduler.submit_review("i1", pending_reviews(env.factory)[0].id, {"result": "yes"})
+    env.runner.submit_review("i1", pending_reviews(env.factory)[0].id, {"result": "yes"})
     wait_for(
         env.factory,
         lambda: any(r.node_id == "r1" for r in pending_reviews(env.factory)),
@@ -492,7 +552,7 @@ def test_rollback_to_waiting_node_redoes_it(env):
     )
     first_review = [r for r in pending_reviews(env.factory) if r.node_id == "r1"][0]
 
-    env.scheduler.rollback("i1", "r1", "default", "操作没做成，重来")
+    env.runner.rollback("i1", "r1", "default", "操作没做成，重来")
     wait_for(
         env.factory,
         lambda: any(r.node_id == "r1" and r.id != first_review.id for r in pending_reviews(env.factory)),
@@ -530,32 +590,32 @@ def test_rollback_rejected_when_other_path_active(env):
             {"id": "b7", "from": "t2", "to": "e1", "branch": "no", "order": 2},
         ],
     }
-    seed(env.factory, doc)
-    env.scheduler.start("i1")
+    seed(env, doc)
+    env.runner.start("i1")
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工支路待办")
     assert token_of(env.factory, "t1").status == "done"
     assert token_of(env.factory, "t2").status == "waiting"
 
     # t2 仍在等待，属于 t1 之外的活跃路径
     with pytest.raises(ValueError):
-        env.scheduler.rollback("i1", "t1", "yes", None)
+        env.runner.rollback("i1", "t1", "yes", None)
 
 
 def test_serial_pauses_after_success_then_continues(env):
-    seed(env.factory, branched_doc())
-    env.scheduler.start("i1")
+    seed(env, branched_doc())
+    env.runner.start("i1")
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting")
     first = pending_reviews(env.factory)[0]
     assert first.node_id == "m1"
 
-    env.scheduler.submit_review("i1", first.id, {"result": "yes"})
+    env.runner.submit_review("i1", first.id, {"result": "yes"})
     wait_for(
         env.factory,
         lambda: any(r.node_id == "r1" for r in pending_reviews(env.factory)),
         label="思路一处置",
     )
     action = [r for r in pending_reviews(env.factory) if r.node_id == "r1"][0]
-    env.scheduler.submit_review("i1", action.id, {"result": "done"})
+    env.runner.submit_review("i1", action.id, {"result": "done"})
 
     wait_for(env.factory, lambda: status_of(env.factory) == "paused", label="成功后暂停")
     decision = [r for r in pending_reviews(env.factory) if r.node_id == "p1"][0]
@@ -563,21 +623,21 @@ def test_serial_pauses_after_success_then_continues(env):
     assert request["type"] == "after_success"
     assert token_of(env.factory, "p1").status == "done"
 
-    env.scheduler.submit_review("i1", decision.id, {"result": "continue"})
+    env.runner.submit_review("i1", decision.id, {"result": "continue"})
     wait_for(
         env.factory,
         lambda: any(r.node_id == "m2" for r in pending_reviews(env.factory)),
         label="继续第二条思路",
     )
     second = [r for r in pending_reviews(env.factory) if r.node_id == "m2"][0]
-    env.scheduler.submit_review("i1", second.id, {"result": "yes"})
+    env.runner.submit_review("i1", second.id, {"result": "yes"})
     wait_for(
         env.factory,
         lambda: any(r.node_id == "r2" for r in pending_reviews(env.factory)),
         label="思路二处置",
     )
     last = [r for r in pending_reviews(env.factory) if r.node_id == "r2"][0]
-    env.scheduler.submit_review("i1", last.id, {"result": "done"})
+    env.runner.submit_review("i1", last.id, {"result": "done"})
 
     wait_for(env.factory, lambda: status_of(env.factory) == "success", label="实例成功")
     assert token_of(env.factory, "p2").status == "done"
@@ -590,49 +650,24 @@ def test_failed_path_does_not_block_other_tokens(env):
     doc["edges"].append({"id": "y1", "from": "n1", "to": "m2", "branch": "yes", "order": 2})
     doc["edges"].append({"id": "y2", "from": "m2", "to": "e1", "branch": "yes"})
     doc["edges"].append({"id": "y3", "from": "m2", "to": "e1", "branch": "no"})
-    seed(env.factory, doc)
+    seed(env, doc)
 
-    env.scheduler.start("i1")
+    env.runner.start("i1")
     wait_for(env.factory, lambda: len(pending_reviews(env.factory)) == 2, label="两条待办")
     assert token_of(env.factory, "n3").status == "waiting"
     assert token_of(env.factory, "m2").status == "waiting"
 
     review = [r for r in pending_reviews(env.factory) if r.node_id == "m2"][0]
-    env.scheduler.submit_review("i1", review.id, {"result": "no"})
-    wait_for(env.factory, lambda: token_of(env.factory, "e1").status == "done", label="上升分支")
+    env.runner.submit_review("i1", review.id, {"result": "no"})
+    wait_for(env.factory, lambda: token_status(env.factory, "e1") == "done", label="上升分支")
     assert token_of(env.factory, "m2").status == "done"
     assert token_of(env.factory, "n3").status == "waiting"
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="回到等待")
 
 
-# ---------------------------------------------------------------- 开始节点
-
-
-def fanout_doc(mode: str) -> dict:
-    """开始节点两条出线，分别接一个人工排查。"""
-    return {
-        "format": 1,
-        "name": "开始分叉",
-        "mode": mode,
-        "nodes": [
-            _start(),
-            _node("a1", "investigation", "第一条排查"),
-            _node("a2", "investigation", "第二条排查"),
-            _node("e1", "escalation", "上升一"),
-            _node("e2", "escalation", "上升二"),
-        ],
-        "edges": [
-            {"id": "f1", "from": "start", "to": "a1", "order": 1},
-            {"id": "f2", "from": "start", "to": "a2", "order": 2},
-            {"id": "f3", "from": "a1", "to": "e1", "branch": "yes", "order": 1},
-            {"id": "f4", "from": "a2", "to": "e2", "branch": "yes", "order": 1},
-        ],
-    }
-
-
 def test_start_fans_out_in_parallel(env):
-    seed(env.factory, fanout_doc("parallel"))
-    env.scheduler.start("i1")
+    seed(env, fanout_doc("parallel"))
+    env.runner.start("i1")
 
     wait_for(
         env.factory,
@@ -649,8 +684,8 @@ def test_start_fans_out_in_parallel(env):
 
 
 def test_start_fans_out_in_serial(env):
-    seed(env.factory, fanout_doc("serial"))
-    env.scheduler.start("i1")
+    seed(env, fanout_doc("serial"))
+    env.runner.start("i1")
 
     wait_for(
         env.factory,
@@ -663,61 +698,47 @@ def test_start_fans_out_in_serial(env):
     assert len(pending_reviews(env.factory)) == 1
 
 
-def bound_doc(params: dict | None = None) -> dict:
-    """单个绑定节点，参数走启动参数快照。"""
-    doc = straight_doc()
-    node = next(item for item in doc["nodes"] if item["id"] == "n1")
-    node["params"] = params or {"voltage": {"snapshot": "voltage"}}
-    return doc
-
-
 def test_snapshot_reads_layered_payload(env):
     seed(
-        env.factory,
+        env,
         bound_doc(),
-        snapshot={"global": {"voltage": 12}, "scope": {"judge_voltage": {"voltage": 99}}},
+        snapshot={"global": {"voltage": 210}, "scope": {"judge_voltage": {"voltage": 220}}},
     )
-    env.scheduler.start("i1")
+    env.runner.start("i1")
 
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工待办")
     # 函数局部参数优先于全局
-    assert env.sessions.calls[0]["args"] == {"voltage": 99}
+    assert call_args(env.factory, "n1") == {"voltage": 220}
 
 
 def test_snapshot_falls_back_to_global(env):
     seed(
-        env.factory,
+        env,
         bound_doc(),
-        snapshot={"global": {"voltage": 12}, "scope": {"other_function": {"voltage": 99}}},
+        snapshot={"global": {"voltage": 210}, "scope": {"other_function": {"voltage": 299}}},
     )
-    env.scheduler.start("i1")
+    env.runner.start("i1")
 
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工待办")
     # 别的函数的作用域不可见
-    assert env.sessions.calls[0]["args"] == {"voltage": 12}
+    assert call_args(env.factory, "n1") == {"voltage": 210}
 
 
 def test_snapshot_reads_legacy_flat_payload(env):
-    seed(env.factory, bound_doc(), snapshot={"voltage": 12})
-    env.scheduler.start("i1")
+    seed(env, bound_doc(), snapshot={"voltage": 220})
+    env.runner.start("i1")
 
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工待办")
-    assert env.sessions.calls[0]["args"] == {"voltage": 12}
+    assert call_args(env.factory, "n1") == {"voltage": 220}
 
 
 def test_snapshot_missing_field_fails_argument(env):
-    seed(env.factory, bound_doc(), snapshot={"global": {"current": 3}})
-    env.scheduler.start("i1")
+    seed(env, bound_doc(), snapshot={"global": {"current": 3}})
+    env.runner.start("i1")
 
     wait_for(env.factory, lambda: status_of(env.factory) == "failed", label="参数失败")
     failed = runs(env.factory, "n1")
     assert failed and "execution/argument" in failed[0].error
-
-
-def with_start_inputs(doc: dict, inputs: list[dict]) -> dict:
-    start = next(item for item in doc["nodes"] if item["id"] == "start")
-    start["inputs"] = inputs
-    return doc
 
 
 def test_optional_param_omitted_when_snapshot_missing(env):
@@ -728,11 +749,11 @@ def test_optional_param_omitted_when_snapshot_missing(env):
             {"name": "threshold", "type": "float", "required": False, "default": 210.0}
         ]
     }
-    seed(env.factory, doc, snapshot={"global": {}}, functions=functions)
-    env.scheduler.start("i1")
+    seed(env, doc, snapshot={"global": {}}, functions=functions)
+    env.runner.start("i1")
 
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工待办")
-    assert env.sessions.calls[0]["args"] == {}
+    assert call_args(env.factory, "n1") == {}
     assert runs(env.factory, "n1")[0].status == "ok"
 
 
@@ -743,11 +764,11 @@ def test_optional_param_passed_when_snapshot_has_value(env):
             {"name": "threshold", "type": "float", "required": False, "default": 210.0}
         ]
     }
-    seed(env.factory, doc, snapshot={"global": {"threshold": 198}}, functions=functions)
-    env.scheduler.start("i1")
+    seed(env, doc, snapshot={"global": {"threshold": 198}}, functions=functions)
+    env.runner.start("i1")
 
     wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="人工待办")
-    assert env.sessions.calls[0]["args"] == {"threshold": 198}
+    assert call_args(env.factory, "n1") == {"threshold": 198}
 
 
 def test_required_param_missing_still_fails(env):
@@ -758,8 +779,8 @@ def test_required_param_missing_still_fails(env):
             {"name": "voltage", "type": "float", "required": True, "default": None}
         ]
     }
-    seed(env.factory, doc, snapshot={"global": {}}, functions=functions)
-    env.scheduler.start("i1")
+    seed(env, doc, snapshot={"global": {}}, functions=functions)
+    env.runner.start("i1")
 
     wait_for(env.factory, lambda: status_of(env.factory) == "failed", label="参数失败")
     failed = runs(env.factory, "n1")
