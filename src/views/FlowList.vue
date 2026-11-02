@@ -9,6 +9,7 @@ import { ensureLayout } from '@/components/canvas/autolayout'
 import type { FlowDoc, FlowMode, FlowSummary, FolderNode, InstanceStatus } from '@/domain/types'
 import { errorText } from '@/services/api'
 import { createFolder, listFolders, removeFolder, updateFolder } from '@/services/folders'
+import { downloadFile } from '@/services/download'
 import { exportFlowUrl, importFlow, importFlowPackage, updateFlow, type ListFlowsFilter } from '@/services/flows'
 import { useFlowsStore } from '@/stores/flows'
 
@@ -364,14 +365,13 @@ function openRun(row: FlowSummary): void {
   router.push({ name: 'flow-run', params: { id: row.id } })
 }
 
-/** 导出当前在线版本；文件名由后端的 Content-Disposition 决定 */
-function download(row: FlowSummary): void {
-  const link = document.createElement('a')
-  link.href = exportFlowUrl(row.id)
-  link.download = ''
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
+/** 导出当前在线版本；失败要提示，否则浏览器只会留一条「没有文件」 */
+async function download(row: FlowSummary): Promise<void> {
+  try {
+    await downloadFile(exportFlowUrl(row.id), `${row.name}.zip`)
+  } catch (error) {
+    ElMessage.error(errorText(error, '导出失败'))
+  }
 }
 
 function folderNameOf(row: FlowSummary): string | null {

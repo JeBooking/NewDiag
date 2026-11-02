@@ -6,6 +6,7 @@ import AppHeader from '@/components/layout/AppHeader.vue'
 import ReleaseInputForm from '@/components/panels/ReleaseInputForm.vue'
 import type { FlowDetail, ReleaseSummary } from '@/domain/types'
 import { errorText } from '@/services/api'
+import { downloadFile } from '@/services/download'
 import {
   exportFlowUrl,
   getRelease,
@@ -103,13 +104,13 @@ function openStart(release: ReleaseSummary): void {
 }
 
 /** 导指定发布版本的快照，和当前在线版本无关 */
-function download(release: ReleaseSummary): void {
-  const link = document.createElement('a')
-  link.href = exportFlowUrl(flowId.value, release.id)
-  link.download = ''
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
+async function download(release: ReleaseSummary): Promise<void> {
+  try {
+    const name = flow.value?.name ?? 'flow'
+    await downloadFile(exportFlowUrl(flowId.value, release.id), `${name}-v${release.versionNo}.zip`)
+  } catch (error) {
+    ElMessage.error(errorText(error, '导出失败'))
+  }
 }
 
 function parseStartInput(): Record<string, unknown> | null {
