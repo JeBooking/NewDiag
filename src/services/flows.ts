@@ -128,6 +128,18 @@ export function importFlow(doc: FlowDoc): Promise<FlowDetail> {
   })
 }
 
+/** 流程包下载地址；带 releaseId 导发布版本，不带导当前在线版本 */
+export function exportFlowUrl(flowId: string, releaseId?: string): string {
+  const query = releaseId ? `?releaseId=${encodeURIComponent(releaseId)}` : ''
+  return `/api/flows/${encodeURIComponent(flowId)}/export${query}`
+}
+
+export async function importFlowPackage(file: File): Promise<FlowDetail> {
+  const form = new FormData()
+  form.append('file', file)
+  return request<FlowDetail>('/flows/import-package', { method: 'POST', body: form })
+}
+
 /** 函数签名推导出的启动参数，type 是 Python 侧的类型名，由属性面板归一成 ParamType */
 export interface ProbeParam {
   name: string

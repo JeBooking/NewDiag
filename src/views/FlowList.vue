@@ -9,7 +9,7 @@ import { ensureLayout } from '@/components/canvas/autolayout'
 import type { FlowDoc, FlowMode, FlowSummary, FolderNode, InstanceStatus } from '@/domain/types'
 import { errorText } from '@/services/api'
 import { createFolder, listFolders, removeFolder, updateFolder } from '@/services/folders'
-import { importFlow, updateFlow, type ListFlowsFilter } from '@/services/flows'
+import { exportFlowUrl, importFlow, importFlowPackage, updateFlow, type ListFlowsFilter } from '@/services/flows'
 import { useFlowsStore } from '@/stores/flows'
 
 const router = useRouter()
@@ -37,6 +37,8 @@ const createVisible = ref(false)
 const submitting = ref(false)
 const importVisible = ref(false)
 const importText = ref('')
+/** 选中的 .zip 包；和粘贴 JSON 互斥，有它就忽略 textarea */
+const importFile = ref<File | null>(null)
 const importing = ref(false)
 const form = ref<{ name: string; description: string; mode: FlowMode }>({
   name: '',
@@ -258,12 +260,19 @@ async function submitCreate(): Promise<void> {
 
 function openImport(): void {
   importText.value = ''
+  importFile.value = null
   importVisible.value = true
 }
 
 function onImportFileChange(file: UploadFile): void {
   const raw = file.raw
   if (!raw) return
+  if (raw.name.toLowerCase().endsWith('.zip')) {
+    importFile.value = raw
+    importText.value = ''
+    return
+  }
+  importFile.value = null
   const reader = new FileReader()
   reader.onload = () => {
     importText.value = String(reader.result ?? '')
@@ -272,6 +281,22 @@ function onImportFileChange(file: UploadFile): void {
 }
 
 async function submitImport(): Promise<void> {
+  if (importFile.value) {
+    importing.value = true
+    try {
+      const created = await importFlowPackage(importFile.value)
+      importVisible.value = false
+      ElMessage.success('流程包已导入')
+      await reload()
+      router.push({ name: 'flow-edit', params: { id: created.id } })
+    } catch (error) {
+      ElMessage.error(errorText(error, '导入流程包失败'))
+    } finally {
+      importing.value = false
+    }
+    return
+  }
+
   let doc: unknown
   try {
     doc = JSON.parse(importText.value)
@@ -337,6 +362,16 @@ function openReleases(row: FlowSummary): void {
 
 function openRun(row: FlowSummary): void {
   router.push({ name: 'flow-run', params: { id: row.id } })
+}
+
+/** 导出当前在线版本；文件名由后端的 Content-Disposition 决定 */
+function download(row: FlowSummary): void {
+  const link = document.createElement('a')
+  link.href = exportFlowUrl(row.id)
+  link.download = ''
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
 }
 
 function folderNameOf(row: FlowSummary): string | null {
@@ -474,12 +509,13 @@ function folderNameOf(row: FlowSummary): string | null {
                 <span v-else class="muted">空闲</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="270" align="right">
+            <el-table-column label="操作" width="320" align="right">
               <template #default="{ row }">
                 <div class="row-actions" @click.stop>
                   <el-button link type="primary" @click="openEdit(row)">设计</el-button>
                   <el-button link @click="openReleases(row)">版本</el-button>
                   <el-button link @click="openRun(row)">执行</el-button>
+                  <el-button link @click="download(row)">导出</el-button>
                   <el-button link @click="openMove(row)">移动到…</el-button>
                 </div>
               </template>
@@ -542,13 +578,20 @@ function folderNameOf(row: FlowSummary): string | null {
         drag
         :auto-upload="false"
         :show-file-list="false"
-        accept=".json,application/json"
+        accept=".json,.zip,application/json,application/zip"
         :on-change="onImportFileChange"
         class="import-upload"
       >
-        <div class="upload-hint">把 .json 流程文档拖到这里，或点击选择文件</div>
+        <div class="upload-hint">把 .json 文档或导出的 .zip 包拖到这里，或点击选择文件</div>
       </el-upload>
-      <el-input v-model="importText" type="textarea" :rows="10" placeholder="或粘贴流程文档 JSON" />
+      <div v-if="importFile" class="upload-hint">已选择：{{ importFile.name }}</div>
+      <el-input
+        v-model="importText"
+        type="textarea"
+        :rows="10"
+        placeholder="或粘贴流程文档 JSON（不含附件）"
+        @input="importFile = null"
+      />
       <template #footer>
         <el-button @click="importVisible = false">取消</el-button>
         <el-button type="primary" :loading="importing" @click="submitImport">导入</el-button>
