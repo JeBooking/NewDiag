@@ -69,18 +69,22 @@ const props = withDefaults(
     issues?: LintIssue[]
     status?: Record<string, NodeVisualStatus>
     selectedNodeId?: string | null
+    /** 每个节点名下的运行记录条数；执行页传入后节点上才出现执行入口 */
+    runCounts?: Record<string, number>
   }>(),
   {
     readonly: false,
     issues: () => [],
     status: () => ({}),
     selectedNodeId: null,
+    runCounts: () => ({}),
   },
 )
 
 const emit = defineEmits<{
   (event: 'update:doc', doc: FlowDoc): void
   (event: 'select-node', id: string | null): void
+  (event: 'inspect-node', id: string): void
 }>()
 
 // 父组件也要 project/坐标换算，必须与 <VueFlow> 共用同一个 store
@@ -200,6 +204,7 @@ function projectAll(preservePositions: boolean) {
       issues: byNode.get(meta.id) ?? [],
       status: props.status[meta.id] ?? null,
       selected: props.selectedNodeId === meta.id,
+      runCount: props.runCounts[meta.id] ?? 0,
     }
     nextNodes.push({
       id: meta.id,
@@ -285,7 +290,7 @@ watch(
 
 // 渲染投影（问题标记、执行状态、选中）变化时只重排投影，位置取自画布当前值
 watch(
-  () => [props.issues, props.status, props.selectedNodeId, props.readonly],
+  () => [props.issues, props.status, props.selectedNodeId, props.readonly, props.runCounts],
   () => projectAll(true),
   { deep: true },
 )
@@ -631,8 +636,14 @@ function tipCreate(kind: NodeKind) {
   commit()
 }
 
+/** 卡片上的执行入口是 DOM 里的一小块，靠事件委托区分「看详情」和「选中」 */
 function onNodeClick(event: NodeMouseEvent) {
   hideTip()
+  const target = event.event?.target as HTMLElement | null
+  if (target?.closest?.('.run-chip')) {
+    emit('inspect-node', event.node.id)
+    return
+  }
   emit('select-node', event.node.id)
 }
 

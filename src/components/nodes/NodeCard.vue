@@ -21,6 +21,7 @@ const isStart = computed(() => props.data.kind === 'start')
 const badge = computed(() => (props.data.hasBinding ? '自动' : '人工'))
 const statusClass = computed(() => (props.data.status ? `status-${props.data.status}` : ''))
 const issues = computed(() => props.data.issues ?? [])
+const runCount = computed(() => props.data.runCount ?? 0)
 /** start 卡片副标题换成启动参数摘要，其余节点仍显示说明 */
 const subtitle = computed(() => {
   if (isStart.value) {
@@ -62,6 +63,9 @@ const worst = computed(() => {
       </div>
       <div v-if="!isStart" class="row-foot">
         <span class="badge" :class="{ 'is-auto': data.hasBinding }">{{ badge }}</span>
+      </div>
+      <div v-if="runCount > 0" class="row-run">
+        <span class="run-chip">执行 {{ runCount }}</span>
       </div>
     </div>
 
@@ -185,6 +189,27 @@ const worst = computed(() => {
 .badge.is-auto {
   border-color: color-mix(in srgb, var(--kind-color) 40%, transparent);
   color: var(--kind-color);
+}
+
+.row-run {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 执行入口独立一行：既保住点击面积，也不和「自动/人工」挤在同一行 */
+.run-chip {
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 45%, transparent);
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--el-color-primary);
+  background: color-mix(in srgb, var(--el-color-primary) 10%, transparent);
+  cursor: pointer;
+}
+
+.run-chip:hover {
+  border-color: var(--el-color-primary);
 }
 
 .is-selected {
