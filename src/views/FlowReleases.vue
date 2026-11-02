@@ -7,6 +7,7 @@ import ReleaseInputForm from '@/components/panels/ReleaseInputForm.vue'
 import type { FlowDetail, ReleaseSummary } from '@/domain/types'
 import { errorText } from '@/services/api'
 import {
+  exportFlowUrl,
   getRelease,
   listReleases,
   startInstance,
@@ -99,6 +100,16 @@ function openStart(release: ReleaseSummary): void {
   startInput.value = ''
   startVisible.value = true
   void loadStartDetail(release)
+}
+
+/** 导指定发布版本的快照，和当前在线版本无关 */
+function download(release: ReleaseSummary): void {
+  const link = document.createElement('a')
+  link.href = exportFlowUrl(flowId.value, release.id)
+  link.download = ''
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
 }
 
 function parseStartInput(): Record<string, unknown> | null {
@@ -195,11 +206,12 @@ const planJson = computed(() =>
         <el-table-column label="备注" min-width="200">
           <template #default="{ row }">{{ row.note || '—' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="180" align="right">
+        <el-table-column label="操作" width="240" align="right">
           <template #default="{ row }">
             <div class="row-actions">
               <el-button link type="primary" @click="openPlan(row)">查看计划</el-button>
               <el-button link @click="openStart(row)">启动执行</el-button>
+              <el-button link @click="download(row)">导出</el-button>
             </div>
           </template>
         </el-table-column>

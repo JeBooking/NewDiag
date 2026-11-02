@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
+from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api import folders
 from app.db import get_db, new_id, now_iso
-from app.models import Flow, Folder, Instance, Release, Revision
+from app.models import FileBlob, Flow, Folder, Instance, Release, Revision
+from app.services import packages, storage
 from app.schemas import (
     CommitResult,
     FlowCreate,
@@ -299,6 +304,230 @@ def import_flow(payload: ImportFlowIn, db: Session = Depends(get_db)) -> FlowDet
     db.commit()
     db.refresh(flow)
     logger.info("导入流程 %s：%d 节点", flow.id, len(doc.get("nodes") or []))
+    return flow_detail(db, flow)
+
+
+def _attachment_refs(doc: dict):
+    """按出现顺序列出 doc 里所有附件引用；同一哈希只算一次。"""
+    seen: set[str] = set()
+    for node in doc.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        refs = node.get("attachments")
+        if not isinstance(refs, list):
+            continue
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            digest = ref.get("hash")
+            if not isinstance(digest, str) or not digest or digest in seen:
+                continue
+            seen.add(digest)
+            yield ref
+
+
+def _bindings(doc: dict) -> list[dict]:
+    seen: set[tuple[str, str]] = set()
+    result: list[dict] = []
+    for node in doc.get("nodes") or []:
+        binding = node.get("binding") if isinstance(node, dict) else None
+        if not isinstance(binding, dict):
+            continue
+        project = str(binding.get("project") or "")
+        function = str(binding.get("function") or "")
+        if not project or not function or (project, function) in seen:
+            continue
+        seen.add((project, function))
+        result.append({"project": project, "function": function})
+    return result
+
+
+@router.get("/flows/{flow_id}/export")
+def export_flow(
+    flow_id: str,
+    release_id: str | None = Query(default=None, alias="releaseId"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """导出流程包：workflow.json + manifest.json + attachments/。
+
+    带了 releaseId 导发布版本的快照，否则导当前在线版本。
+    """
+    flow = get_flow_or_404(db, flow_id)
+    release: Release | None = None
+    if release_id:
+        release = db.get(Release, release_id)
+        if release is None or release.flow_id != flow.id:
+            raise HTTPException(status_code=404, detail="发布版本不存在或不属于该流程")
+        revision = db.get(Revision, release.revision_id)
+        label = f"v{release.version_no}"
+        version = {
+            "kind": "release",
+            "releaseId": release.id,
+            "versionNo": release.version_no,
+            "publishedAt": release.published_at,
+        }
+    else:
+        revision = current_revision(db, flow)
+        label = "current"
+        version = {
+            "kind": "current",
+            "revisionId": revision.id if revision is not None else None,
+        }
+
+    doc = revision_doc(revision)
+    entries: list[dict] = []
+    attachments: list[tuple[str, bytes]] = []
+    used_names: set[str] = set()
+    total = 0
+    for ref in _attachment_refs(doc):
+        digest = str(ref["hash"])
+        blob = db.get(FileBlob, digest)
+        name = str(ref.get("name") or (blob.filename if blob else "") or digest)
+        entry: dict = {"hash": digest, "name": name}
+        path = storage.resolve(digest) if blob is not None else None
+        if path is None:
+            # 记录在、文件丢了也要能导出，manifest 里标出来，别让整包失败
+            entry["missing"] = True
+            entries.append(entry)
+            continue
+        data = path.read_bytes()
+        total += len(data)
+        if total > packages.MAX_PACKAGE_BYTES:
+            raise HTTPException(status_code=413, detail="附件总量超过 200MB，无法导出")
+        filename = packages.safe_name(name, digest[:12])
+        if filename in used_names:
+            filename = f"{digest[:8]}-{filename}"
+        used_names.add(filename)
+        entry.update(
+            {
+                "file": f"attachments/{filename}",
+                "size": len(data),
+                "mediaType": blob.media_type if blob is not None else None,
+            }
+        )
+        entries.append(entry)
+        attachments.append((entry["file"], data))
+
+    manifest = {
+        "format": 1,
+        "kind": packages.PACKAGE_KIND,
+        "flow": {"id": flow.id, "name": flow.name, "mode": flow.mode},
+        "version": version,
+        "exportedAt": now_iso(),
+        "docFile": packages.DOC_NAME,
+        "attachments": entries,
+        "bindings": _bindings(doc),
+    }
+    if release is not None and release.signature_json:
+        try:
+            manifest["signature"] = json.loads(release.signature_json)
+        except ValueError:
+            logger.warning("发布版本 %s 的签名表无法解析，跳过", release.id)
+
+    payload = packages.build_package(doc, manifest, attachments)
+    filename = f"{packages.safe_name(flow.name, 'flow')}-{label}.zip"
+    ascii_name = f"flow-{label}.zip"
+    headers = {
+        "Content-Disposition": (
+            f'attachment; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{quote(filename)}"
+        )
+    }
+    logger.info(
+        "导出流程 %s（%s）：%d 个附件，%d 字节", flow.id, label, len(attachments), len(payload)
+    )
+    return Response(content=payload, media_type="application/zip", headers=headers)
+
+
+@router.post("/flows/import-package", response_model=FlowDetail)
+async def import_package(file: UploadFile = File(...), db: Session = Depends(get_db)) -> FlowDetail:
+    """导入导出过的 zip 包：附件按内容重新入库，哈希不一致时改写引用。"""
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="流程包为空")
+    try:
+        doc, manifest, files = packages.read_package(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not isinstance(doc.get("nodes"), list):
+        raise HTTPException(status_code=422, detail="流程包缺少 nodes 数组")
+
+    manifest_files: dict[str, str] = {}
+    if manifest is not None:
+        for item in manifest.get("attachments") or []:
+            if isinstance(item, dict) and isinstance(item.get("hash"), str):
+                path = item.get("file")
+                if isinstance(path, str) and path:
+                    manifest_files[item["hash"]] = path
+
+    for node in doc["nodes"]:
+        if not isinstance(node, dict):
+            continue
+        refs = node.get("attachments")
+        if not isinstance(refs, list):
+            continue
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            digest = ref.get("hash")
+            name = str(ref.get("name") or "")
+            if not isinstance(digest, str) or not digest:
+                continue
+            zip_path = manifest_files.get(digest)
+            if zip_path is None:
+                zip_path = f"attachments/{packages.safe_name(name, digest[:12])}"
+            payload = files.get(zip_path)
+            if payload is None:
+                logger.warning("流程包缺少附件 %s（%s），保留原引用", name or digest, zip_path)
+                continue
+            stored, path = storage.store(payload)
+            if db.get(FileBlob, stored) is None:
+                db.add(
+                    FileBlob(
+                        hash=stored,
+                        filename=name or Path(zip_path).name,
+                        media_type=mimetypes.guess_type(name)[0] or "application/octet-stream",
+                        size=len(payload),
+                        path=str(path),
+                    )
+                )
+            # 内容被改过时哈希会变，引用要跟着改，否则下载 404
+            if stored != digest:
+                ref["hash"] = stored
+    db.flush()
+
+    # 导入同保存：问题只提示，不阻断
+    collect_issues(doc, strict_binding=False)
+
+    stamp = now_iso()
+    mode = doc.get("mode") if doc.get("mode") in ("parallel", "serial") else "parallel"
+    name = str(doc.get("name") or "").strip() or Path(file.filename or "").stem or "导入的流程"
+    flow = Flow(
+        id=new_id(),
+        name=name,
+        description=str(doc.get("description") or ""),
+        mode=mode,
+        owner_id=LOCAL_ACTOR,
+        created_at=stamp,
+        updated_at=stamp,
+    )
+    db.add(flow)
+    db.flush()
+    revision = Revision(
+        id=new_id(),
+        flow_id=flow.id,
+        json=json.dumps(doc, ensure_ascii=False),
+        status="committed",
+        author=LOCAL_ACTOR,
+        created_at=stamp,
+        committed_at=stamp,
+    )
+    db.add(revision)
+    db.flush()
+    flow.current_revision_id = revision.id
+    db.commit()
+    db.refresh(flow)
+    logger.info("导入流程包 %s：%d 节点", flow.id, len(doc.get("nodes") or []))
     return flow_detail(db, flow)
 
 
