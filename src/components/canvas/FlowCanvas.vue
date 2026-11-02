@@ -188,6 +188,24 @@ function projectAll(preservePositions: boolean) {
   }
   const { byNode, byEdge } = issueIndex(props.issues)
 
+  // 选中节点时，只高亮与它直接相连的节点和边；方向由边的 from/to 决定
+  const selected = props.selectedNodeId
+  const upstream = new Set<string>()
+  const downstream = new Set<string>()
+  const flowingEdges = new Set<string>()
+  if (selected) {
+    for (const meta of edgeMeta.values()) {
+      if (meta.to === selected) {
+        if (meta.from !== selected) upstream.add(meta.from)
+        flowingEdges.add(meta.id)
+      }
+      if (meta.from === selected) {
+        if (meta.to !== selected) downstream.add(meta.to)
+        flowingEdges.add(meta.id)
+      }
+    }
+  }
+
   const nextNodes: Node[] = []
   const pushNode = (
     meta: DocNode,
@@ -202,6 +220,14 @@ function projectAll(preservePositions: boolean) {
       hasTarget: !isStart && meta.id !== entry,
       paramCount: isStart ? (meta.inputs?.length ?? 0) : undefined,
       issues: byNode.get(meta.id) ?? [],
+      flow:
+        meta.id === selected
+          ? null
+          : upstream.has(meta.id)
+            ? 'upstream'
+            : downstream.has(meta.id)
+              ? 'downstream'
+              : null,
       status: props.status[meta.id] ?? null,
       selected: props.selectedNodeId === meta.id,
       runCount: props.runCounts[meta.id] ?? 0,
@@ -231,6 +257,7 @@ function projectAll(preservePositions: boolean) {
       branch,
       issueLevel: issue?.level ?? null,
       issueMessage: issue?.message ?? '',
+      flowing: flowingEdges.has(meta.id),
     }
     nextEdges.push({
       id: meta.id,

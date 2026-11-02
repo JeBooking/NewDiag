@@ -20,6 +20,7 @@ const isSelected = computed(() => props.selected || props.data.selected)
 const isStart = computed(() => props.data.kind === 'start')
 const badge = computed(() => (props.data.hasBinding ? '自动' : '人工'))
 const statusClass = computed(() => (props.data.status ? `status-${props.data.status}` : ''))
+const flowClass = computed(() => (props.data.flow ? `flow-${props.data.flow}` : ''))
 const issues = computed(() => props.data.issues ?? [])
 const runCount = computed(() => props.data.runCount ?? 0)
 /** start 卡片副标题换成启动参数摘要，其余节点仍显示说明 */
@@ -39,7 +40,7 @@ const worst = computed(() => {
 <template>
   <div
     class="node-card"
-    :class="[statusClass, { 'is-selected': isSelected }]"
+    :class="[statusClass, flowClass, { 'is-selected': isSelected }]"
     :style="{ '--kind-color': meta.color }"
   >
     <span class="stripe" />
@@ -210,6 +211,16 @@ const worst = computed(() => {
 
 .run-chip:hover {
   border-color: var(--el-color-primary);
+}
+
+.flow-upstream {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgb(37 99 235 / 18%);
+}
+
+.flow-downstream {
+  border-color: #16a34a;
+  box-shadow: 0 0 0 2px rgb(22 163 74 / 18%);
 }
 
 .is-selected {

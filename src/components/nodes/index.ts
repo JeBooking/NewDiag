@@ -23,6 +23,8 @@ export interface NodeCardData {
   paramCount?: number
   /** 该节点名下的全部校验问题，按错误优先排序 */
   issues: NodeIssue[]
+  /** 选中节点的直接前驱 / 后继，用不同颜色圈出来 */
+  flow?: 'upstream' | 'downstream' | null
   status: NodeVisualStatus | null
   selected: boolean
   /** 该节点名下的运行记录条数；只有执行页会传，设计器不传即不渲染入口 */

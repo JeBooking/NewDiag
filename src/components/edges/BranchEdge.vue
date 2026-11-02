@@ -36,6 +36,18 @@ const bezier = computed(() =>
 )
 
 const path = computed(() => bezier.value[0])
+
+/** 选中节点直连的边走虚线动画，方向天然是 from → to */
+const edgeStyle = computed(() => {
+  const flowing = props.data?.flowing === true
+  return {
+    stroke: color.value,
+    strokeWidth: props.selected || flowing ? 2.4 : 1.6,
+    ...(flowing
+      ? { strokeDasharray: '7 5', animation: 'edge-flow 0.7s linear infinite' }
+      : {}),
+  }
+})
 </script>
 
 <template>
@@ -43,7 +55,7 @@ const path = computed(() => bezier.value[0])
     :id="id"
     :path="path"
     :marker-end="markerEnd"
-    :style="{ stroke: color, strokeWidth: selected ? 2.4 : 1.6 }"
+    :style="edgeStyle"
   />
   <EdgeLabelRenderer>
     <div
@@ -72,5 +84,14 @@ const path = computed(() => bezier.value[0])
   line-height: 14px;
   pointer-events: none;
   user-select: none;
+}
+</style>
+
+<style>
+/* BaseEdge 的 path 在子组件里，动画关键帧只能放全局 */
+@keyframes edge-flow {
+  to {
+    stroke-dashoffset: -24;
+  }
 }
 </style>
