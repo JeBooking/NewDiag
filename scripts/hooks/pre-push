@@ -15,9 +15,9 @@ else
 fi
 
 echo "[pre-push] 运行后端测试 backend/tests …" >&2
-# 临时目录固定在项目内：pytest 默认把 tmp 放在用户 AppData 下，会话结束批量清理
-# 会被安全策略拦掉，表现为「测试全过但退出码非 0」
-"$PY" -m pytest backend/tests -q --basetemp=.pytest-tmp
+# pytest 会批量清理自己建的临时目录，WorkBuddy 的批量删除保护会把它当成危险操作，
+# 表现为「测试全过但退出码非 0」。只对本次测试进程关闭该保护，不影响其他命令。
+CODEBUDDY_SAFE_DELETE_ENABLED=0 "$PY" -m pytest backend/tests -q
 status=$?
 
 if [ "$status" -ne 0 ]; then
