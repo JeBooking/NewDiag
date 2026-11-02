@@ -4,9 +4,10 @@ import { useRoute, useRouter } from 'vue-router'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import FlowCanvas from '@/components/canvas/FlowCanvas.vue'
 import PathList from '@/components/history/PathList.vue'
+import RunDetailCard from '@/components/history/RunDetailCard.vue'
 import RunTimeline from '@/components/history/RunTimeline.vue'
 import TaskPanel from '@/components/tasks/TaskPanel.vue'
-import type { InstanceStatus } from '@/domain/types'
+import type { InstanceStatus, RunRecord } from '@/domain/types'
 import { errorText } from '@/services/api'
 import { useInstancesStore } from '@/stores/instances'
 
@@ -19,6 +20,8 @@ const loadError = ref<string | null>(null)
 const selectedNodeId = ref<string | null>(null)
 const activeTab = ref<'runs' | 'paths'>('runs')
 const refreshing = ref(false)
+/** 卡片里正在看执行详情的节点；同一时刻只允许一个 */
+const inspectNodeId = ref<string | null>(null)
 
 const STATUS_TEXT: Record<InstanceStatus, string> = {
   running: '运行中',
@@ -43,7 +46,38 @@ const formatTime = (value?: string | null): string =>
 
 const detail = computed(() => store.detail)
 
+/** 每个节点名下的运行记录，按开始时间倒序；卡片和节点入口共用这一份 */
+const runsByNode = computed<Record<string, RunRecord[]>>(() => {
+  const grouped: Record<string, RunRecord[]> = {}
+  for (const run of detail.value?.runs ?? []) {
+    const list = grouped[run.nodeId] ?? []
+    list.push(run)
+    grouped[run.nodeId] = list
+  }
+  for (const list of Object.values(grouped)) {
+    list.sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+  }
+  return grouped
+})
+
+const runCounts = computed<Record<string, number>>(() => {
+  const counts: Record<string, number> = {}
+  for (const [nodeId, list] of Object.entries(runsByNode.value)) counts[nodeId] = list.length
+  return counts
+})
+
+const inspectNode = computed(() => {
+  const nodeId = inspectNodeId.value
+  if (!nodeId) return null
+  return store.doc?.nodes.find((node) => node.id === nodeId) ?? null
+})
+
+const inspectRuns = computed(() =>
+  inspectNodeId.value ? (runsByNode.value[inspectNodeId.value] ?? []) : [],
+)
+
 onMounted(async () => {
+  window.addEventListener('keydown', onKeydown)
   try {
     await store.open(instanceId.value)
   } catch (error) {
@@ -52,8 +86,13 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
   store.close()
 })
+
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') inspectNodeId.value = null
+}
 
 async function reload(): Promise<void> {
   refreshing.value = true
@@ -65,6 +104,13 @@ async function reload(): Promise<void> {
 }
 
 function onSelect(nodeId: string | null): void {
+  selectedNodeId.value = nodeId
+  // 点画布空白等于放弃查看，避免浮层一直盖在图上
+  if (!nodeId) inspectNodeId.value = null
+}
+
+function onInspect(nodeId: string): void {
+  inspectNodeId.value = inspectNodeId.value === nodeId ? null : nodeId
   selectedNodeId.value = nodeId
 }
 </script>
@@ -123,10 +169,16 @@ function onSelect(nodeId: string | null): void {
           :issues="[]"
           :status="store.nodeStatus"
           :selected-node-id="selectedNodeId"
+          :run-counts="runCounts"
           @select-node="onSelect"
+          @inspect-node="onInspect"
           @update:doc="() => undefined"
         />
         <el-empty v-else-if="!store.loading" description="流程快照不可用" :image-size="80" />
+
+        <div v-if="inspectNode" class="run-card-layer">
+          <RunDetailCard :node="inspectNode" :runs="inspectRuns" @close="inspectNodeId = null" />
+        </div>
       </div>
 
       <aside class="aside">
@@ -223,6 +275,22 @@ function onSelect(nodeId: string | null): void {
   min-width: 0;
   position: relative;
   background: var(--el-bg-color-page);
+}
+
+/* 卡片独立一层浮在画布上；容器不吃事件，底下的图还能缩放平移 */
+.run-card-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  pointer-events: none;
+}
+
+.run-card-layer > * {
+  pointer-events: auto;
 }
 
 .aside {
