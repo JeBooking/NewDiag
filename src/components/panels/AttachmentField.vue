@@ -4,7 +4,8 @@ import { ElMessage } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import type { AttachmentRef } from '@/domain/types'
 import { errorText } from '@/services/api'
-import { fileUrl, uploadFile } from '@/services/files'
+import { uploadFile } from '@/services/files'
+import AttachmentList from './AttachmentList.vue'
 
 const props = defineProps<{ attachments?: AttachmentRef[]; readonly?: boolean }>()
 const emit = defineEmits<{ (e: 'update', value: AttachmentRef[]): void }>()
@@ -35,15 +36,7 @@ function remove(hash: string): void {
 
 <template>
   <div class="attachment-field">
-    <div v-if="attachments?.length" class="list">
-      <div v-for="item in attachments" :key="item.hash" class="item">
-        <a :href="fileUrl(item.hash)" target="_blank" rel="noopener" class="name">{{ item.name }}</a>
-        <el-button v-if="!readonly" text size="small" type="danger" @click="remove(item.hash)">
-          移除
-        </el-button>
-      </div>
-    </div>
-    <div v-else class="empty">暂无附件</div>
+    <AttachmentList :attachments="attachments" :readonly="readonly" @remove="remove" />
     <el-upload
       v-if="!readonly"
       :show-file-list="false"
@@ -52,6 +45,9 @@ function remove(hash: string): void {
     >
       <el-button size="small" :loading="uploading">上传附件</el-button>
     </el-upload>
+    <p v-if="!readonly" class="hint">
+      参考文件不可在线编辑，要更新就上传新文件替换；单个文件不超过 50 MB
+    </p>
   </div>
 </template>
 
@@ -62,35 +58,10 @@ function remove(hash: string): void {
   gap: 8px;
 }
 
-.list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 8px;
-  background: var(--el-fill-color-light);
-  border-radius: 4px;
-}
-
-.name {
+.hint {
+  margin: 0;
   font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.name:hover {
-  color: var(--el-color-primary);
-}
-
-.empty {
-  font-size: 12px;
+  line-height: 1.6;
   color: var(--el-text-color-secondary);
 }
 </style>

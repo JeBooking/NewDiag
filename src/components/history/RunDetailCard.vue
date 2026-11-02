@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { KIND_META } from '@/domain/kinds'
 import type { DocNode, ReviewDecision, ReviewStatus, ReviewTask, RunRecord, RunStatus } from '@/domain/types'
-import { fileUrl } from '@/services/files'
+import AttachmentList from '@/components/panels/AttachmentList.vue'
 
 const props = defineProps<{
   node: DocNode
@@ -243,18 +243,7 @@ function pretty(value: unknown): string {
             <span class="ref-label">{{ row.label }}</span>
             <span class="ref-text">{{ row.value }}</span>
           </div>
-          <div v-if="attachments.length" class="ref-files">
-            <a
-              v-for="file in attachments"
-              :key="file.hash"
-              :href="fileUrl(file.hash)"
-              target="_blank"
-              rel="noopener"
-              class="ref-file"
-            >
-              {{ file.name }}
-            </a>
-          </div>
+          <AttachmentList v-if="attachments.length" :attachments="attachments" dense />
         </div>
       </div>
 
@@ -280,18 +269,11 @@ function pretty(value: unknown): string {
           <div v-if="currentReview.request.instructions" class="request-hint">
             {{ currentReview.request.instructions }}
           </div>
-          <div v-if="currentReview.request.attachments?.length" class="ref-files">
-            <a
-              v-for="file in currentReview.request.attachments"
-              :key="file.hash"
-              :href="fileUrl(file.hash)"
-              target="_blank"
-              rel="noopener"
-              class="ref-file"
-            >
-              {{ file.name }}
-            </a>
-          </div>
+          <AttachmentList
+            v-if="currentReview.request.attachments?.length"
+            :attachments="currentReview.request.attachments"
+            dense
+          />
         </div>
       </div>
 
@@ -313,18 +295,7 @@ function pretty(value: unknown): string {
             <span class="ref-label">{{ row.label }}</span>
             <span class="ref-text">{{ row.value }}</span>
           </div>
-          <div v-if="attachments.length" class="ref-files">
-            <a
-              v-for="file in attachments"
-              :key="file.hash"
-              :href="fileUrl(file.hash)"
-              target="_blank"
-              rel="noopener"
-              class="ref-file"
-            >
-              {{ file.name }}
-            </a>
-          </div>
+          <AttachmentList v-if="attachments.length" :attachments="attachments" dense />
         </div>
       </div>
     </div>
@@ -532,17 +503,6 @@ pre {
 .ref-text {
   color: var(--el-text-color-primary);
   word-break: break-word;
-}
-
-.ref-files {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.ref-file {
-  font-size: 11px;
-  color: var(--el-color-primary);
 }
 
 .verdict {
