@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { KIND_META } from '@/domain/kinds'
 import type { NodeVisualStatus } from '@/domain/types'
+import { ICON_ERROR, ICON_WARNING } from '@/components/canvas/issue-icons'
 import type { NodeCardData } from './index'
 
 // 画布会把 position/dimensions 等内部字段一并透传，避免它们落到 DOM 属性上
@@ -120,10 +121,12 @@ const worst = computed(() => {
 
     <div v-if="issues.length" class="issue-wrap" :class="worst">
       <span class="issue-badge">
-        <svg class="issue-cross" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M5 5L11 11M11 5L5 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        <svg v-if="worst === 'error'" viewBox="0 0 512 512" aria-hidden="true">
+          <path :d="ICON_ERROR" fill="currentColor" />
         </svg>
-        <span v-if="issues.length > 1" class="issue-count">{{ issues.length > 9 ? '9+' : issues.length }}</span>
+        <svg v-else viewBox="0 0 512 512" aria-hidden="true">
+          <path :d="ICON_WARNING" fill="currentColor" />
+        </svg>
       </span>
       <div class="issue-pop">
         <div class="issue-pop-head">
@@ -361,40 +364,31 @@ const worst = computed(() => {
 
 .issue-wrap {
   position: absolute;
-  top: -9px;
-  right: -9px;
+  top: -7px;
+  right: -7px;
   z-index: 3;
 }
 
-/* 错误直接画成叉号挂在卡片外沿：一眼定位到出问题的节点，不用先点保存再看列表 */
+/* 与旧项目一致：20px 圆形角标、内边距 5px、白图标，错误红底、提示黄底，不显示条数 */
 .issue-badge {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 2px;
-  height: 18px;
-  min-width: 18px;
-  padding: 0 3px;
-  border: 2px solid var(--el-bg-color-overlay);
-  border-radius: 9px;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 5px;
+  border-radius: 50%;
   color: #fff;
-  background: var(--el-color-warning);
-  cursor: default;
+  background: #f7c71a;
 }
 
 .issue-wrap.error .issue-badge {
-  background: var(--el-color-danger);
+  background: #cc0000;
 }
 
-.issue-cross {
-  width: 12px;
-  height: 12px;
-  flex: none;
-}
-
-.issue-count {
-  font-size: 10px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
+.issue-badge svg {
+  width: 100%;
+  height: 100%;
 }
 
 .issue-pop {

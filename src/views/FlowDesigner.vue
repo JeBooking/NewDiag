@@ -48,8 +48,6 @@ const allIssues = computed<LintIssue[]>(() => {
   return [...merged.values()]
 })
 
-const errorCount = computed(() => allIssues.value.filter((item) => item.level === 'error').length)
-
 async function load(id: string): Promise<void> {
   loadError.value = null
   try {
@@ -346,18 +344,6 @@ onBeforeRouteLeave(async () => {
         <el-tag v-else-if="editor.flow" size="small" type="info" effect="plain">已同步</el-tag>
       </div>
       <div class="right">
-        <button
-          v-if="allIssues.length"
-          type="button"
-          class="issue-chip"
-          :class="{ 'is-error': errorCount > 0 }"
-          @click="issuesVisible = true"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M5 5L11 11M11 5L5 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-          </svg>
-          {{ allIssues.length }} 处待处理
-        </button>
         <el-button @click="startRun">开始执行</el-button>
         <el-button :disabled="editor.readonly" :loading="editor.saving" @click="save()">
           保存
@@ -557,40 +543,6 @@ onBeforeRouteLeave(async () => {
 .banner {
   flex: none;
   border-radius: 0;
-}
-
-/* 常驻的问题计数：校验结果一直可见，不必先点保存才知道有错 */
-.issue-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 10px;
-  border: 1px solid var(--el-color-warning-light-5);
-  border-radius: 6px;
-  background: var(--el-color-warning-light-9);
-  font: inherit;
-  font-size: 12px;
-  color: var(--el-color-warning-dark-2);
-  cursor: pointer;
-}
-
-.issue-chip:hover {
-  border-color: var(--el-color-warning);
-}
-
-.issue-chip.is-error {
-  border-color: var(--el-color-danger-light-5);
-  color: var(--el-color-danger);
-  background: var(--el-color-danger-light-9);
-}
-
-.issue-chip.is-error:hover {
-  border-color: var(--el-color-danger);
-}
-
-.issue-chip svg {
-  width: 12px;
-  height: 12px;
 }
 
 .body {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type Position } from '@vue-flow/core'
+import { ICON_ERROR, ICON_WARNING } from '@/components/canvas/issue-icons'
 import type { EdgeBranchData } from './index'
 
 defineOptions({ inheritAttrs: false })
@@ -96,8 +97,11 @@ const edgeStyle = computed(() => {
       :style="issueStyle"
       :title="issueText"
     >
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M5 5L11 11M11 5L5 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+      <svg v-if="issueLevel === 'error'" viewBox="0 0 512 512" aria-hidden="true">
+        <path :d="ICON_ERROR" fill="currentColor" />
+      </svg>
+      <svg v-else viewBox="0 0 512 512" aria-hidden="true">
+        <path :d="ICON_WARNING" fill="currentColor" />
       </svg>
     </div>
   </EdgeLabelRenderer>
@@ -116,15 +120,15 @@ const edgeStyle = computed(() => {
   user-select: none;
 }
 
-/* 与节点上的叉号同款：红/橙实心圆 + 白色叉，位置在连线中点，带 issue 文本做悬浮说明 */
+/* 与节点上的角标同一套形状：20px 圆形、内边距 5px、白图标，错误红底、提示黄底 */
 .edge-issue {
   position: absolute;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
-  border: 2px solid var(--el-bg-color-overlay);
+  width: 20px;
+  height: 20px;
+  padding: 5px;
   border-radius: 50%;
   color: #fff;
   pointer-events: none;
@@ -132,16 +136,16 @@ const edgeStyle = computed(() => {
 }
 
 .edge-issue.error {
-  background: var(--el-color-danger);
+  background: #cc0000;
 }
 
 .edge-issue.warning {
-  background: var(--el-color-warning);
+  background: #f7c71a;
 }
 
 .edge-issue svg {
-  width: 10px;
-  height: 10px;
+  width: 100%;
+  height: 100%;
 }
 </style>
 
