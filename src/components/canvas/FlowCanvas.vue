@@ -727,7 +727,7 @@ defineExpose({ fitView })
       <Background :gap="16" :size="1" color="#d8dee9" />
       <Controls :show-interactive="!readonly" />
       <MiniMap pannable zoomable :node-color="minimapColor" :width="160" :height="110" />
-      <Panel position="top-left" class="palette-panel">
+      <Panel v-if="!readonly" position="top-left" class="palette-panel">
         <NodePalette :disabled="readonly" @add="(kind) => addNode(kind, centerPosition())" />
       </Panel>
     </VueFlow>
