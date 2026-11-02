@@ -104,8 +104,17 @@ const emit = defineEmits<{
 
 // 父组件也要 project/坐标换算，必须与 <VueFlow> 共用同一个 store
 const flowId = `canvas-${Math.random().toString(36).slice(2, 8)}`
-const { project, dimensions, viewport, setCenter, connectionStartHandle, fitView } =
-  useVueFlow(flowId)
+const {
+  project,
+  dimensions,
+  viewport,
+  setCenter,
+  connectionStartHandle,
+  fitView,
+  zoomIn,
+  zoomOut,
+  zoomTo,
+} = useVueFlow(flowId)
 
 const wrapper = ref<HTMLElement | null>(null)
 const nodes = ref<Node[]>([])
@@ -775,8 +784,15 @@ onBeforeUnmount(() => {
   clearCloseTimer()
 })
 
+/** 缩放百分比给父组件的操作栏读数用，取整避免 99.999% 这种抖动 */
+const zoomPercent = computed(() => Math.round(viewport.value.zoom * 100))
+
+function resetZoom() {
+  void zoomTo(1, { duration: 200 })
+}
+
 // 自动布局后坐标整批换掉，需要外部触发重新取景；fitView 只在本组件的 store 上有效
-defineExpose({ fitView })
+defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom })
 </script>
 
 <template>

@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { FullScreen, RefreshLeft, RefreshRight, Share, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import FlowCanvas from '@/components/canvas/FlowCanvas.vue'
 import { layoutDoc } from '@/components/canvas/autolayout'
@@ -35,10 +36,6 @@ onMounted(() => {
   void load(flowId.value)
 })
 
-onBeforeUnmount(() => {
-  editor.close()
-})
-
 watch(flowId, (id) => {
   if (id && id !== editor.flow?.id) void load(id)
 })
@@ -50,6 +47,55 @@ function onDocUpdate(next: FlowDoc): void {
 function onSelect(nodeId: string | null): void {
   editor.selectedNodeId = nodeId
 }
+
+/* ---------- 画布基础操作 ---------- */
+
+/** 缩放读数与按钮都落在画布组件里，这里只做转发 */
+const zoomPercent = computed(() => canvas.value?.zoomPercent ?? 100)
+
+function zoomInCanvas(): void {
+  void canvas.value?.zoomIn()
+}
+
+function zoomOutCanvas(): void {
+  void canvas.value?.zoomOut()
+}
+
+function resetZoom(): void {
+  canvas.value?.resetZoom()
+}
+
+function fitCanvas(): void {
+  void canvas.value?.fitView()
+}
+
+/** 焦点在输入框时把撤销让给浏览器，否则打字会把整份文档退回去 */
+function isTyping(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null
+  if (!element) return false
+  if (element.isContentEditable) return true
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName)
+}
+
+function onKeydown(event: KeyboardEvent): void {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || isTyping(event.target)) return
+  const key = event.key.toLowerCase()
+  if (key === 'z') {
+    event.preventDefault()
+    if (event.shiftKey) editor.redo()
+    else editor.undo()
+  } else if (key === 'y') {
+    event.preventDefault()
+    editor.redo()
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  editor.close()
+})
 
 /** 整图重排：坐标覆盖式写入，dirty 与取锁都交给 applyDoc */
 async function autoLayout(): Promise<void> {
@@ -277,7 +323,6 @@ onBeforeRouteLeave(async () => {
       </div>
       <div class="right">
         <el-button @click="startRun">开始执行</el-button>
-        <el-button :disabled="!editor.editable" @click="autoLayout">自动布局</el-button>
         <el-button :disabled="editor.readonly" :loading="editor.saving" @click="save()">
           保存
         </el-button>
@@ -332,6 +377,49 @@ onBeforeRouteLeave(async () => {
       show-icon
       class="banner"
     />
+
+    <!-- 画布基础操作：撤销重做只动文档，与保存/发布这类流程级动作分开 -->
+    <div class="opsbar">
+      <el-button-group>
+        <el-tooltip content="撤销 (Ctrl+Z)" placement="bottom">
+          <el-button
+            :icon="RefreshLeft"
+            :disabled="!editor.editable || !editor.canUndo"
+            @click="editor.undo()"
+          />
+        </el-tooltip>
+        <el-tooltip content="重做 (Ctrl+Shift+Z)" placement="bottom">
+          <el-button
+            :icon="RefreshRight"
+            :disabled="!editor.editable || !editor.canRedo"
+            @click="editor.redo()"
+          />
+        </el-tooltip>
+      </el-button-group>
+
+      <span class="opsbar-divider" />
+
+      <el-button-group>
+        <el-tooltip content="缩小" placement="bottom">
+          <el-button
+            :icon="ZoomOut"
+            :disabled="!canvas || zoomPercent <= 20"
+            @click="zoomOutCanvas"
+          />
+        </el-tooltip>
+        <el-tooltip content="恢复 100%" placement="bottom">
+          <el-button class="zoom-readout" :disabled="!canvas" @click="resetZoom">
+            {{ zoomPercent }}%
+          </el-button>
+        </el-tooltip>
+        <el-tooltip content="放大" placement="bottom">
+          <el-button :icon="ZoomIn" :disabled="!canvas || zoomPercent >= 200" @click="zoomInCanvas" />
+        </el-tooltip>
+      </el-button-group>
+
+      <el-button :icon="FullScreen" :disabled="!canvas" @click="fitCanvas">适应画布</el-button>
+      <el-button :icon="Share" :disabled="!editor.editable" @click="autoLayout">自动布局</el-button>
+    </div>
 
     <div class="body" v-loading="editor.loading">
       <div class="canvas-area">
@@ -416,6 +504,32 @@ onBeforeRouteLeave(async () => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* 第二条栏只放画布级动作，视觉上比顶部流程栏低一档 */
+.opsbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  background: var(--el-bg-color);
+  border-bottom: 1px solid var(--el-border-color-light);
+  flex: none;
+}
+
+.opsbar :deep(.el-button-group) {
+  display: inline-flex;
+}
+
+.opsbar-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--el-border-color);
+}
+
+.zoom-readout {
+  min-width: 58px;
+  font-variant-numeric: tabular-nums;
 }
 
 .flow-name {
