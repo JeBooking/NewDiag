@@ -15,7 +15,9 @@ else
 fi
 
 echo "[pre-push] 运行后端测试 backend/tests …" >&2
-"$PY" -m pytest backend/tests -q
+# 临时目录固定在项目内：pytest 默认把 tmp 放在用户 AppData 下，会话结束批量清理
+# 会被安全策略拦掉，表现为「测试全过但退出码非 0」
+"$PY" -m pytest backend/tests -q --basetemp=.pytest-tmp
 status=$?
 
 if [ "$status" -ne 0 ]; then
