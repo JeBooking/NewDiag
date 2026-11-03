@@ -9,6 +9,7 @@
 设计细节见 [docs/spec.md](docs/spec.md)，协作规则见 [AGENTS.md](AGENTS.md)，**部署到内网服务器上长期运行**看 [docs/deploy.md](docs/deploy.md)。
 
 外部 Python 类、四阶段排查模块和桌面应用改造，见 [模块接入手册](docs/module-integration.md)。
+排查节点可直接选择四阶段函数，由平台连接数据和人工待办，无需编写适配器类。
 
 ## 快速开始
 

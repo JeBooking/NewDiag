@@ -1,5 +1,31 @@
 # 外部类接入：完整电压排查示例
 
+## 首选：直接在平台配置四个函数
+
+不想编写适配器类时，登记工程名称 `电压函数示例`，模块填 `functions`，路径为本目录绝对路径，工厂留空。
+导入 [workflow-functions.json](workflow-functions.json)，节点已经选择下面四个函数：
+
+| 阶段 | 现有业务函数 | 参数 |
+|---|---|---|
+| 获取 | lookup_measurement | 启动输入 device_id、time_point |
+| 解析 | decode_voltage | 自动接收原始数据 |
+| 展示 | describe_measurement | 自动接收解析结果、判断结果 |
+| 判断 | is_under_voltage | 从解析结果取 voltage，阈值固定 210 |
+
+函数代码在 [functions.py](functions.py)，无 SDK 导入，无适配器基类；平台根据节点配置调用，函数名不必固定。
+数据仍使用 data/readings.json，输入 motor-01、2026-11-03T10:00:00+08:00 时为 205 V，应走是分支。
+内部类所需的档案路径、通道、校准系数由业务模块管理，示例从环境变量读取并提供离线默认值。
+需要覆盖时设置 VOLTAGE_RECORDS、VOLTAGE_CHANNEL、VOLTAGE_CALIBRATION；无需流程用户填写构造参数。
+
+其他可导入变体：
+
+- [workflow-functions-auto-acquire.json](workflow-functions-auto-acquire.json)：自动获取、人工判断。
+- [workflow-functions-auto-judge.json](workflow-functions-auto-judge.json)：人工提供数据、自动判断。
+- [workflow-functions-manual.json](workflow-functions-manual.json)：人工提供数据和判断，解析展示仍自动执行。
+
+人工输入 raw_value=205000、unit=mV、source=现场仪表。详细配置和数据边界见
+[手册第 0 节](../../docs/module-integration.md)。下面保留原适配器类模式，便于比较两种接入方法。
+
 本示例包含可导入流程图、需要初始化参数的外部业务类、适配代码和离线数据。
 仅使用标准库，无需数据服务器、桌面窗口或设备连接。
 通用协议见[模块接入手册](../../docs/module-integration.md)。
