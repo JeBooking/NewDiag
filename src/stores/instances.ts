@@ -5,6 +5,7 @@ import type {
   FlowDoc,
   InstanceDetail,
   InstanceSummary,
+  NodeTrailState,
   NodeVisualStatus,
   ReviewDecision,
   RunRecord,
@@ -105,16 +106,61 @@ export const useInstancesStore = defineStore('instances', () => {
     return result
   })
 
-  const activeTokenCount = computed(
-    () =>
-      (detail.value?.tokens ?? []).filter(
-        (token) => token.status === 'running' || token.status === 'waiting' || token.status === 'queued',
-      ).length,
-  )
+  /**
+   * 当前诊断路径上的 token：从活跃 token 沿 parentTokenId 上溯到入口。
+   * 实例已结束（没有活跃 token）时退化为最大代的链，历史实例也能看出最后走到哪。
+   */
+  const activeTokenIds = computed<Set<string>>(() => {
+    const tokens = detail.value?.tokens ?? []
+    if (!tokens.length) return new Set()
+    const byId = new Map(tokens.map((token) => [token.id, token]))
+    const live = tokens.filter(
+      (token) => token.status === 'running' || token.status === 'waiting' || token.status === 'queued',
+    )
+    const maxGeneration = Math.max(...tokens.map((token) => token.generation))
+    const seeds = live.length
+      ? live
+      : tokens.filter((token) => token.generation === maxGeneration)
+    const seen = new Set<string>()
+    for (const seed of seeds) {
+      let cursor: Token | undefined = seed
+      while (cursor && !seen.has(cursor.id)) {
+        seen.add(cursor.id)
+        cursor = cursor.parentTokenId ? byId.get(cursor.parentTokenId) : undefined
+      }
+    }
+    return seen
+  })
+
+  /**
+   * 节点的三档归属，与 nodeStatus 正交：状态说「这一步成没成」，这里说「这条路还算不算数」。
+   * 判定只能看是否在当前链上，不能看 token 状态——旧代成功过的节点同样已经不在当前路径上。
+   */
+  const nodeTrails = computed<Record<string, NodeTrailState>>(() => {
+    const result: Record<string, NodeTrailState> = {}
+    const tokens = detail.value?.tokens ?? []
+    const byId = new Map(tokens.map((token) => [token.id, token]))
+    const visited = new Set<string>()
+    for (const token of tokens) if (token.visitedAt) visited.add(token.nodeId)
+    const current = new Set<string>()
+    for (const tokenId of activeTokenIds.value) {
+      const token = byId.get(tokenId)
+      if (token) current.add(token.nodeId)
+    }
+    for (const node of doc.value?.nodes ?? []) {
+      result[node.id] = current.has(node.id)
+        ? 'current'
+        : visited.has(node.id)
+          ? 'dropped'
+          : 'unvisited'
+    }
+    return result
+  })
 
   /**
    * 走过的边：靠 token 的父子关系还原，parent_token_id 由调度器在投递后继时写入。
    * 不能按「两端节点都执行过」推断分支路径，同一个排查节点的 yes/no 两条边会被同时点亮。
+   * 只有在当前诊断路径上才算 taken，旧代走通的边同样降为 dropped。
    */
   const walkedEdges = computed<Record<string, EdgeTrail>>(() => {
     const result: Record<string, EdgeTrail> = {}
@@ -133,7 +179,7 @@ export const useInstancesStore = defineStore('instances', () => {
       )
       if (!edge) continue
       if (result[edge.id] === 'taken') continue
-      result[edge.id] = token.status === 'abandoned' ? 'dropped' : 'taken'
+      result[edge.id] = activeTokenIds.value.has(token.id) ? 'taken' : 'dropped'
     }
     return result
   })
@@ -266,7 +312,7 @@ export const useInstancesStore = defineStore('instances', () => {
     error,
     pendingReviews,
     nodeStatus,
-    activeTokenCount,
+    nodeTrails,
     walkedEdges,
     runSequence,
     loadList,

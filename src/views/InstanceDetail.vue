@@ -258,6 +258,7 @@ function onInspect(nodeId: string): void {
           :run-counts="runCounts"
           :review-counts="pendingCounts"
           :trails="store.walkedEdges"
+          :node-trails="store.nodeTrails"
           @select-node="onSelect"
           @inspect-node="onInspect"
           @update:doc="() => undefined"

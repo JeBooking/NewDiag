@@ -70,10 +70,11 @@ const worst = computed(() => {
     :class="[
       flowClass,
       accent ? `accent-${accent}` : '',
+      `trail-${data.trailState}`,
       {
         'is-selected': isSelected,
-        'is-dim': data.dimmed,
         'is-running': data.status === 'running',
+        'is-settled': data.trailState === 'current' && data.status === 'success',
       },
     ]"
     :style="{
@@ -329,13 +330,99 @@ const worst = computed(() => {
   text-decoration: underline;
 }
 
-/* 未进入执行路径的节点整体压暗，让当前节点成为画面里最亮的一块 */
-.is-dim {
-  opacity: 0.42;
+/*
+ * 三档路径状态，和状态色正交：
+ * 当前路径不动；走过但作废的用「虚线 + 灰底 + 灰字」降级，状态标签保留它当时的结果；
+ * 从未到访的更淡、并且不显示任何执行状态。
+ * 不靠父级 opacity 压暗，否则状态标签的颜色会被一起吃掉，失败和完成就分不出来了。
+ */
+.trail-dropped {
+  border-style: dashed;
+  border-color: #b8bec8;
+  background-color: #f7f8fa;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgb(0 0 0 / 2.5%) 0 6px,
+    transparent 6px 12px
+  );
 }
 
-.is-dim .status-bar {
-  opacity: 0.5;
+.trail-dropped .title {
+  color: var(--el-text-color-secondary);
+}
+
+.trail-dropped .detail {
+  color: var(--el-text-color-placeholder);
+}
+
+.trail-dropped .kind,
+.trail-dropped .badge {
+  opacity: 0.55;
+}
+
+.trail-dropped .stripe {
+  opacity: 0.45;
+}
+
+/* 空心标签：颜色保留（还能分清红/绿），但不再抢注意力 */
+.trail-dropped .status-tag {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--status-color) 38%, transparent);
+  opacity: 0.85;
+}
+
+.trail-unvisited {
+  border-color: #e4e7ed;
+  background: #fafbfc;
+}
+
+.trail-unvisited .title {
+  font-weight: 500;
+  color: var(--el-text-color-placeholder);
+}
+
+.trail-unvisited .detail {
+  color: var(--el-text-color-placeholder);
+  opacity: 0.7;
+}
+
+.trail-unvisited .kind,
+.trail-unvisited .badge {
+  opacity: 0.4;
+}
+
+.trail-unvisited .stripe {
+  opacity: 0.22;
+}
+
+/* 当前路径内部再拉一档：已完成略微降亮，让正在跑/等待的那一步成为最亮的一块 */
+.is-settled {
+  opacity: 0.86;
+}
+
+/*
+ * 正在跑：常驻外圈 + 向外扩散的脉冲。
+ * 刻意不复用 box-shadow（选中态在用）和顶部状态条（排队/等待也会用），
+ * 外圈和卡片边框之间留 5px 间隙，缩到 0.6 时也能看出是「外圈」而不是粗边框。
+ */
+.is-running::before {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 13px;
+  border: 2px solid rgb(22 119 255 / 28%);
+  pointer-events: none;
+}
+
+.is-running::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 13px;
+  border: 2px solid rgb(22 119 255 / 70%);
+  opacity: 0;
+  pointer-events: none;
+  animation: run-halo 1.8s ease-out infinite;
 }
 
 /* 待处理 / 运行中用左侧色带覆盖类型色：这一屏里「它在等我」比「它是什么类型」更重要 */
@@ -499,14 +586,32 @@ const worst = computed(() => {
   }
 }
 
+@keyframes run-halo {
+  0% {
+    transform: scale(0.98);
+    opacity: 0.7;
+  }
+
+  70% {
+    transform: scale(1.05);
+    opacity: 0;
+  }
+
+  100% {
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .bar-running::after,
-  .is-running .status-dot {
+  .is-running .status-dot,
+  .is-running::after {
     animation: none;
   }
 
-  /* 减少动效时直接去掉扫光，纯色顶条本身已经足够说明「在跑」 */
-  .bar-running::after {
+  /* 减少动效时直接去掉扫光和脉冲环，纯色顶条本身已经足够说明「在跑」 */
+  .bar-running::after,
+  .is-running::after {
     display: none;
   }
 }

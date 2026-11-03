@@ -26,6 +26,7 @@ import type {
   FlowDoc,
   LintIssue,
   NodeKind,
+  NodeTrailState,
   NodeVisualStatus,
 } from '@/domain/types'
 import { NODE_DRAG_TYPE, nodeTypes, type NodeCardData, type NodeIssue } from '@/components/nodes'
@@ -85,6 +86,8 @@ const props = withDefaults(
     reviewCounts?: Record<string, number>
     /** 本次执行实际走过的边；传了才在画布上区分「走过」与「没走」 */
     trails?: Record<string, EdgeTrail>
+    /** 节点相对诊断路径的位置；编辑页不传，默认全部按当前路径渲染 */
+    nodeTrails?: Record<string, NodeTrailState>
   }>(),
   {
     readonly: false,
@@ -94,6 +97,7 @@ const props = withDefaults(
     runCounts: () => ({}),
     reviewCounts: () => ({}),
     trails: () => ({}),
+    nodeTrails: () => ({}),
   },
 )
 
@@ -258,7 +262,7 @@ function projectAll(preservePositions: boolean) {
               : null,
       status,
       selected: props.selectedNodeId === meta.id,
-      dimmed: hasRun && (status === null || status === 'pending'),
+      trailState: props.nodeTrails[meta.id] ?? 'current',
       runCount: props.runCounts[meta.id] ?? 0,
       reviewCount: props.reviewCounts[meta.id] ?? 0,
     }
@@ -360,6 +364,7 @@ watch(
     props.runCounts,
     props.reviewCounts,
     props.trails,
+    props.nodeTrails,
   ],
   () => projectAll(true),
   { deep: true },

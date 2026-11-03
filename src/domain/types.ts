@@ -131,6 +131,12 @@ export interface LintIssue {
  */
 export type NodeVisualStatus = 'pending' | 'queued' | 'running' | 'waiting' | 'success' | 'failed'
 
+/**
+ * 节点相对「诊断路径」的位置，与 NodeVisualStatus 正交：
+ * 状态回答「这一步成没成」，它回答「这条路还算不算数」。
+ */
+export type NodeTrailState = 'current' | 'dropped' | 'unvisited'
+
 /** 边是否被实际走过；dropped 表示走过但随回退作废 */
 export type EdgeTrail = 'taken' | 'dropped'
 
