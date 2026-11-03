@@ -1,5 +1,5 @@
 import type { InstanceDetail, InstanceStatus, InstanceSummary, ReviewDecision } from '@/domain/types'
-import { request } from './api'
+import { request } from '@/services/api'
 
 export interface InstanceFilter {
   flowId?: string
@@ -26,6 +26,12 @@ export function listInstances(filter: InstanceFilter = {}): Promise<InstanceSumm
 
 export function getInstance(id: string): Promise<InstanceDetail> {
   return request<InstanceDetail>(`/instances/${encodeURIComponent(id)}`)
+}
+
+export function terminateInstance(id: string): Promise<InstanceDetail> {
+  return request<InstanceDetail>(`/instances/${encodeURIComponent(id)}/terminate`, {
+    method: 'POST',
+  })
 }
 
 export function submitReview(

@@ -27,7 +27,7 @@ NodeKind = Literal[
 ]
 ParamType = Literal["text", "number", "boolean", "datetime"]
 Branch = Literal["yes", "no"]
-InstanceStatus = Literal["running", "waiting", "paused", "success", "failed", "escalated"]
+InstanceStatus = Literal["running", "waiting", "paused", "success", "failed", "escalated", "terminated"]
 TokenStatus = Literal["queued", "running", "waiting", "done", "failed", "abandoned"]
 RunStatus = Literal["ok", "failed", "abandoned"]
 ReviewKind = Literal["decision", "action"]

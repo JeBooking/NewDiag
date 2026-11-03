@@ -37,7 +37,10 @@ except ImportError as exc:  # pragma: no cover
             return None
 
         def submit_review(self, instance_id: str, review_id: str, decision: dict) -> None:
-            return None
+            raise ValueError("调度器不可用，无法提交待办")
+
+        def terminate(self, instance_id: str) -> None:
+            raise ValueError("调度器不可用，无法终止实例")
 
         def rollback(self, instance_id: str, target: str, branch: str, reason: str | None) -> None:
             return None
@@ -293,6 +296,17 @@ def read_instance(instance_id: str, db: Session = Depends(get_db)) -> InstanceDe
     return instance_payload(db, instance)
 
 
+@router.post("/instances/{instance_id}/terminate", response_model=InstanceDetail)
+def terminate_instance(instance_id: str, db: Session = Depends(get_db)) -> InstanceDetail:
+    get_instance_or_404(db, instance_id)
+    try:
+        scheduler.terminate(instance_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    db.expire_all()
+    return instance_payload(db, get_instance_or_404(db, instance_id))
+
+
 @router.post("/instances/{instance_id}/reviews/{review_id}", response_model=InstanceDetail)
 def submit_review(
     instance_id: str,
@@ -313,13 +327,6 @@ def submit_review(
     if payload.reason is not None:
         decision["reason"] = payload.reason
 
-    stamp = now_iso()
-    review.status = "done"
-    review.decision_json = json.dumps(decision, ensure_ascii=False)
-    review.decided_at = stamp
-    review.decided_by = "local"
-    db.commit()
-
     logger.info(
         "实例 %s 待办 %s 提交：%s（节点 %s）",
         instance_id,
@@ -330,6 +337,8 @@ def submit_review(
 
     try:
         scheduler.submit_review(instance_id, review_id, decision)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("实例 %s 待办 %s 提交调度失败", instance_id, review_id)
         raise HTTPException(status_code=500, detail=f"提交待办失败：{exc}") from exc

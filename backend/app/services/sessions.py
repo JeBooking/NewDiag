@@ -49,9 +49,12 @@ class SessionManager:
     def __init__(self) -> None:
         self._handles: dict[str, SessionHandle] = {}
         self._lock = threading.Lock()
+        self._cancelled: set[str] = set()
 
     def ensure(self, instance_id: str, project) -> SessionHandle:
         with self._lock:
+            if instance_id in self._cancelled:
+                raise SessionError("实例已终止，不能启动会话")
             handle = self._handles.get(instance_id)
             if handle is not None and handle.proc.poll() is None:
                 return handle
@@ -142,6 +145,21 @@ class SessionManager:
                     str(message.get("error") or "调用失败")[:300],
                 )
                 raise SessionError(str(message.get("error") or "调用失败"))
+
+    def cancel(self, instance_id: str) -> None:
+        # 标记与摘除使用同一把锁，避免取消后并发 ensure 重建进程。
+        with self._lock:
+            self._cancelled.add(instance_id)
+            handle = self._handles.pop(instance_id, None)
+        if handle is not None:
+            logger.info("实例 %s 终止会话 pid=%s", instance_id, handle.proc.pid)
+            self._kill(handle)
+            handle.inbox.put(None)
+            self._dispose(handle)
+
+    def clear_cancellation(self, instance_id: str) -> None:
+        with self._lock:
+            self._cancelled.discard(instance_id)
 
     def close(self, instance_id: str) -> None:
         with self._lock:

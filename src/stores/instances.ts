@@ -18,6 +18,7 @@ import {
   listInstances,
   rollbackInstance,
   submitReview,
+  terminateInstance,
   type InstanceFilter,
   type RollbackPayload,
 } from '@/services/instances'
@@ -67,6 +68,13 @@ export const useInstancesStore = defineStore('instances', () => {
   let docReleaseId: string | null = null
   let refreshing = false
   let refreshAgain = false
+
+  function applyDetail(next: InstanceDetail): void {
+    if (detail.value?.id !== next.id) return
+    // 终止不可恢复，忽略终止前发出的请求晚到的旧状态。
+    if (detail.value.status === 'terminated' && next.status !== 'terminated') return
+    detail.value = next
+  }
 
   const pendingReviews = computed(() =>
     (detail.value?.reviews ?? [])
@@ -180,7 +188,7 @@ export const useInstancesStore = defineStore('instances', () => {
     }
     refreshing = true
     try {
-      detail.value = await getInstance(target)
+      applyDetail(await getInstance(target))
       error.value = null
       await ensureDoc()
     } catch (err) {
@@ -219,12 +227,18 @@ export const useInstancesStore = defineStore('instances', () => {
 
   async function decide(reviewId: string, decision: ReviewDecision): Promise<void> {
     if (!detail.value) return
-    detail.value = await submitReview(detail.value.id, reviewId, decision)
+    applyDetail(await submitReview(detail.value.id, reviewId, decision))
   }
 
   async function rollback(payload: RollbackPayload): Promise<void> {
     if (!detail.value) return
-    detail.value = await rollbackInstance(detail.value.id, payload)
+    applyDetail(await rollbackInstance(detail.value.id, payload))
+  }
+
+  async function terminate(): Promise<void> {
+    if (!detail.value) return
+    applyDetail(await terminateInstance(detail.value.id))
+    error.value = null
   }
 
   function close(): void {
@@ -256,6 +270,7 @@ export const useInstancesStore = defineStore('instances', () => {
     refresh,
     decide,
     rollback,
+    terminate,
     close,
   }
 })

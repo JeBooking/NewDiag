@@ -59,6 +59,7 @@ const STATUS_TEXT: Record<InstanceStatus, string> = {
   success: '成功',
   failed: '失败',
   escalated: '已上升',
+  terminated: '已终止',
 }
 
 const STATUS_TYPE: Record<InstanceStatus, 'primary' | 'warning' | 'info' | 'success' | 'danger'> = {
@@ -68,6 +69,7 @@ const STATUS_TYPE: Record<InstanceStatus, 'primary' | 'warning' | 'info' | 'succ
   success: 'success',
   failed: 'danger',
   escalated: 'warning',
+  terminated: 'info',
 }
 
 const formatTime = (value?: string | null): string =>

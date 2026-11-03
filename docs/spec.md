@@ -1,4 +1,4 @@
-# 诊断流程平台 · 设计说明（v1.4）
+# 诊断流程平台 · 设计说明（v1.5）
 
 本文件是重写项目的唯一设计依据。所有条目来自 2026-10-31 的需求讨论，标注「待定」的部分表示尚未拍板，实现时不得自行假设。
 
@@ -22,7 +22,7 @@
 - 不做 BPMN 互通，不引入 BPMN 语义与序列化
 - 不做实时协同编辑（v1 为共享草稿 + 编辑锁）
 - 不做检查点恢复：进程重启后未完成实例不会自动续跑，也还没有启动时批量标记中断的清理逻辑（见第 11 节）
-- 不做用户手动暂停／停止；串行模式下到达问题解决后的 `paused` 是调度语义，不是暂停按钮
+- 支持用户终止未结束的诊断，不提供手动暂停；串行模式下到达问题解决后的 `paused` 是调度语义，不是暂停按钮
 
 ---
 
@@ -101,7 +101,7 @@ SQLite（WAL）。时间统一 ISO8601 UTC。除 `files` 用内容哈希作主�
 | 字段 | 说明 |
 |---|---|
 | id, flow_id, release_id | |
-| status | `running` / `waiting` / `paused` / `success` / `failed` / `escalated` |
+| status | `running` / `waiting` / `paused` / `success` / `failed` / `escalated` / `terminated` |
 | snapshot_id | 指向启动上下文 |
 | started_by, started_at, ended_at | |
 
@@ -474,6 +474,13 @@ while 存在可推进的 token:
 
 ---
 
+### 手动终止
+
+- 实例详情在 `running` / `waiting` / `paused` 时提供「终止诊断」，确认后执行。
+- 终止提交后实例进入 `terminated`，记录 `ended_at`；活跃和等待 token 标记 `abandoned`，待办标记 `cancelled`，已完成历史保留。
+- 停止后续调度并关闭该实例的独立会话进程；正在调用的结果不得覆盖终止状态，已发生的外部副作用不回滚。已启动的签名探测可运行至结束或超时，终止接口不等待探测，其结果不再推进诊断。
+- 终止后的待办提交和回退返回 409。终止与自然完成串行判定，已自然结束则返回 409，重复终止返回当前详情。
+
 ## 7. API
 
 全部挂在 `/api` 下，JSON 字段用 camelCase（后端 snake_case 由 schemas 转换）。
@@ -502,6 +509,7 @@ while 存在可推进的 token:
 | GET | `/api/instances/{id}` | 详情：tokens、runs、reviews、启动上下文 |
 | GET | `/api/instances/{id}/events` | SSE：实例状态摘要，内容变化才推，另有心跳 |
 | POST | `/api/instances/{id}/reviews/{reviewId}` | 提交判断或完成/回退/继续 |
+| POST | `/api/instances/{id}/terminate` | 无请求体，返回实例详情；允许 running/waiting/paused 终止，重复终止幂等，其他终态返回 409 |
 | POST | `/api/instances/{id}/rollback` | `{targetNodeId, branch, reason?}`；兼容 `target` |
 | GET | `/api/folders` | 目录列表（含流程数） |
 | POST | `/api/folders` | 新建目录，body `{name, parentId?}` |
@@ -716,3 +724,5 @@ backend/
 | v1.2（2026-11-01） | 编辑锁改为懒检出（首次改动取锁、保存释放不重检、离开保留草稿）；工程支持编辑与删除，名称不可改；文档改为只保留当前态，v1.1 增量并入正文，历史见 git |
 | v1.3（2026-11-02） | 流程包导出与回导：zip 内含 workflow.json、manifest.json、attachments/；导出可选发布版本，导入时附件重新入库并修正哈希 |
 | v1.4（2026-11-02） | 参考数据展示定为两条路：白名单类型在线预览，其余提示不支持并给下载；明确参考文件不可在线编辑，替换即换哈希；不提供服务端代开本机软件 |
+
+| v1.5（2026-11-03） | 新增手动终止诊断：终止按钮、terminated 终态及终止接口，保留历史并取消未完成工作 |

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,9 @@ def probe_doc(doc: dict) -> dict:
     return result
 
 
-def collect_signatures(plan: dict, probed: dict | None = None) -> dict[str, str]:
+def collect_signatures(
+    plan: dict, probed: dict | None = None, *, cancelled: Callable[[], bool] | None = None
+) -> dict[str, str]:
     """对 plan 里出现的每个 project:function 取当前签名哈希。
 
     probed 传 probe_doc 的结果时复用参数表，不再起子进程。
@@ -80,6 +83,8 @@ def collect_signatures(plan: dict, probed: dict | None = None) -> dict[str, str]
     result: dict[str, str] = {}
     projects: dict[str, object] = {}
     for key in _plan_keys(plan):
+        if cancelled is not None and cancelled():
+            break
         project_name, function_name = _split_key(key)
 
         if probed is not None:

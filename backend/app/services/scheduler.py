@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 import time
+from functools import wraps
 from types import SimpleNamespace
 
 from sqlalchemy import func, select
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 120.0
 
-TERMINAL_INSTANCE = ("success", "failed", "escalated")
+TERMINAL_INSTANCE = ("success", "failed", "escalated", "terminated")
 ACTIVE_TOKEN = ("queued", "running")
 
 # 失败分类：route/* 属于正常排除，execution/* 属于真出错
@@ -38,6 +39,14 @@ ERR_EXCEPTION = "execution/exception"
 
 YES_VALUES = {"yes", "y", "true", "是"}
 NO_VALUES = {"no", "n", "false", "否"}
+
+
+def _serialized(method):
+    @wraps(method)
+    def guarded(self, instance_id, *args, **kwargs):
+        with self._instance_lock(instance_id):
+            return method(self, instance_id, *args, **kwargs)
+    return guarded
 
 
 class Scheduler:
@@ -55,6 +64,17 @@ class Scheduler:
         self._threads: dict[str, threading.Thread] = {}
         self._wake: set[str] = set()
         self._lock = threading.Lock()
+        self._operation_locks: dict[str, threading.RLock] = {}
+        self._termination_locks: dict[str, threading.Lock] = {}
+        self._cancelled: set[str] = set()
+
+    def _instance_lock(self, instance_id: str):
+        with self._lock:
+            return self._operation_locks.setdefault(instance_id, threading.RLock())
+
+    def _is_cancelled(self, instance_id: str) -> bool:
+        with self._lock:
+            return instance_id in self._cancelled
 
     def _open(self):
         factory = db_module.SessionLocal if self._follow_module else self._session_factory
@@ -79,16 +99,66 @@ class Scheduler:
             thread.start()
             logger.info("实例 %s 调度线程启动", instance_id)
 
+    def terminate(self, instance_id: str) -> None:
+        # 同实例的重复终止请求不能交错设置与撤销临时取消标记。
+        with self._lock:
+            request_lock = self._termination_locks.setdefault(instance_id, threading.Lock())
+        with request_lock:
+            self._terminate(instance_id)
+
+    def _terminate(self, instance_id: str) -> None:
+        # 调用持有实例操作锁，必须先中断专属进程才能等调度收尾。
+        with self._open() as db:
+            instance = db.get(models.Instance, instance_id)
+            if instance is None:
+                raise ValueError("实例不存在")
+            if instance.status == "terminated":
+                return
+            if instance.status in TERMINAL_INSTANCE:
+                raise ValueError("实例已结束，不能终止")
+        with self._lock:
+            self._cancelled.add(instance_id)
+        self._sessions.cancel(instance_id)
+        with self._instance_lock(instance_id), self._open() as db:
+            instance = db.get(models.Instance, instance_id)
+            if instance.status == "terminated":
+                return
+            if instance.status in TERMINAL_INSTANCE:
+                # 自然结束先落库时保留原结论；失败实例仍可回退到新一代。
+                self._sessions.clear_cancellation(instance_id)
+                with self._lock:
+                    self._cancelled.discard(instance_id)
+                raise ValueError("实例已结束，不能终止")
+            stamp = now_iso()
+            instance.status = "terminated"
+            instance.ended_at = stamp
+            for token in self._tokens(db, instance_id):
+                if token.status in ("queued", "running", "waiting"):
+                    token.status = "abandoned"
+                    token.updated_at = stamp
+            for review in db.scalars(select(models.Review).where(
+                models.Review.instance_id == instance_id, models.Review.status == "pending"
+            )):
+                review.status = "cancelled"
+                review.decided_at = stamp
+            db.commit()
+            logger.info("实例 %s 已由用户终止", instance_id)
+
+    @_serialized
     def submit_review(self, instance_id: str, review_id: str, decision: dict) -> None:
-        """人工提交判断/完成/回退。接口层可能已经把 review 置为 done，这里保持幂等。"""
+        """人工提交判断/完成/回退，与实例终止串行处理。"""
         db = self._open()
         try:
             instance = db.get(models.Instance, instance_id)
             if instance is None:
                 raise ValueError("实例不存在")
+            if instance.status in TERMINAL_INSTANCE or self._is_cancelled(instance_id):
+                raise ValueError("实例已结束，不能处理待办")
             review = db.get(models.Review, review_id)
             if review is None or review.instance_id != instance_id:
                 raise ValueError("待办不存在")
+            if review.status != "pending":
+                raise ValueError("该待办已处理")
 
             payload = decision or _loads(review.decision_json) or {}
             request = _loads(review.request_json) or {}
@@ -156,7 +226,10 @@ class Scheduler:
         finally:
             db.close()
 
+    @_serialized
     def rollback(self, instance_id: str, target: str, branch: str, reason: str | None) -> None:
+        if self._is_cancelled(instance_id):
+            raise ValueError("实例已终止，不能回退")
         db = self._open()
         try:
             instance = db.get(models.Instance, instance_id)
@@ -199,10 +272,9 @@ class Scheduler:
 
     def _preflight(self, instance_id: str) -> bool:
         """启动前比对签名；不一致直接失败，避免用错参数跑。"""
-        db = self._open()
-        try:
+        with self._instance_lock(instance_id), self._open() as db:
             instance = db.get(models.Instance, instance_id)
-            if instance is None or instance.status in TERMINAL_INSTANCE:
+            if instance is None or instance.status in TERMINAL_INSTANCE or self._is_cancelled(instance_id):
                 return False
             plan = self._plan(db, instance)
             if not plan.get("steps"):
@@ -219,13 +291,21 @@ class Scheduler:
             db.commit()
             if finished_runs or not any(step.get("call") for step in plan["steps"].values()):
                 return True  # 只在实例首次启动时比对签名，人工恢复不重新拦
-            try:
-                stored = self._stored_signatures(db, instance)
-                expected = plan if plan.get("signature") else {**plan, "signature": stored}
-                diffs = signatures.compare_signatures(expected, signatures.collect_signatures(plan))
-            except Exception:  # noqa: BLE001 - 探针失败不阻断启动
-                logger.warning("实例 %s 签名比对失败，跳过", instance_id, exc_info=True)
-                return True
+            stored = self._stored_signatures(db, instance)
+            expected = plan if plan.get("signature") else {**plan, "signature": stored}
+        # 签名探测可能等待外部工程启动，不占用终止操作需要的实例锁。
+        try:
+            current = signatures.collect_signatures(
+                plan, cancelled=lambda: self._is_cancelled(instance_id)
+            )
+            diffs = signatures.compare_signatures(expected, current)
+        except Exception:  # noqa: BLE001 - 探针失败不阻断启动
+            logger.warning("实例 %s 签名比对失败，跳过", instance_id, exc_info=True)
+            return not self._is_cancelled(instance_id)
+        with self._instance_lock(instance_id), self._open() as db:
+            instance = db.get(models.Instance, instance_id)
+            if instance is None or instance.status in TERMINAL_INSTANCE or self._is_cancelled(instance_id):
+                return False
             if diffs:
                 detail = "；".join(f"{item['key']} {item['status']}" for item in diffs)
                 self._fail(db, instance, "signature/changed", f"函数签名与发布时不一致：{detail}")
@@ -233,15 +313,14 @@ class Scheduler:
                 self._close_session(instance_id)
                 return False
             return True
-        finally:
-            db.close()
 
+    @_serialized
     def _step(self, instance_id: str) -> bool:
         """推进一轮；返回是否还有可推进的令牌。"""
         db = self._open()
         try:
             instance = db.get(models.Instance, instance_id)
-            if instance is None or instance.status in TERMINAL_INSTANCE:
+            if instance is None or instance.status in TERMINAL_INSTANCE or self._is_cancelled(instance_id):
                 return False
             if instance.status == "paused":
                 return False
@@ -260,8 +339,12 @@ class Scheduler:
                 targets = queued
 
             for token in targets:
+                if self._is_cancelled(instance_id):
+                    return False
                 self._advance(db, instance, plan, token)
                 db.commit()
+            if self._is_cancelled(instance_id):
+                return False
             self._refresh(db, instance, plan)
             db.commit()
             logger.debug(
@@ -273,7 +356,10 @@ class Scheduler:
         finally:
             db.close()
 
+    @_serialized
     def _settle(self, instance_id: str) -> None:
+        if self._is_cancelled(instance_id):
+            return
         db = self._open()
         try:
             instance = db.get(models.Instance, instance_id)
@@ -287,7 +373,10 @@ class Scheduler:
         finally:
             db.close()
 
+    @_serialized
     def _fail_instance(self, instance_id: str) -> None:
+        if self._is_cancelled(instance_id):
+            return
         db = self._open()
         try:
             instance = db.get(models.Instance, instance_id)
@@ -377,6 +466,12 @@ class Scheduler:
             return
 
         value, failure = self._invoke(db, instance, call, args, token)
+        if self._is_cancelled(instance.id):
+            self._write_run(
+                db, instance, token, status="abandoned", args=args,
+                error="execution/terminated: 用户终止诊断", started=started,
+            )
+            return
         if failure is not None:
             code, message, attempts = failure
             logger.warning(
@@ -458,6 +553,8 @@ class Scheduler:
             return None, (ERR_EXCEPTION, f"工程 {ref} 未登记，无法调用 {function}", 1)
         attempts = 0
         while attempts < 2:
+            if self._is_cancelled(instance.id):
+                return None, ("execution/terminated", "用户终止诊断", attempts)
             attempts += 1
             logger.debug(
                 "实例 %s 调用 %s.%s（第 %s 次）参数 %s",

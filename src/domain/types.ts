@@ -150,7 +150,14 @@ export interface Plan {
   signature: Record<string, string>
 }
 
-export type InstanceStatus = 'running' | 'waiting' | 'paused' | 'success' | 'failed' | 'escalated'
+export type InstanceStatus =
+  | 'running'
+  | 'waiting'
+  | 'paused'
+  | 'success'
+  | 'failed'
+  | 'escalated'
+  | 'terminated'
 
 export type TokenStatus = 'queued' | 'running' | 'waiting' | 'done' | 'failed' | 'abandoned'
 

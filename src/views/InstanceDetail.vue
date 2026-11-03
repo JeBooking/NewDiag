@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import FlowCanvas from '@/components/canvas/FlowCanvas.vue'
 import PathList from '@/components/history/PathList.vue'
@@ -20,6 +21,7 @@ const loadError = ref<string | null>(null)
 const selectedNodeId = ref<string | null>(null)
 const activeTab = ref<'runs' | 'paths'>('runs')
 const refreshing = ref(false)
+const terminating = ref(false)
 /** 卡片里正在看执行详情的节点；同一时刻只允许一个 */
 const inspectNodeId = ref<string | null>(null)
 
@@ -30,6 +32,7 @@ const STATUS_TEXT: Record<InstanceStatus, string> = {
   success: '成功',
   failed: '失败',
   escalated: '已上升',
+  terminated: '已终止',
 }
 
 const STATUS_TYPE: Record<InstanceStatus, 'primary' | 'warning' | 'info' | 'success' | 'danger'> = {
@@ -39,12 +42,41 @@ const STATUS_TYPE: Record<InstanceStatus, 'primary' | 'warning' | 'info' | 'succ
   success: 'success',
   failed: 'danger',
   escalated: 'warning',
+  terminated: 'info',
 }
 
 const formatTime = (value?: string | null): string =>
   value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
 
 const detail = computed(() => store.detail)
+const canTerminate = computed(() =>
+  detail.value ? ['running', 'waiting', 'paused'].includes(detail.value.status) : false,
+)
+
+async function terminate(): Promise<void> {
+  if (!canTerminate.value || terminating.value) return
+  const targetId = detail.value?.id
+  terminating.value = true
+  try {
+    try {
+      await ElMessageBox.confirm(
+        '终止后将停止后续诊断并取消未处理的待办，已有记录保留。本次诊断无法继续。',
+        '终止诊断',
+        { type: 'warning', confirmButtonText: '终止诊断', cancelButtonText: '继续诊断' },
+      )
+    } catch {
+      return
+    }
+    if (!canTerminate.value || detail.value?.id !== targetId) return
+    await store.terminate()
+    ElMessage.success('诊断已终止')
+  } catch (error) {
+    ElMessage.error(errorText(error, '终止诊断失败'))
+    await store.refresh(instanceId.value)
+  } finally {
+    terminating.value = false
+  }
+}
 
 /** 每个节点名下的运行记录，按开始时间倒序；卡片和节点入口共用这一份 */
 const runsByNode = computed<Record<string, RunRecord[]>>(() => {
@@ -185,6 +217,12 @@ function onInspect(nodeId: string): void {
           快照 {{ formatTime(detail.snapshot.capturedAt) }}
         </span>
         <el-button size="small" :loading="refreshing" @click="reload">刷新</el-button>
+        <el-button
+          v-if="canTerminate"
+          type="danger"
+          :loading="terminating"
+          @click="terminate"
+        >终止诊断</el-button>
       </div>
     </div>
 
@@ -237,7 +275,7 @@ function onInspect(nodeId: string): void {
 
       <aside class="aside">
         <TaskPanel
-          v-if="detail"
+          v-if="detail && detail.status !== 'terminated'"
           :reviews="store.pendingReviews"
           :detail="detail"
           :doc="store.doc"
@@ -245,6 +283,7 @@ function onInspect(nodeId: string): void {
           @select="onSelect"
           @changed="reload"
         />
+        <el-empty v-else-if="detail" description="诊断已终止，待办已取消" :image-size="60" />
       </aside>
     </div>
 
