@@ -8,13 +8,12 @@ import {
   useVueFlow,
   type Connection,
   type Edge,
-  type GraphNode,
   type Node,
   type NodeMouseEvent,
 } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
-import { MiniMap } from '@vue-flow/minimap'
+import FlowOverview from './FlowOverview.vue'
 import { ElMessage } from 'element-plus'
 import { KIND_META, V1_KINDS } from '@/domain/kinds'
 import { canConnect, isSingleSuccessor, needsBranch } from '@/domain/rules'
@@ -796,11 +795,6 @@ function onDrop(event: DragEvent) {
   })
 }
 
-const minimapColor = (node: GraphNode) => {
-  const kind = (node.data as NodeCardData | undefined)?.kind
-  return kind ? KIND_META[kind].color : EDGE_COLOR.none
-}
-
 onBeforeUnmount(() => {
   clearHoverTimer()
   clearCloseTimer()
@@ -853,7 +847,7 @@ defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom })
     >
       <Background :gap="16" :size="1" color="#d8dee9" />
       <Controls :show-interactive="!readonly" />
-      <MiniMap pannable zoomable :node-color="minimapColor" :width="160" :height="110" />
+      <FlowOverview />
       <Panel v-if="!readonly" position="top-left" class="palette-panel">
         <div class="palette-stack">
           <NodePalette :disabled="readonly" @add="(kind) => addNode(kind, centerPosition())" />
