@@ -74,7 +74,6 @@ const worst = computed(() => {
       {
         'is-selected': isSelected,
         'is-running': data.status === 'running',
-        'is-settled': data.trailState === 'current' && data.status === 'success',
       },
     ]"
     :style="{
@@ -395,34 +394,55 @@ const worst = computed(() => {
   opacity: 0.22;
 }
 
-/* 当前路径内部再拉一档：已完成略微降亮，让正在跑/等待的那一步成为最亮的一块 */
-.is-settled {
-  opacity: 0.86;
-}
-
 /*
- * 正在跑：常驻外圈 + 向外扩散的脉冲。
- * 刻意不复用 box-shadow（选中态在用）和顶部状态条（排队/等待也会用），
- * 外圈和卡片边框之间留 5px 间隙，缩到 0.6 时也能看出是「外圈」而不是粗边框。
+ * 正在跑：常驻实色外圈 + 向外扩散的脉冲。
+ * 刻意不复用 box-shadow（选中态在用）和顶部状态条（排队/等待也会用）。
+ * 外圈用半实色而不是 12% 那种透明圈：系统开启「减少动画」时扩散会被关掉，
+ * 静态外圈必须自己站得住，所以它比动效更重要。
  */
 .is-running::before {
   content: '';
   position: absolute;
   inset: -5px;
   border-radius: 13px;
-  border: 2px solid rgb(22 119 255 / 28%);
+  border: 2px solid #1677ff;
+  box-shadow: 0 0 0 4px rgb(22 119 255 / 14%);
   pointer-events: none;
 }
 
 .is-running::after {
   content: '';
   position: absolute;
-  inset: -5px;
-  border-radius: 13px;
-  border: 2px solid rgb(22 119 255 / 70%);
+  inset: -4px;
+  border-radius: 12px;
+  border: 2px solid #1677ff;
   opacity: 0;
   pointer-events: none;
-  animation: run-halo 1.8s ease-out infinite;
+  animation: run-pulse 1.4s ease-out infinite;
+}
+
+/*
+ * 等人工处理才是诊断流程里最常见的「当前一步」，只给 running 做特效等于看不到。
+ * 同一套外圈结构、换成警示色，动效改成慢呼吸而不是向外扩散，两者一眼能分开。
+ */
+.accent-waiting::before {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 13px;
+  border: 2px solid #faad14;
+  box-shadow: 0 0 0 4px rgb(250 173 20 / 14%);
+  pointer-events: none;
+}
+
+.accent-waiting::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 13px;
+  border: 2px solid rgb(250 173 20 / 70%);
+  pointer-events: none;
+  animation: wait-breathe 2.4s ease-in-out infinite;
 }
 
 /* 待处理 / 运行中用左侧色带覆盖类型色：这一屏里「它在等我」比「它是什么类型」更重要 */
@@ -586,32 +606,41 @@ const worst = computed(() => {
   }
 }
 
-@keyframes run-halo {
+@keyframes run-pulse {
   0% {
-    transform: scale(0.98);
-    opacity: 0.7;
-  }
-
-  70% {
-    transform: scale(1.05);
-    opacity: 0;
+    transform: scale(1);
+    opacity: 0.9;
   }
 
   100% {
+    transform: scale(1.12);
     opacity: 0;
+  }
+}
+
+@keyframes wait-breathe {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+
+  50% {
+    opacity: 0.6;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .bar-running::after,
   .is-running .status-dot,
-  .is-running::after {
+  .is-running::after,
+  .accent-waiting::after {
     animation: none;
   }
 
-  /* 减少动效时直接去掉扫光和脉冲环，纯色顶条本身已经足够说明「在跑」 */
+  /* 减少动效时去掉扫光和脉冲环；实色外圈保留，静态也能看出这一张在跑 */
   .bar-running::after,
-  .is-running::after {
+  .is-running::after,
+  .accent-waiting::after {
     display: none;
   }
 }
