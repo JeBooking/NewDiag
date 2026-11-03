@@ -20,6 +20,7 @@ const editor = useEditorStore()
 
 const loadError = ref<string | null>(null)
 const issuesVisible = ref(false)
+const propertiesExpanded = ref(true)
 const canvas = ref<InstanceType<typeof FlowCanvas> | null>(null)
 
 const flowId = computed(() => String(route.params.id))
@@ -411,6 +412,14 @@ onBeforeRouteLeave(async () => {
 
       <el-button :icon="FullScreen" :disabled="!canvas" @click="fitCanvas">适应画布</el-button>
       <el-button :icon="Share" :disabled="!editor.editable" @click="autoLayout">自动布局</el-button>
+      <el-button
+        class="properties-toggle"
+        aria-controls="designer-properties"
+        :aria-expanded="propertiesExpanded"
+        @click="propertiesExpanded = !propertiesExpanded"
+      >
+        {{ propertiesExpanded ? '收起属性栏' : '展开属性栏' }}
+      </el-button>
     </div>
 
     <div class="body" v-loading="editor.loading">
@@ -429,7 +438,7 @@ onBeforeRouteLeave(async () => {
         <el-empty v-else-if="!editor.loading" description="流程不存在或没有可编辑的文档" />
       </div>
 
-      <aside class="panel">
+      <aside id="designer-properties" v-show="propertiesExpanded" class="panel" aria-label="属性栏">
         <NodePanel
           v-if="editor.selectedNode"
           :node="editor.selectedNode"
@@ -514,6 +523,10 @@ onBeforeRouteLeave(async () => {
   background: var(--el-bg-color);
   border-bottom: 1px solid var(--el-border-color-light);
   flex: none;
+}
+
+.opsbar .properties-toggle {
+  margin-left: auto;
 }
 
 .opsbar :deep(.el-button-group) {
