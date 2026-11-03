@@ -6,6 +6,7 @@ import { errorText } from '@/services/api'
 import { useInstancesStore } from '@/stores/instances'
 import ActionTask from './ActionTask.vue'
 import DecisionTask from './DecisionTask.vue'
+import DataTask from './DataTask.vue'
 import RollbackDialog from './RollbackDialog.vue'
 
 const props = defineProps<{
@@ -24,6 +25,8 @@ const store = useInstancesStore()
 
 const selectedId = ref<string | null>(null)
 const busy = ref(false)
+const submitError = ref('')
+watch(selectedId, () => { submitError.value = '' })
 const rollbackVisible = ref(false)
 
 const selected = computed(() => props.reviews.find((item) => item.id === selectedId.value) ?? null)
@@ -71,21 +74,39 @@ const formatTime = (value?: string | null): string =>
   value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
 
 function kindLabel(review: ReviewTask): string {
+  if (review.request.type === 'acquisition') return '提供数据'
   if (review.request.type === 'after_success') return '串行决策'
   if (review.kind === 'decision') return '判断'
   // 转交节点的「完成」语义是把问题交给别的链路，不是处置动作，标签要区分
   return review.request.nodeKind === 'jump' ? '转交' : '处置'
 }
 
-async function decide(result: 'yes' | 'no' | 'done' | 'continue'): Promise<void> {
+async function decide(result: 'yes' | 'no' | 'done' | 'continue', reason?: string): Promise<void> {
   if (!selected.value) return
   busy.value = true
+  submitError.value = ''
   try {
-    await store.decide(selected.value.id, { result })
+    await store.decide(selected.value.id, { result, reason })
     ElMessage.success(result === 'continue' ? '已继续推进' : '已提交')
     emit('changed')
   } catch (error) {
+    submitError.value = errorText(error, '提交失败')
     ElMessage.error(errorText(error, '提交失败'))
+  } finally {
+    busy.value = false
+  }
+}
+
+async function submitData(data: Record<string, unknown>): Promise<void> {
+  if (!selected.value) return
+  busy.value = true
+  submitError.value = ''
+  try {
+    await store.decide(selected.value.id, { result: 'done', data })
+    ElMessage.success('数据已提交')
+    emit('changed')
+  } catch (error) {
+    submitError.value = errorText(error, '数据解析失败，请修正后重新提交')
   } finally {
     busy.value = false
   }
@@ -153,10 +174,15 @@ function onRolledBack(): void {
 
       <div v-if="selected" class="detail">
         <div class="detail-node">{{ selectedTitle }}</div>
+        <DataTask
+          v-if="selected.request.type === 'acquisition'"
+          :review="selected" :busy="busy" :error="submitError" @submit="submitData"
+        />
         <DecisionTask
-          v-if="selected.kind === 'decision'"
+          v-else-if="selected.kind === 'decision'"
           :review="selected"
           :busy="busy"
+          :error="submitError"
           @decide="decide"
         />
         <ActionTask

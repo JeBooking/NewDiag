@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { NodeBinding } from '@/domain/types'
 import { errorText } from '@/services/api'
@@ -18,6 +18,12 @@ const functions = ref<ProjectFunction[]>([])
 const loadingProjects = ref(false)
 const loadingFunctions = ref(false)
 const loadError = ref<string | null>(null)
+const configDraft = ref('{}')
+const configError = ref('')
+watch(() => props.binding?.config, (value) => {
+  configDraft.value = JSON.stringify(value ?? {}, null, 2)
+  configError.value = ''
+}, { immediate: true })
 
 // doc 里的 binding.project 存工程名：签名 key、导出代码、换机器导入都按名字走
 const projectName = computed(() => props.binding?.project ?? '')
@@ -74,7 +80,25 @@ function onFunctionChange(value: unknown): void {
     emit('update', undefined)
     return
   }
-  emit('update', { project: projectName.value, function: fn })
+  const selected = functions.value.find((item) => item.name === fn)
+  const config = Object.fromEntries((selected?.configParams ?? [])
+    .filter((param) => param.default !== undefined)
+    .map((param) => [param.name, param.default]))
+  emit('update', {
+    project: projectName.value, function: fn,
+    ...(selected?.protocol ? { protocol: selected.protocol, version: selected.version, config } : {}),
+  })
+}
+
+function saveConfig(): void {
+  try {
+    const value: unknown = JSON.parse(configDraft.value)
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('配置必须为 JSON 对象')
+    if (props.binding) emit('update', { ...props.binding, config: value as Record<string, unknown> })
+    configError.value = ''
+  } catch (error) {
+    configError.value = error instanceof Error ? error.message : '配置格式错误'
+  }
 }
 
 function clear(): void {
@@ -140,6 +164,23 @@ function paramText(fn: ProjectFunction): string {
     <div v-else-if="currentProject && !loadingFunctions && !functions.length" class="hint">
       该工程没有可用函数
     </div>
+    <template v-if="binding?.protocol === 'investigation/v1'">
+      <div class="hint">
+        四阶段适配器 · {{ binding.version }}<br>
+        采集：{{ selectedFunction?.automaticAcquisition ? '自动' : '人工' }}；
+        判断：{{ selectedFunction?.automaticJudgment ? '自动' : '人工' }}
+      </div>
+      <label for="adapter-config">初始化配置（JSON）</label>
+      <div v-if="selectedFunction?.configParams?.length" class="hint">
+        {{ selectedFunction.configParams.map((p) => `${p.name}${p.required ? '（必填）' : '（可选）'}`).join('、') }}
+      </div>
+      <el-input
+        id="adapter-config" v-model="configDraft" type="textarea" :rows="5"
+        :disabled="readonly" @blur="saveConfig" :aria-invalid="!!configError"
+      />
+      <div v-if="configError" class="hint error" role="alert">{{ configError }}</div>
+      <div class="hint">配置随流程发布保存；凭证请填写环境变量名称，在适配器内读取。</div>
+    </template>
   </div>
 </template>
 

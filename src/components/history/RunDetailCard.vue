@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { KIND_META } from '@/domain/kinds'
 import type { DocNode, ReviewDecision, ReviewStatus, ReviewTask, RunRecord, RunStatus } from '@/domain/types'
 import AttachmentList from '@/components/panels/AttachmentList.vue'
+import DataPresentation from '@/components/panels/DataPresentation.vue'
 
 const props = defineProps<{
   node: DocNode
@@ -64,7 +65,7 @@ const entries = computed<Entry[]>(() => {
     ...props.runs.map((run) => ({
       kind: 'run' as const,
       id: `run:${run.id}`,
-      at: run.startedAt,
+      at: run.endedAt ?? run.startedAt,
       run,
     })),
     ...props.reviews.map((review) => ({
@@ -86,6 +87,11 @@ const currentRun = computed(() => (current.value?.kind === 'run' ? current.value
 const currentReview = computed(() =>
   current.value?.kind === 'review' ? current.value.review : null,
 )
+const presentation = computed(() => {
+  const evidence = currentRun.value?.evidence
+  return evidence && typeof evidence === 'object' && 'presentation' in evidence
+    ? evidence.presentation : currentReview.value?.request.presentation
+})
 
 watch(
   () => [props.runs, props.reviews],
@@ -251,6 +257,7 @@ function pretty(value: unknown): string {
         <div class="label">输出</div>
         <pre>{{ pretty(currentRun.output) }}</pre>
       </div>
+      <DataPresentation :value="presentation" />
 
       <div v-if="verdict" class="block">
         <div class="label">判定</div>
@@ -259,6 +266,7 @@ function pretty(value: unknown): string {
     </div>
 
     <div v-else-if="currentReview" class="body">
+      <DataPresentation :value="presentation" />
       <div class="block">
         <div class="label">待办</div>
         <div class="request">
@@ -286,6 +294,7 @@ function pretty(value: unknown): string {
           </span>
         </div>
         <div v-else class="decision is-pending">等待人工处理</div>
+        <pre v-if="currentReview.decision?.data">{{ pretty(currentReview.decision.data) }}</pre>
       </div>
 
       <div v-if="hasReference" class="block">

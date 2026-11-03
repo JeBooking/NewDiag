@@ -27,6 +27,21 @@ export interface InvestigationFields {
 export interface NodeBinding {
   project: string
   function: string
+  protocol?: 'investigation/v1'
+  version?: string
+  config?: Record<string, unknown>
+}
+
+export interface ManualField {
+  name: string
+  label?: string
+  type?: 'text' | 'number' | 'boolean' | 'datetime' | 'json' | 'file'
+  required?: boolean
+  default?: unknown
+  min?: number
+  max?: number
+  unit?: string
+  description?: string
 }
 
 /** 开始节点参数的输入控件类型，由函数签名推导，作者可覆盖 */
@@ -129,6 +144,9 @@ export interface PlanCall {
   project: string
   function: string
   args: Record<string, ArgExpr>
+  protocol?: 'investigation/v1'
+  version?: string
+  config?: Record<string, unknown>
 }
 
 export interface PlanStep {
@@ -205,7 +223,10 @@ export interface ReviewTask {
     attachments?: AttachmentRef[]
     instructions?: string
     nodeKind?: NodeKind
-    type?: 'decision' | 'action' | 'after_success'
+    type?: 'decision' | 'action' | 'after_success' | 'acquisition' | 'judgment'
+    fields?: ManualField[]
+    presentation?: unknown
+    pipeline?: Record<string, unknown>
   }
   createdAt: string
   decidedAt?: string
@@ -217,6 +238,7 @@ export interface ReviewDecision {
   result: 'yes' | 'no' | 'done' | 'rollback' | 'continue'
   target?: string
   reason?: string
+  data?: Record<string, unknown>
 }
 
 export interface FlowSummary {

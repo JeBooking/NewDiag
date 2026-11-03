@@ -52,6 +52,7 @@ const orderGroups = computed(() =>
 const codeHint = computed(() => {
   // 能不能绑代码由 KIND_META 声明，别再按类型名判断，否则新增可编程类型时这里会拦错
   if (!KIND_META[props.node.kind].codeCapable) return '该类型由人工完成，不执行代码'
+  if (props.node.binding?.protocol === 'investigation/v1') return '四阶段排查：缺省采集或判断由人工完成'
   return props.node.binding ? '已绑定函数，执行时自动判断' : '未绑定函数，执行时由人工判断'
 })
 

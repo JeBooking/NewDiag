@@ -36,6 +36,11 @@ export interface ProjectFunction {
   doc?: string | null
   params: ProjectFunctionParam[]
   returns?: string | null
+  protocol?: 'investigation/v1'
+  version?: string
+  configParams?: { name: string; required: boolean; default?: unknown }[]
+  automaticAcquisition?: boolean
+  automaticJudgment?: boolean
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -98,6 +103,18 @@ function normalizeFunction(raw: unknown): ProjectFunction | null {
     doc: text(item.doc) ?? text(item.description) ?? null,
     params,
     returns: text(item.returns) ?? null,
+    protocol: item.protocol === 'investigation/v1' ? 'investigation/v1' : undefined,
+    version: text(item.version),
+    configParams: Array.isArray(item.configParams)
+      ? item.configParams.flatMap((raw) => {
+        const param = record(raw)
+        return param && typeof param.name === 'string'
+          ? [{ name: param.name, required: param.required === true, default: param.default }]
+          : []
+      })
+      : [],
+    automaticAcquisition: item.automaticAcquisition === true,
+    automaticJudgment: item.automaticJudgment === true,
   }
 }
 
