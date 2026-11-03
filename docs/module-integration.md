@@ -1,11 +1,13 @@
 # 外部模块接入与改造手册
 
 首选方式是在排查节点分别选择四阶段函数，由平台完成编排，不需要编写适配器类或继承 SDK。
-原 `investigation/v1` 适配器类模式继续兼容，后文第 1～9 节保留其开发说明。SDK 位于
-[`backend/app/worker/node_sdk.py`](../backend/app/worker/node_sdk.py)。包含流程图、离线数据、
-带必填构造参数的外部类和四种组合的[完整示例](../examples/voltage/README.md)，
-入口为 [`class_adapters.py`](../examples/voltage/class_adapters.py)；
-简化的 HTTP 示例保留在 [`voltage.py`](../examples/voltage/voltage.py)。
+[完整入门示例](../examples/voltage/README.md)包含可导入流程图、四阶段逐步数据、
+界面配置、四种自动／人工组合，以及外部类初始化参数的归属说明；代码入口为
+[`functions.py`](../examples/voltage/functions.py)。
+
+原 `investigation/v1` 类模式继续兼容，后文第 1～9 节保留其开发说明。
+相关[兼容示例](../examples/voltage/CLASS_ADAPTERS.md)使用 class_adapters.py 或 voltage.py，
+SDK 位于 [`backend/app/worker/node_sdk.py`](../backend/app/worker/node_sdk.py)。
 
 ## 0. 在节点上配置四个函数（推荐）
 
@@ -91,7 +93,7 @@ VOLTAGE_CALIBRATION 环境变量覆盖；必需依赖不会因此消失，只是
 再导入人工变体提交数据与依据，确认待办继续推进。修改字段路径或漏选解析／展示时应显示配置错误。
 这些是预期行为及验收步骤，不代表已执行浏览器手工验收。
 
-## 1. 接入对象与边界
+## 1. 兼容类模式：接入对象与边界
 
 平台绑定业务工程内的**适配器类**，不直接绑定桌面窗口，也不要求重写原有业务类。
 

@@ -176,6 +176,9 @@ backend/.venv/Scripts/python scripts/demo_serial.py     # 串行队列 + 成功�
 
 示例业务工程在 `examples/cooling`，登记时路径填它的**绝对路径**，模块填 `cooling.diagnosis`。
 
+四阶段函数接入从 [examples/voltage/README.md](examples/voltage/README.md) 开始，
+模块填 `functions`，导入 `workflow-functions.json`；包含逐阶段数据和人工变体，使用本地离线数据。
+
 ```
 src/          前端（Vue 3 + Vue Flow + Element Plus）
   domain/     契约：doc / plan / instance 类型、连接规则
