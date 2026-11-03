@@ -192,6 +192,7 @@ class TokenOut(ApiModel):
     order: int | None = None
     generation: int = 1
     parent_token_id: str | None = None
+    visited_at: str | None = None
 
 
 class RunOut(ApiModel):
@@ -211,6 +212,7 @@ class RunOut(ApiModel):
 
 class ReviewTask(ApiModel):
     id: str
+    token_id: str | None = None
     node_id: str
     kind: ReviewKind
     status: ReviewStatus
@@ -261,9 +263,11 @@ class ReviewDecisionIn(ApiModel):
 
 class RollbackIn(ApiModel):
     # 前端用 targetNodeId，spec 写 target，两个都收
-    target: str = Field(validation_alias=AliasChoices("target", "targetNodeId"))
+    target: str | None = Field(default=None, validation_alias=AliasChoices("target", "targetNodeId"))
+    target_token_id: str | None = None
+    mode: Literal["branch", "retry"] = "branch"
     # 分支键由目标节点类型决定：排查是 yes/no，其余是 default（引擎侧归一，这里只挡空值）
-    branch: str = Field(min_length=1)
+    branch: str = Field(default="default", min_length=1)
     reason: str | None = None
 
 
@@ -422,6 +426,7 @@ def make_token(token: Token) -> TokenOut:
         order=token.sort_order,
         generation=token.generation,
         parent_token_id=token.parent_token_id,
+        visited_at=token.visited_at,
     )
 
 
@@ -446,6 +451,7 @@ def make_review(review: Review) -> ReviewTask:
     decision = _loads(review.decision_json, None) if review.decision_json else None
     return ReviewTask(
         id=review.id,
+        token_id=review.token_id,
         node_id=review.node_id,
         kind=review.kind,  # type: ignore[arg-type]
         status=review.status,  # type: ignore[arg-type]

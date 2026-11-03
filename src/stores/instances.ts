@@ -88,10 +88,14 @@ export const useInstancesStore = defineStore('instances', () => {
     for (const token of detail.value?.tokens ?? []) {
       const priority = TOKEN_PRIORITY[token.status]
       const current = best[token.nodeId]
+      // 重执行成功后画布应显示新代结果，旧代失败仍保留在轨迹中。
+      const newerResult = current && token.generation !== current.generation
+        && (token.status === 'done' || token.status === 'failed')
+        && (current.status === 'done' || current.status === 'failed')
       const better =
         !current ||
-        priority > current.priority ||
-        (priority === current.priority && token.generation > current.generation)
+        (newerResult ? token.generation > current.generation : priority > current.priority
+          || (priority === current.priority && token.generation > current.generation))
       if (better) best[token.nodeId] = { priority, generation: token.generation, status: token.status }
     }
     const result: Record<string, NodeVisualStatus> = {}

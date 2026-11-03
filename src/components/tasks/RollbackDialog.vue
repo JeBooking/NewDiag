@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import type { FlowDoc, InstanceDetail, Plan } from '@/domain/types'
+import type { FlowDoc, InstanceDetail, Plan, Token, TokenStatus } from '@/domain/types'
 import { KIND_META } from '@/domain/kinds'
 import { errorText } from '@/services/api'
 import { getRelease } from '@/services/flows'
@@ -26,15 +26,10 @@ const submitting = ref(false)
 const target = ref('')
 const branch = ref('')
 const reason = ref('')
-
-const currentGeneration = computed(() => {
-  const tokens = props.detail?.tokens ?? []
-  return tokens.reduce((max, token) => Math.max(max, token.generation), 1)
-})
-
-interface Candidate {
-  nodeId: string
-  at: string
+const mode = ref<'retry' | 'branch'>('retry')
+const statusText: Record<TokenStatus, string> = {
+  queued: '排队', running: '执行中', waiting: '待处理', done: '完成',
+  failed: '失败', abandoned: '已放弃',
 }
 
 /** 该节点是否有后继；终止节点没有出边，不能作为回退目标 */
@@ -46,52 +41,41 @@ function hasOutgoing(nodeId: string): boolean {
   return (props.doc?.edges ?? []).some((edge) => edge.from === nodeId)
 }
 
-const candidates = computed<Candidate[]>(() => {
-  const runs = props.detail?.runs ?? []
-  const firstRunAt = new Map<string, string>()
-  const okRunNodes = new Set<string>()
-  for (const run of runs) {
-    const current = firstRunAt.get(run.tokenId)
-    if (!current || run.startedAt < current) firstRunAt.set(run.tokenId, run.startedAt)
-    if (run.status === 'ok') okRunNodes.add(run.nodeId)
-  }
-
-  // 回退是「回到已完成的节点改选分支」，不是「重做当前步」，等人工的节点不算目标
-  const pendingNodes = new Set(
-    (props.detail?.reviews ?? [])
-      .filter((review) => review.status === 'pending')
-      .map((review) => review.nodeId),
-  )
-
-  const byNode = new Map<string, Candidate>()
-  for (const token of props.detail?.tokens ?? []) {
-    if (token.generation > currentGeneration.value) continue
-    if (token.status !== 'done') continue
-    if (pendingNodes.has(token.nodeId)) continue
-    if (!hasOutgoing(token.nodeId)) continue
-    // 执行过代码的节点必须有 ok 的 run，否则引擎会拒绝
-    if (plan.value?.steps[token.nodeId]?.call && !okRunNodes.has(token.nodeId)) continue
-
-    const candidate: Candidate = {
-      nodeId: token.nodeId,
-      at: firstRunAt.get(token.id) ?? '',
-    }
-    const current = byNode.get(token.nodeId)
-    if (!current || candidate.at < current.at) byNode.set(token.nodeId, candidate)
-  }
-  return [...byNode.values()].sort((a, b) => {
-    if (a.at && b.at) return a.at.localeCompare(b.at)
-    if (a.at) return -1
-    if (b.at) return 1
-    return 0
+const candidates = computed(() => (props.detail?.tokens ?? [])
+  .filter((token) => {
+    const step = plan.value?.steps[token.nodeId]
+    return token.visitedAt && step && step.kind !== 'start' && !step.terminal
   })
+  .slice()
+  .sort((a, b) => a.visitedAt!.localeCompare(b.visitedAt!)
+    || (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id)))
+
+const selected = computed(() => candidates.value.find((token) => token.id === target.value))
+const canReuse = computed(() => {
+  const token = selected.value
+  if (!token || token.status === 'failed' || !hasOutgoing(token.nodeId)) return false
+  const step = plan.value?.steps[token.nodeId]
+  const runs = (props.detail?.runs ?? []).filter((run) => run.tokenId === token.id)
+  if (step?.call) return runs.some((run) =>
+    run.status === 'ok' || (run.status === 'abandoned' && !run.error
+      && run.output !== undefined && run.output !== null))
+  if (!step?.human) return true
+  return token.status === 'done' || (props.detail?.reviews ?? []).some((review) =>
+    review.tokenId === token.id && review.status === 'done'
+    && ['yes', 'no', 'done'].includes(review.decision?.result ?? ''))
 })
 
 const branches = computed(() => {
   if (!target.value || !plan.value) return []
-  const step = plan.value.steps[target.value]
-  return Object.keys(step?.next ?? {})
+  const step = plan.value.steps[selected.value?.nodeId ?? '']
+  return Object.entries(step?.next ?? {}).filter(([, next]) => next.length > 0).map(([key]) => key)
 })
+
+function visitLabel(token: Token, index: number): string {
+  const time = token.visitedAt
+    ? new Date(token.visitedAt).toLocaleString('zh-CN', { hour12: false }) : '时间未知'
+  return `${index + 1}. ${nodeLabel(token.nodeId)} · 第 ${token.generation} 代 · ${statusText[token.status]} · ${time}`
+}
 
 function nodeLabel(nodeId: string): string {
   const node = props.doc?.nodes.find((item) => item.id === nodeId)
@@ -124,6 +108,7 @@ watch(
     target.value = ''
     branch.value = ''
     reason.value = ''
+    mode.value = 'retry'
     void ensurePlan()
   },
 )
@@ -131,6 +116,10 @@ watch(
 watch(target, () => {
   const list = branches.value
   branch.value = list.length > 0 ? list[0] : ''
+})
+
+watch(canReuse, (value) => {
+  if (!value) mode.value = 'retry'
 })
 
 // 计划是异步读到的，先选目标后到分支时要补上默认值
@@ -143,15 +132,18 @@ function close(): void {
 }
 
 async function submit(): Promise<void> {
-  if (!props.detail || !target.value || !branch.value) return
+  if (!props.detail || !selected.value || !plan.value || submitting.value) return
+  if (mode.value === 'branch' && (!branch.value || !canReuse.value)) return
   submitting.value = true
   try {
     await store.rollback({
-      targetNodeId: target.value,
-      branch: branch.value,
+      targetNodeId: selected.value.nodeId,
+      targetTokenId: selected.value.id,
+      mode: mode.value,
+      branch: mode.value === 'branch' ? branch.value : undefined,
       reason: reason.value.trim() || undefined,
     })
-    ElMessage.success('已回退到所选节点')
+    ElMessage.success('已从所选到访位置重新推进')
     emit('submitted')
     close()
   } catch (error) {
@@ -165,8 +157,8 @@ async function submit(): Promise<void> {
 <template>
   <el-dialog
     :model-value="modelValue"
-    title="回退到已执行节点"
-    width="520px"
+    title="从执行轨迹回退"
+    width="min(720px, 95vw)"
     @update:model-value="emit('update:modelValue', $event)"
   >
     <el-alert
@@ -174,24 +166,32 @@ async function submit(): Promise<void> {
       :closable="false"
       show-icon
       title="平台不会撤销任何设备操作，回退只影响系统内的执行记录"
-      description="回退后本次之后产生的路径与运行记录标记为已放弃并保留，按所选分支重新推进，代数加一。"
+      description="回退会取消本次诊断的全部未完成路径和待办，包括其他活跃分支。已有执行记录保留，从所选的具体到访位置开启新一代。"
     />
 
     <div class="form">
-      <label class="label">目标节点</label>
-      <el-select v-model="target" placeholder="选择已执行过的节点" class="field">
+      <label class="label">目标到访记录</label>
+      <el-select v-model="target" placeholder="选择执行轨迹中的一次到访" class="field" :disabled="loadingPlan || !plan">
         <el-option
-          v-for="run in candidates"
-          :key="run.nodeId"
-          :label="nodeLabel(run.nodeId)"
-          :value="run.nodeId"
+          v-for="(token, index) in candidates"
+          :key="token.id"
+          :label="visitLabel(token, index)"
+          :value="token.id"
         />
       </el-select>
       <div v-if="!candidates.length && !loadingPlan" class="hint">
-        当前没有可回退的节点：终止节点和正在等待处理的节点不能作为目标
+        当前没有可回退的到访记录
       </div>
 
       <template v-if="target">
+        <label class="label">回退方式</label>
+        <el-radio-group v-model="mode">
+          <el-radio value="retry">重新执行该节点</el-radio>
+          <el-radio value="branch" :disabled="!canReuse">复用结果并改选分支</el-radio>
+        </el-radio-group>
+        <div v-if="!canReuse" class="hint">本次到访没有可复用的成功结果，需要重新执行。</div>
+      </template>
+      <template v-if="target && mode === 'branch'">
         <label class="label">重新走的分支</label>
         <el-select
           v-model="branch"
@@ -218,7 +218,7 @@ async function submit(): Promise<void> {
       <el-button
         type="primary"
         :loading="submitting"
-        :disabled="!target || !branch"
+        :disabled="!selected || !plan || (mode === 'branch' && (!branch || !canReuse))"
         @click="submit"
       >
         确认回退

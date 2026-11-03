@@ -87,6 +87,7 @@ def _migrate() -> None:
     老库启动时必须自己 ALTER，否则查询会直接报 no such column。
     """
     expected = {
+        "tokens": {"visited_at": "VARCHAR(32)"},
         "flows": {"folder_id": "VARCHAR(32)"},
         "releases": {"inputs_json": "TEXT NOT NULL DEFAULT '[]'"},
     }
@@ -101,6 +102,22 @@ def _migrate() -> None:
                     continue
                 conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
                 logger.info("迁移：%s 增加列 %s", table, column)
+                if table == "tokens" and column == "visited_at":
+                    # 旧库只回填有执行证据的到访，无法分辨的废弃队列保持空值。
+                    conn.exec_driver_sql("""
+                        UPDATE tokens SET visited_at = COALESCE(
+                            (SELECT MIN(started_at) FROM runs
+                             WHERE runs.token_id = tokens.id
+                               AND COALESCE(error, '') NOT LIKE 'signature/changed:%'
+                               AND COALESCE(error, '') NOT IN (
+                                   'plan/step-missing: 发布版本缺少步骤表',
+                                   'plan/step-missing: 步骤表缺少入口节点'
+                               )),
+                            (SELECT MIN(created_at) FROM reviews WHERE reviews.token_id = tokens.id),
+                            CASE WHEN status IN ('done', 'failed', 'waiting', 'running')
+                                 THEN updated_at END
+                        ) WHERE status != 'queued'
+                    """)
 
 
 def get_db():

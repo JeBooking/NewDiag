@@ -11,6 +11,7 @@ import logging
 import threading
 import time
 from functools import wraps
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from sqlalchemy import func, select
@@ -192,7 +193,13 @@ class Scheduler:
             if result == "rollback":
                 branch = str(payload.get("branch") or _opposite(token.branch))
                 target = str(payload.get("target") or token.node_id)
-                self._rollback(db, instance, plan, target, branch, payload.get("reason"))
+                redo_self = target == token.node_id
+                self._rollback(
+                    db, instance, plan, target, branch, payload.get("reason"),
+                    target_token_id=token.id if redo_self else None,
+                    mode="retry" if redo_self else "branch",
+                    protect_other_paths=True,
+                )
                 db.commit()
                 self.start(instance_id)
                 return
@@ -227,7 +234,10 @@ class Scheduler:
             db.close()
 
     @_serialized
-    def rollback(self, instance_id: str, target: str, branch: str, reason: str | None) -> None:
+    def rollback(
+        self, instance_id: str, target: str | None, branch: str, reason: str | None,
+        *, target_token_id: str | None = None, mode: str = "branch",
+    ) -> None:
         if self._is_cancelled(instance_id):
             raise ValueError("实例已终止，不能回退")
         db = self._open()
@@ -236,7 +246,10 @@ class Scheduler:
             if instance is None:
                 raise ValueError("实例不存在")
             plan = self._plan(db, instance)
-            self._rollback(db, instance, plan, target, branch, reason)
+            self._rollback(
+                db, instance, plan, target, branch, reason,
+                target_token_id=target_token_id, mode=mode,
+            )
             db.commit()
             self.start(instance_id)
         finally:
@@ -264,11 +277,16 @@ class Scheduler:
             logger.exception("实例 %s 调度异常", instance_id)
             self._fail_instance(instance_id)
         finally:
+            restart = False
             with self._lock:
                 current = self._threads.get(instance_id)
                 if current is threading.current_thread():
                     self._threads.pop(instance_id, None)
-                self._wake.discard(instance_id)
+                    # 异常收尾期间失败实例也可能已回退，要交接新一代的唤醒。
+                    restart = instance_id in self._wake
+                    self._wake.discard(instance_id)
+            if restart:
+                self.start(instance_id)
 
     def _preflight(self, instance_id: str) -> bool:
         """启动前比对签名；不一致直接失败，避免用错参数跑。"""
@@ -391,6 +409,7 @@ class Scheduler:
     # ------------------------------------------------------------ 单节点执行
 
     def _advance(self, db, instance, plan: dict, token) -> None:
+        token.visited_at = token.visited_at or datetime.now(timezone.utc).isoformat()
         step = plan.get("steps", {}).get(token.node_id)
         if step is None:
             self._write_run(
@@ -434,6 +453,8 @@ class Scheduler:
 
         call = step.get("call")
         if call:
+            # 长耗时调用开始前持久化到访，让执行轨迹能显示正在运行的节点。
+            db.commit()
             self._run_call(db, instance, plan, token, step, call)
             return
 
@@ -616,17 +637,19 @@ class Scheduler:
         return args, None
 
     def _lookup_run(self, db, instance, token, node_id: str, path: str) -> tuple[bool, object]:
-        run = db.scalars(
-            select(models.Run)
-            .where(
-                models.Run.instance_id == instance.id,
-                models.Run.node_id == node_id,
-                models.Run.status == "ok",
-                models.Run.generation <= token.generation,
-            )
-            .order_by(models.Run.generation.desc(), models.Run.started_at.desc())
-            .limit(1)
-        ).first()
+        # 回到旧代时只能继承所选到访的祖先，不能混入其他尝试的同名节点结果。
+        parent_id = token.parent_token_id
+        seen: set[str] = set()
+        run = None
+        while parent_id and parent_id not in seen:
+            seen.add(parent_id)
+            parent = db.get(models.Token, parent_id)
+            if parent is None or parent.instance_id != instance.id:
+                break
+            if parent.node_id == node_id:
+                run = self._successful_run(db, instance.id, parent.id)
+                break
+            parent_id = parent.parent_token_id
         if run is None:
             return False, None
         root = _loads(run.output_json)
@@ -913,112 +936,111 @@ class Scheduler:
 
     # ------------------------------------------------------------ 回退
 
-    def _rollback(self, db, instance, plan: dict, target: str, branch: str, reason) -> None:
-        if instance.status in TERMINAL_INSTANCE:
+    def _rollback(
+        self, db, instance, plan: dict, target: str | None, branch: str, reason,
+        *, target_token_id: str | None = None, mode: str = "branch", protect_other_paths: bool = False,
+    ) -> None:
+        if instance.status in ("success", "escalated", "terminated"):
             raise ValueError("实例已结束，不能回退")
+        if mode not in ("branch", "retry"):
+            raise ValueError("回退方式必须是 branch 或 retry")
+        tokens = self._tokens(db, instance.id)
+        by_id = {token.id: token for token in tokens}
+        if target_token_id:
+            target_token = by_id.get(target_token_id)
+            if target_token is None:
+                raise ValueError("目标到访不属于当前实例")
+            if target and target != target_token.node_id:
+                raise ValueError("目标节点与目标到访不一致")
+        else:
+            candidates = [t for t in tokens if t.node_id == target and t.visited_at]
+            candidates.sort(key=lambda t: (t.visited_at, t.generation, t.id), reverse=True)
+            target_token = candidates[0] if candidates else None
+        if target_token is None or not target_token.visited_at:
+            raise ValueError("目标到访尚未执行，不能回退")
+        # 旧入口没有确认整实例回退，不能取消目标子树外的待办或排队分支。
+        if not target_token_id or protect_other_paths:
+            subtree = _descendants(tokens, target_token.id) | {target_token.id}
+            if any(t.status in ("queued", "running", "waiting") and t.id not in subtree for t in tokens):
+                raise ValueError("还有其他活跃路径，请先处理完再回退")
+            if target_token.status == "waiting":
+                mode = "retry"
+        target = target_token.node_id
         step = (plan.get("steps") or {}).get(target)
         if step is None:
             raise ValueError("目标节点不在该发布版本里")
+        if step.get("terminal") or step.get("kind") == "start":
+            raise ValueError("开始和终止节点不能作为回退目标")
         branch_key = branch if step.get("kind") == "investigation" else "default"
-        if step.get("kind") == "investigation" and branch_key not in ("yes", "no"):
-            raise ValueError("回退分支必须是是/否")
-        if not (step.get("next") or {}).get(branch_key):
-            raise ValueError(f"目标节点没有 {branch_key} 分支的后继")
+        if mode == "branch":
+            if target_token.status == "failed":
+                raise ValueError("该次到访已失败，请选择重新执行")
+            if step.get("kind") == "investigation" and branch_key not in ("yes", "no"):
+                raise ValueError("回退分支必须是是/否")
+            if not (step.get("next") or {}).get(branch_key):
+                raise ValueError(f"目标节点没有 {branch_key} 分支的后继")
+            if step.get("call") and self._successful_run(db, instance.id, target_token.id) is None:
+                raise ValueError("目标到访没有可复用的成功结果，请选择重新执行")
+            if step.get("human") and target_token.status != "done":
+                reviews = db.scalars(select(models.Review).where(
+                    models.Review.instance_id == instance.id,
+                    models.Review.token_id == target_token.id,
+                    models.Review.status == "done",
+                ))
+                if not any((_loads(r.decision_json) or {}).get("result") in ("yes", "no", "done")
+                           for r in reviews):
+                    raise ValueError("目标人工到访尚未完成，请选择重新执行")
 
-        tokens = self._tokens(db, instance.id)
-        latest_generation = max((t.generation for t in tokens), default=1)
-        target_token = self._executed_token(db, instance, plan, tokens, target, latest_generation)
-        if target_token is None:
-            raise ValueError("目标节点在当前代没有执行记录，不能回退")
-
-        descendants = _descendants(tokens, target_token.id)
-        # 目标就是正在等人工的节点：没有后继可回退，按「重做该节点」处理
-        redo_self = not descendants and target_token.status == "waiting"
-        if not descendants and not redo_self:
-            raise ValueError("目标节点之后没有可回退的路径")
-        blocked = [
-            t
-            for t in tokens
-            if t.status in ("queued", "running", "waiting")
-            and t.id not in descendants
-            and t.id != target_token.id
-        ]
-        if blocked:
-            raise ValueError("还有其他活跃路径，请先处理完再回退")
-
+        # 保留选定到访的祖先上下文，所有其他分支退出本次有效诊断。
+        parent_id = target_token.id if mode == "branch" else target_token.parent_token_id
+        retained: set[str] = set()
+        cursor = parent_id
+        while cursor and cursor not in retained:
+            ancestor = by_id.get(cursor)
+            if ancestor is None:
+                break
+            retained.add(cursor)
+            cursor = ancestor.parent_token_id
         stamp = now_iso()
         for token in tokens:
-            if token.id in descendants and token.status not in ("failed", "abandoned"):
-                token.status = "abandoned"
-                token.updated_at = stamp
-            elif redo_self and token.id == target_token.id:
-                token.status = "abandoned"
-                token.updated_at = stamp
-            elif instance.status == "paused" and token.status == "queued":
-                token.status = "abandoned"
-                token.updated_at = stamp
-
-        abandoned = set(descendants) | {t.id for t in tokens if t.status == "abandoned"}
-        for run in db.scalars(
-            select(models.Run).where(
-                models.Run.instance_id == instance.id, models.Run.token_id.in_(abandoned)
-            )
-        ):
-            run.status = "abandoned"
-        for review in db.scalars(
-            select(models.Review).where(
-                models.Review.instance_id == instance.id, models.Review.status == "pending"
-            )
-        ):
+            if token.id not in retained or token.status in ("queued", "running", "waiting"):
+                # 人工与无调用节点失败时没有 run，令牌状态是唯一失败证据。
+                if token.status not in ("failed", "abandoned"):
+                    token.status = "abandoned"
+                    token.updated_at = stamp
+        for review in db.scalars(select(models.Review).where(
+            models.Review.instance_id == instance.id, models.Review.status == "pending"
+        )):
             review.status = "cancelled"
             review.decided_at = stamp
 
-        new_generation = max(latest_generation, target_token.generation) + 1
-        logger.info(
-            "实例 %s 回退到 %s（%s）：%s", instance.id, target, branch_key, reason or "未填原因"
+        # 历史 run 的成功/失败结果不能被回退覆盖，轨迹仍需展示真实执行结论。
+        new_generation = max((t.generation for t in tokens), default=1) + 1
+        parent = SimpleNamespace(id=parent_id, sort_order=target_token.sort_order)
+        targets = [target] if mode == "retry" else step["next"][branch_key]
+        self._create_tokens(
+            db, instance, plan, parent, targets,
+            (target_token.branch or "default") if mode == "retry" else branch_key,
+            new_generation,
         )
-        parent = SimpleNamespace(id=target_token.id, sort_order=target_token.sort_order)
-        if redo_self:
-            # 重新排一个目标节点的令牌，等人工再做一次
-            self._create_tokens(db, instance, plan, parent, [target], "default", new_generation)
-        else:
-            self._create_tokens(
-                db, instance, plan, parent, step["next"][branch_key], branch_key, new_generation
-            )
-
         instance.status = "running"
         instance.ended_at = None
+        logger.info(
+            "实例 %s 回退到访 %s 节点 %s（%s/%s，新代 %s）：%s",
+            instance.id, target_token.id, target, mode, branch_key, new_generation, reason or "未填原因",
+        )
 
-    def _executed_token(self, db, instance, plan: dict, tokens: list, node_id: str, generation: int):
-        """目标节点「执行过」的判定。
-
-        没有 call 的节点（结论、人工）按设计不产生 run，令牌走过即算执行；
-        有 call 的节点必须留下一条 ok 的 run，避免回退到根本没跑成功的代码节点。
-        """
-        step = (plan.get("steps") or {}).get(node_id) or {}
-        needs_run = bool(step.get("call"))
-        candidates = [
-            t
-            for t in tokens
-            if t.node_id == node_id
-            and t.generation <= generation
-            and t.status in ("done", "waiting", "running")
-        ]
-        candidates.sort(key=lambda t: (t.generation, t.created_at or ""), reverse=True)
-        for token in candidates:
-            if not needs_run:
-                return token
-            run = db.scalars(
-                select(models.Run)
-                .where(
-                    models.Run.instance_id == instance.id,
-                    models.Run.token_id == token.id,
-                    models.Run.status == "ok",
-                )
-                .limit(1)
-            ).first()
-            if run is not None:
-                return token
+    def _successful_run(self, db, instance_id: str, token_id: str):
+        runs = db.scalars(select(models.Run).where(
+            models.Run.instance_id == instance_id,
+            models.Run.token_id == token_id,
+        ).order_by(models.Run.started_at.desc(), models.Run.id.desc()))
+        for run in runs:
+            if run.status == "ok":
+                return run
+            # 老版本会把成功运行覆盖为 abandoned，只接受仍有输出且无错误的记录。
+            if run.status == "abandoned" and run.error is None and run.output_json is not None:
+                return run
         return None
 
     # ------------------------------------------------------------ 杂项

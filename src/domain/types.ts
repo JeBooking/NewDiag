@@ -169,6 +169,7 @@ export interface Token {
   order?: number
   generation: number
   parentTokenId?: string | null
+  visitedAt?: string | null
 }
 
 export type RunStatus = 'ok' | 'failed' | 'abandoned'
@@ -193,6 +194,7 @@ export type ReviewStatus = 'pending' | 'done' | 'cancelled'
 
 export interface ReviewTask {
   id: string
+  tokenId?: string | null
   nodeId: string
   kind: ReviewKind
   status: ReviewStatus

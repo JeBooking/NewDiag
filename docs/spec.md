@@ -1,4 +1,4 @@
-# 诊断流程平台 · 设计说明（v1.5）
+# 诊断流程平台 · 设计说明（v1.6）
 
 本文件是重写项目的唯一设计依据。所有条目来自 2026-10-31 的需求讨论，标注「待定」的部分表示尚未拍板，实现时不得自行假设。
 
@@ -39,6 +39,8 @@
 | 开始节点 start | 全局唯一的入口，声明本次诊断的启动参数 |
 | 启动上下文 context | 实例启动时固化的参数值，之后只读。历史上叫「快照」，表名沿用 `snapshots` |
 | 实例 instance | 一次执行 |
+| 诊断路径 | 沿 parentTokenId 从入口到某次当前到访的父链，保留原路径视图语义 |
+| 执行轨迹 | 实例所有真实到访的时间记录，含失败、旧代及重复到访，不合并同名节点、不包含未执行队列 |
 | 令牌 token | 实例中一条正在推进的路径 |
 | 运行记录 run | 某个节点的一次实际执行 |
 | 待办 review | 需要人处理的任务：判断、处置、串行成功后的结束／继续 |
@@ -126,7 +128,8 @@ SQLite（WAL）。时间统一 ISO8601 UTC。除 `files` 用内容哈希作主�
 | branch | 进入该 token 的分支（yes/no），default 记空 |
 | sort_order | 串行队列序号，也是并行下的创建顺序 |
 | generation | 回退代数，从 1 开始 |
-| parent_token_id | 用于追溯路径 |
+| parent_token_id | 用于追溯诊断路径 |
+| visited_at | 首次实际进入该 token 节点的 UTC 时间；未执行为空，回退后保留 |
 | created_at, updated_at | |
 
 ### runs
@@ -444,19 +447,20 @@ while 存在可推进的 token:
 另有第三种形态：串行成功后的「结束 / 继续」，存为 `kind=decision` 且 `request.type="after_success"`，结果 `continue` 或结束。
 
 - 完成：推进到后继
-- 回退：选择已执行的祖先节点 + 目标分支 + 可选原因
+- 回退：选择执行轨迹中的具体到访 + 重执行或目标分支 + 可选原因
 - 动作节点没有「不 OK」；没做成就是回退
 
 ### 回退
 
-- 目标节点必须执行过：有 `call` 的节点要留下一条 `ok` 的 run，其余节点令牌走过即算；按最新一代取最近的令牌
-- 目标正在等人工时按「重做该节点」处理，不要求它有后继
-- 将该节点之后的所有 token 与 run 标记 `abandoned`，不删除；待办标记 `cancelled`
-- 直接按用户选择的分支生成新 token，`generation + 1`
-- 实例状态回到 running；若原本 paused，则剩余队列作废并按新分支重建
-- 有其他活跃路径时禁止回退（v1 保守策略），提示先处理完
-- 分支键由目标节点类型决定：排查是 yes/no，其余是 default，接口层归一
-- 平台不撤销任何设备操作，确认框需写明
+- 目标来自完整执行轨迹，以 `targetTokenId` 精确选择某次到访，失败、旧代与重复访问均可选。禁止未执行的排队节点和无到访证据的历史记录；开始及问题解决/上升等终止节点保留在轨迹中，但不作为回退目标。
+- `retry` 从所选节点重新执行，父链接所选到访的父节点，不复用失败节点自身结果；`branch` 复用该次成功到访并按指定后继分支推进（有 call 必须有对应成功结果）。失败或未完成的到访使用 retry。
+- 兼容旧请求 `targetNodeId` / `target`，缺省 mode 为 branch，选择最近到访；旧接口回退到等待处理的目标会重新执行，若目标子树外仍有活跃路径则拒绝回退。新界面始终提交具体 token，避免同节点多次到访歧义。
+- 回退作用于整个实例：当前未完成路径与待办取消，保留所选父链，其余路径 token 标记 abandoned，已经 failed 的 token 保留失败状态；已有 run 的成功/失败及输出、错误不再被覆盖，保留全部轨迹。
+- 新 token 使用递增代数，实例回到 running；允许 running/waiting/paused/failed，禁止 success/escalated/terminated。
+- 参数只从所选到访父链的有效结果继承，不能借用其他失败尝试、旁路或较新代同名节点结果。
+- 分支模式下排查使用 yes/no，其余使用 default；重执行模式不要求后继或分支，但开始及终止节点不接受重执行。
+- 平台不撤销设备操作；确认框明确提示取消当前所有未完成路径。
+- 旧库升级回填有 run/review 证据的到访时间，done/failed/waiting/running 令牌使用历史更新时间近似；无法区分是否执行的 abandoned 记录保持空值、不列入轨迹。旧版已经覆盖的 run 状态无法完整恢复；仅有输出且无错误的旧 abandoned run 可作为成功结果兼容。
 
 ### 启动上下文
 
@@ -510,7 +514,7 @@ while 存在可推进的 token:
 | GET | `/api/instances/{id}/events` | SSE：实例状态摘要，内容变化才推，另有心跳 |
 | POST | `/api/instances/{id}/reviews/{reviewId}` | 提交判断或完成/回退/继续 |
 | POST | `/api/instances/{id}/terminate` | 无请求体，返回实例详情；允许 running/waiting/paused 终止，重复终止幂等，其他终态返回 409 |
-| POST | `/api/instances/{id}/rollback` | `{targetNodeId, branch, reason?}`；兼容 `target` |
+| POST | `/api/instances/{id}/rollback` | `{targetTokenId?, targetNodeId?, mode?:"branch"|"retry", branch?, reason?}`；兼容 `target`，至少指定一种目标 |
 | GET | `/api/folders` | 目录列表（含流程数） |
 | POST | `/api/folders` | 新建目录，body `{name, parentId?}` |
 | PATCH | `/api/folders/{id}` | 改名或移动；同级重名、挂到自身子树下返回 409 |
@@ -531,7 +535,7 @@ while 存在可推进的 token:
 - 不在白名单却带了 `inline`，不报错、直接按下载返回，避免前端猜错类型时页面拿不到文件
 - 内联响应由服务端指定 `Content-Type` 并带 `X-Content-Type-Options: nosniff`，防止把改名后的 HTML 当图片执行
 - 启动实例时缺必填参数返回 400，`detail` 列出参数名
-- 回退的 `branch` 必须是任意非空字符串，引擎按目标节点类型归一（排查 yes/no，其余 default）
+- 回退的 `branch` 缺省 default；branch 模式按目标节点类型校验（排查 yes/no，其余 default），retry 模式忽略分支
 - `/events` 推的是摘要（状态、token 计数、run 数、待办数、最后活动时间），不是增量事件；客户端按整体替换处理
 - 删除工程不检查引用：已经引用它的流程不会立即报错，但重新探测或发布会失败
 
@@ -673,9 +677,9 @@ backend/
 
 **回退**
 
-1. 用户选目标节点与分支、填原因
-2. 校验目标已执行、无其他活跃路径
-3. 其后 token/run 标 abandoned，待办标 cancelled，建新 token（generation+1）
+1. 用户从执行轨迹选具体到访、重执行或分支、填原因
+2. 校验真实到访及模式可用性
+3. 废弃当前未完成路径、取消待办，保留运行结果和轨迹，建新 token（generation+1）
 4. 实例回 running，历史保留全部记录
 
 ---
@@ -726,3 +730,5 @@ backend/
 | v1.4（2026-11-02） | 参考数据展示定为两条路：白名单类型在线预览，其余提示不支持并给下载；明确参考文件不可在线编辑，替换即换哈希；不提供服务端代开本机软件 |
 
 | v1.5（2026-11-03） | 新增手动终止诊断：终止按钮、terminated 终态及终止接口，保留历史并取消未完成工作 |
+
+| v1.6（2026-11-03） | 区分诊断路径与执行轨迹；回退可选失败及旧代具体到访，新增重执行模式和持久到访时间，保留原始运行结果 |

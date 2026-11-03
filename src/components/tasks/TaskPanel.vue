@@ -116,6 +116,11 @@ function onRolledBack(): void {
   <div class="task-panel">
     <div class="panel-head">
       <span class="panel-title">待办</span>
+      <el-button
+        v-if="detail && ['running', 'waiting', 'paused', 'failed'].includes(detail.status)"
+        size="small"
+        @click="rollbackVisible = true"
+      >从轨迹回退</el-button>
       <el-tag v-if="reviews.length" size="small" type="warning">{{ reviews.length }}</el-tag>
     </div>
 

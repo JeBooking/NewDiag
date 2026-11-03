@@ -113,6 +113,7 @@ class Token(Base):
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     parent_token_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    visited_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[str] = mapped_column(String(32), nullable=False, default=now_iso)
     updated_at: Mapped[str] = mapped_column(String(32), nullable=False, default=now_iso)
 

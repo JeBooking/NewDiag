@@ -42,8 +42,8 @@ except ImportError as exc:  # pragma: no cover
         def terminate(self, instance_id: str) -> None:
             raise ValueError("调度器不可用，无法终止实例")
 
-        def rollback(self, instance_id: str, target: str, branch: str, reason: str | None) -> None:
-            return None
+        def rollback(self, instance_id: str, target: str | None, branch: str, reason: str | None, **kwargs) -> None:
+            raise ValueError("调度器不可用，无法回退实例")
 
     scheduler = _NullScheduler()  # type: ignore[assignment]
 
@@ -362,7 +362,10 @@ def rollback(
         (payload.reason or "")[:80],
     )
     try:
-        scheduler.rollback(instance_id, payload.target, payload.branch, payload.reason)
+        scheduler.rollback(
+            instance_id, payload.target, payload.branch, payload.reason,
+            target_token_id=payload.target_token_id, mode=payload.mode,
+        )
     except Exception as exc:
         logger.warning("实例 %s 回退失败：%s", instance_id, exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc

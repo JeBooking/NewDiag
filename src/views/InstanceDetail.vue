@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import FlowCanvas from '@/components/canvas/FlowCanvas.vue'
 import PathList from '@/components/history/PathList.vue'
+import ExecutionTrace from '@/components/history/ExecutionTrace.vue'
 import RunDetailCard from '@/components/history/RunDetailCard.vue'
 import RunTimeline from '@/components/history/RunTimeline.vue'
 import TaskPanel from '@/components/tasks/TaskPanel.vue'
@@ -19,7 +20,7 @@ const store = useInstancesStore()
 const instanceId = computed(() => String(route.params.id))
 const loadError = ref<string | null>(null)
 const selectedNodeId = ref<string | null>(null)
-const activeTab = ref<'runs' | 'paths'>('runs')
+const activeTab = ref<'runs' | 'paths' | 'trace'>('runs')
 const refreshing = ref(false)
 const terminating = ref(false)
 /** 卡片里正在看执行详情的节点；同一时刻只允许一个 */
@@ -294,9 +295,14 @@ function onInspect(nodeId: string): void {
             <RunTimeline :runs="detail?.runs ?? []" :doc="store.doc" />
           </div>
         </el-tab-pane>
-        <el-tab-pane label="路径" name="paths">
+        <el-tab-pane label="诊断路径" name="paths">
           <div class="tab-body">
             <PathList :tokens="detail?.tokens ?? []" :runs="detail?.runs ?? []" :doc="store.doc" />
+          </div>
+        </el-tab-pane>
+        <el-tab-pane label="执行轨迹" name="trace">
+          <div class="tab-body">
+            <ExecutionTrace :tokens="detail?.tokens ?? []" :runs="detail?.runs ?? []" :doc="store.doc" />
           </div>
         </el-tab-pane>
       </el-tabs>
