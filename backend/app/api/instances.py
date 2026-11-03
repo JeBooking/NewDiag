@@ -326,6 +326,8 @@ def submit_review(
         decision["target"] = payload.target
     if payload.reason is not None:
         decision["reason"] = payload.reason
+    if payload.data is not None:
+        decision["data"] = payload.data
 
     logger.info(
         "实例 %s 待办 %s 提交：%s（节点 %s）",

@@ -190,6 +190,32 @@ class Scheduler:
                 return
 
             step = plan["steps"].get(token.node_id) or {}
+            if request.get("type") in ("acquisition", "judgment"):
+                if request["type"] == "acquisition" and result != "done":
+                    raise ValueError("提供数据待办只能提交 done")
+                if request["type"] == "judgment" and result not in ("yes", "no"):
+                    raise ValueError("判断待办只能选择是或否")
+                if request["type"] == "judgment" and not str(payload.get("reason") or "").strip():
+                    raise ValueError("请填写判断依据")
+                call = step.get("call") or {}
+                operation = request["type"]
+                value, failure = self._invoke_pipeline(
+                    db, instance, token, call, request["pipeline"], operation,
+                    data=payload.get("data"),
+                    decision={"result": result, "reason": payload.get("reason")},
+                )
+                if self._is_cancelled(instance_id):
+                    raise ValueError("实例正在终止，提交结果已丢弃")
+                if failure is not None:
+                    raise ValueError(f"{failure[0]}: {failure[1]}")
+                self._accept_pipeline(db, instance, plan, token, step, value)
+                self._refresh(db, instance, plan)
+                db.commit()
+                if instance.status not in TERMINAL_INSTANCE:
+                    self.start(instance_id)
+                else:
+                    self._close_session(instance_id)
+                return
             if result == "rollback":
                 branch = str(payload.get("branch") or _opposite(token.branch))
                 target = str(payload.get("target") or token.node_id)
@@ -468,6 +494,9 @@ class Scheduler:
         db.flush()
 
     def _run_call(self, db, instance, plan: dict, token, step: dict, call: dict) -> None:
+        if call.get("protocol") == "investigation/v1":
+            self._run_pipeline(db, instance, plan, token, step, call)
+            return
         args, error = self._eval_args(
             db, instance, token, call.get("args") or {}, str(call.get("function") or "")
         )
@@ -564,6 +593,97 @@ class Scheduler:
             branch,
             (time.perf_counter() - t0) * 1000,
         )
+
+    def _run_pipeline(self, db, instance, plan, token, step, call) -> None:
+        args, error = self._eval_args(
+            db, instance, token, call.get("args") or {}, str(call.get("function") or "")
+        )
+        if error:
+            value, failure = None, (ERR_ARGUMENT, error, 1)
+        else:
+            state = {"inputs": args, "stages": [], "startedAt": now_iso()}
+            value, failure = self._invoke_pipeline(db, instance, token, call, state, "start")
+        if self._is_cancelled(instance.id):
+            return
+        if failure:
+            self._write_run(db, instance, token, status="failed", args=args,
+                            error=f"{failure[0]}: {failure[1]}", attempt=failure[2],
+                            evidence={"adapter": call["function"], "version": call["version"]})
+            self._fail_token(db, instance, token)
+            return
+        self._accept_pipeline(db, instance, plan, token, step, value)
+
+    def _invoke_pipeline(self, db, instance, token, call, state, operation, **extra):
+        request = {
+            "adapter": call["function"], "version": call["version"],
+            "config": call.get("config") or {}, "state": state,
+            "operation": operation, **extra,
+        }
+        # 文件路径由存储层解析，不能把客户端提供的路径交给业务模块打开。
+        if operation == "acquisition" and isinstance(request.get("data"), dict):
+            from app.services.storage import resolve
+
+            data = dict(request["data"])
+            for field in state.get("manualFields", []):
+                if field.get("type") != "file" or field["name"] not in data:
+                    continue
+                ref = data[field["name"]]
+                digest = ref.get("hash") if isinstance(ref, dict) else None
+                path = resolve(digest) if isinstance(digest, str) else None
+                if path is None or db.get(models.FileBlob, digest) is None:
+                    return None, (ERR_ARGUMENT, f"文件 {field['name']} 不存在，请重新上传", 1)
+                data[field["name"]] = {"hash": digest, "path": str(path.resolve())}
+            request["data"] = data
+        rpc_call = {"project": call["project"], "function": "__newdiag_pipeline__"}
+        return self._invoke(db, instance, rpc_call, request, token)
+
+    def _accept_pipeline(self, db, instance, plan, token, step, value) -> None:
+        if not isinstance(value, dict) or value.get("status") not in ("acquisition", "judgment", "complete"):
+            raise ValueError("适配器返回了无效的阶段响应")
+        state = value["state"]
+        status = value["status"]
+        call = step["call"]
+        if status != "complete":
+            meta = self._node_meta(db, instance, token.node_id)
+            state["manualFields"] = value.get("fields") or state.get("manualFields") or []
+            review = models.Review(
+                id=new_id(), instance_id=instance.id, token_id=token.id, node_id=token.node_id,
+                kind="decision", status="pending", created_at=now_iso(),
+                request_json=_dumps({
+                    "title": meta.get("title") or token.node_id,
+                    "detail": meta.get("detail") or "", "nodeKind": "investigation",
+                    "type": status, "pipeline": state,
+                    "fields": state["manualFields"] if status == "acquisition" else [],
+                    "evidence": state.get("parsed"), "presentation": state.get("presentation"),
+                    "attachments": meta.get("attachments") or [],
+                    "instructions": "请提供数据，提交后执行解析和展示" if status == "acquisition"
+                                    else "请根据展示数据选择是或否，并填写判断依据",
+                }),
+            )
+            db.add(review)
+            token.status = "waiting"
+            token.updated_at = now_iso()
+            db.flush()
+            logger.info("实例 %s 节点 %s 等待人工阶段 %s", instance.id, token.node_id, status)
+            self._close_session(instance.id)
+            return
+        decision = state["decision"]
+        branch = decision["result"]
+        error = None if (step.get("next") or {}).get(branch) else f"{ERR_ROUTE}: 分支 {branch} 没有后继节点"
+        self._write_run(
+            db, instance, token, status="failed" if error else "ok",
+            args=state["inputs"], started=state.get("startedAt"), error=error,
+            output={"data": state["parsed"], **decision},
+            evidence={"branch": branch, "presentation": state["presentation"],
+                      "pipeline": state, "adapter": call["function"], "version": call["version"]},
+        )
+        if error:
+            self._fail_token(db, instance, token)
+        else:
+            self._spawn_successors(db, instance, plan, token, step, branch)
+            token.status = "done"
+            token.updated_at = now_iso()
+        db.flush()
 
     def _invoke(self, db, instance, call: dict, args: dict, token):
         """调会话子进程；超时/崩溃重试一次。返回 (value, (code, message, attempts))。"""

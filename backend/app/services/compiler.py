@@ -87,6 +87,79 @@ def validate_doc(
     return issues
 
 
+class NodeDefinition:
+    """节点类只编译执行描述，人工等待和持久化仍由调度器负责。"""
+
+    def compile(self, node, nodes, edges, start, functions):
+        return {"kind": node["kind"], "next": _next_map(node["id"], node["kind"], edges)}
+
+
+class StartNode(NodeDefinition):
+    pass
+
+
+class InvestigationNode(NodeDefinition):
+    def compile(self, node, nodes, edges, start, functions):
+        step = super().compile(node, nodes, edges, start, functions)
+        binding = node.get("binding")
+        if not binding:
+            step["human"] = True
+            return step
+        args, _ = _resolve_args(node, nodes, edges, start, functions)
+        step["call"] = {
+            "project": str(binding.get("project") or ""),
+            "function": str(binding.get("function") or ""), "args": args,
+        }
+        if binding.get("protocol") == "investigation/v1":
+            for key in ("protocol", "version", "config"):
+                step["call"][key] = binding.get(key)
+        return step
+
+
+class HumanNode(NodeDefinition):
+    def compile(self, node, nodes, edges, start, functions):
+        return {**super().compile(node, nodes, edges, start, functions), "human": True}
+
+
+class InvestigationActionNode(HumanNode):
+    pass
+
+
+class RemediationNode(HumanNode):
+    pass
+
+
+class JumpNode(HumanNode):
+    pass
+
+
+class ConclusionNode(NodeDefinition):
+    def compile(self, node, nodes, edges, start, functions):
+        return {**super().compile(node, nodes, edges, start, functions),
+                "text": _text(node.get("detail")) or _text(node.get("title"))}
+
+
+class TerminalNode(NodeDefinition):
+    def compile(self, node, nodes, edges, start, functions):
+        return {"kind": node["kind"], "terminal": True}
+
+
+class ProblemSolvedNode(TerminalNode):
+    pass
+
+
+class EscalationNode(TerminalNode):
+    pass
+
+
+NODE_DEFINITIONS = {
+    "start": StartNode(), "investigation": InvestigationNode(),
+    "investigationAction": InvestigationActionNode(), "remediation": RemediationNode(),
+    "jump": JumpNode(), "conclusion": ConclusionNode(),
+    "problemSolved": ProblemSolvedNode(), "escalation": EscalationNode(),
+}
+
+
 def compile_doc(
     doc: dict,
     flow_id: str,
@@ -115,35 +188,9 @@ def compile_doc(
     steps: dict[str, dict] = {}
     for nid in sorted(nodes_by_id):
         node = nodes_by_id[nid]
-        kind = node.get("kind", "")
-        step: dict = {"kind": kind}
-
-        if rules.is_start_kind(kind):
-            # 开始节点不执行代码也不等人：运行时把出边一次投递出去
-            step["next"] = _next_map(nid, kind, valid_edges)
-            steps[nid] = step
-            continue
-
-        if rules.is_terminal_kind(kind):
-            step["terminal"] = True
-        else:
-            if kind in rules.HUMAN_ONLY_KINDS:
-                step["human"] = True
-            elif kind == "investigation":
-                if node.get("binding"):
-                    args, _ = _resolve_args(node, nodes_by_id, valid_edges, start, functions)
-                    step["call"] = {
-                        "project": str(node["binding"].get("project") or ""),
-                        "function": str(node["binding"].get("function") or ""),
-                        "args": args,
-                    }
-                else:
-                    step["human"] = True
-            elif kind == "conclusion":
-                step["text"] = _text(node.get("detail")) or _text(node.get("title"))
-
-            step["next"] = _next_map(nid, kind, valid_edges)
-        steps[nid] = step
+        steps[nid] = NODE_DEFINITIONS[node["kind"]].compile(
+            node, nodes_by_id, valid_edges, start, functions,
+        )
 
     calls = [
         f"{step['call'].get('project')}.{step['call'].get('function')}"
@@ -246,6 +293,8 @@ def _check_node_fields(nodes_by_id: dict[str, dict], issues: list[dict]) -> None
                         issues.append(_issue(LEVEL_ERROR, "排查节点绑定的工程为空", node_id=nid))
                     if not _text(binding.get("function")):
                         issues.append(_issue(LEVEL_ERROR, "排查节点绑定的函数为空", node_id=nid))
+                    if binding.get("protocol") not in (None, "investigation/v1"):
+                        issues.append(_issue(LEVEL_ERROR, "不支持的节点适配协议", node_id=nid))
 
 
 def _check_out_edges(
@@ -475,6 +524,21 @@ def _check_bindings(
     for nid, node in nodes_by_id.items():
         if node.get("kind") != "investigation" or not node.get("binding"):
             continue
+        binding = node["binding"]
+        if isinstance(binding, dict) and binding.get("protocol") == "investigation/v1":
+            message = None
+            if not isinstance(binding.get("version"), str) or not binding["version"].strip():
+                message = "四阶段适配器缺少版本"
+            elif not isinstance(binding.get("config", {}), dict):
+                message = "适配器初始化配置必须为对象"
+            elif not functions:
+                message = "四阶段适配器发布前必须完成接口探测"
+            else:
+                entry = functions.get(f"{binding.get('project')}:{binding.get('function')}")
+                if not isinstance(entry, list):
+                    message = (entry or {}).get("error", "适配器接口不可用")
+            if message:
+                issues.append(_issue(LEVEL_ERROR if strict_binding else LEVEL_WARNING, message, node_id=nid))
         _, arg_issues = _resolve_args(node, nodes_by_id, edges, start, functions)
         for issue in arg_issues:
             if not strict_binding and issue.get("level") == LEVEL_ERROR:

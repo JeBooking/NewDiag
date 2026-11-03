@@ -1,4 +1,4 @@
-# 诊断流程平台 · 设计说明（v1.6）
+# 诊断流程平台 · 设计说明（v1.7）
 
 本文件是重写项目的唯一设计依据。所有条目来自 2026-10-31 的需求讨论，标注「待定」的部分表示尚未拍板，实现时不得自行假设。
 
@@ -171,6 +171,8 @@ SQLite（WAL）。时间统一 ISO8601 UTC。除 `files` 用内容哈希作主�
 | created_at | |
 
 接口在运行时发现，不落库。`python` 为空时用平台自身解释器。
+
+四阶段适配器同样登记为工程；工厂留空，节点绑定具体的适配器类，由节点配置提供构造参数。
 
 `name` 登记后不可修改：它出现在 doc 的 `binding.project` 与已发布版本里，改名会让已有流程找不到实现。
 
@@ -418,7 +420,7 @@ while 存在可推进的 token:
 
 ### 排查的分支判定
 
-业务函数返回 `True` / 字符串 `"yes"`、`"y"`、`"true"`、`"是"` → yes；`False` / `"no"`、`"n"`、`"false"`、`"否"` → no；其他值视为执行错误。**不接受**任意对象的真假性。分支没有后继也记 `route/*`。
+旧函数模式返回 `True` / 字符串 `"yes"`、`"y"`、`"true"`、`"是"` → yes；`False` / `"no"`、`"n"`、`"false"`、`"否"` → no；其他值视为执行错误。**不接受**任意对象的真假性。分支没有后继也记 `route/*`。
 
 人工排查由待办选择 yes/no，结果与自动结果走同一条路径。
 
@@ -477,6 +479,56 @@ while 存在可推进的 token:
 - 采集与判断函数必须只读、可重复调用
 
 ---
+
+### 四阶段排查适配器（investigation/v1）
+
+此模式与旧函数绑定并存。平台编译器以节点类注册表处理各类节点，运行期仍解释 plan；
+外部排查适配器继承 SDK 的 `InvestigationNode`，不取代调度器。
+
+doc 的 `binding` 与 plan 的 `call` 新增可选字段：
+
+```json
+{
+  "project": "电压诊断",
+  "function": "VoltageCheck",
+  "protocol": "investigation/v1",
+  "version": "1.0.0",
+  "config": {"threshold": 210}
+}
+```
+
+plan.call 仍包含原有 args 表达式。config 为构造参数，args 为本次诊断输入，不混用。
+未提供 acquire 时，诊断输入由适配器 inputs 声明；提供 acquire 时按该方法的真实签名绑定。
+探测不构造适配器；发布前验证必需方法、初始化参数和版本，运行及人工恢复时再次校验版本。
+缺省 protocol 保持旧行为；不识别的协议拒绝发布。
+
+四个方法：acquire（可选）、parse（必需）、present（必需）、judge（可选）。
+按采集 → 解析 → 展示 → 判断 → 展示结果执行。acquire／judge 为 None 时，分别创建人工采集／判断待办；
+已实现的方法抛异常不自动转人工。每次调用构造 `Adapter(**config)`，结束后调用 close。
+进入四阶段人工待办后关闭业务会话，恢复时重新导入模块并检查版本。
+不同工程切换时切换会话子进程；业务状态不得依赖节点间对象或人工等待期间对象的存活。
+
+人工阶段继续使用 reviews.kind=decision，通过 request.type 区分：
+
+- `acquisition`：request.fields 为 manual_fields，request.pipeline 保存输入与阶段检查点；提交 `{result:"done", data:{...}}`。
+- `judgment`：request.presentation 为展示描述，request.pipeline 保存原始／解析快照；提交 `{result:"yes"|"no", reason:"非空依据"}`。
+- 人工恢复只执行尚未完成阶段；人工判断不会重复采集、解析。非法数据或调用失败保留原待办，允许修正后提交。
+- 旧待办类型和提交格式继续有效。人工采集的 file 字段由平台验证哈希并解析存储路径，不接受客户端指定本地路径。
+
+request.presentation 使用 `{blocks:[...]}`，块类型支持 text、metrics、table、line；详见接入手册。
+人工判断前和最终运行记录均渲染展示描述，不执行外部 HTML／JavaScript，不嵌入桌面窗口。
+
+自动阶段可在适配器内部传递原有对象；持久化原始数据与解析结果必须可 JSON 表达，复杂对象通过
+dump_raw／dump_parsed／load_parsed 显式保存和恢复。不使用 repr 代替可恢复数据，不接受非有限数值。
+最终 run.output 为 `{data:解析快照, result:"yes"|"no", reason:依据}`，run.evidence 包含分支、展示、
+检查点、阶段耗时、适配器名和版本；未完成阶段保存于待办，不生成冒充节点成功的 run。
+
+不新增表或接口路径。POST `/api/instances/{id}/reviews/{reviewId}` 请求新增可选 data 对象。
+工程接口探测响应新增 protocol、version、configParams、manualFields、automaticAcquisition、automaticJudgment。
+版本与配置随计划发布固定，但平台不归档外部代码、依赖或数据源；旧版源码由接入方保留。
+重启自动恢复边界保持原规格；本模式不增加后台自动续跑能力。
+
+接入及桌面模块改造说明见 [module-integration.md](module-integration.md)。
 
 ### 手动终止
 
@@ -732,3 +784,4 @@ backend/
 | v1.5（2026-11-03） | 新增手动终止诊断：终止按钮、terminated 终态及终止接口，保留历史并取消未完成工作 |
 
 | v1.6（2026-11-03） | 区分诊断路径与执行轨迹；回退可选失败及旧代具体到访，新增重执行模式和持久到访时间，保留原始运行结果 |
+| v1.7（2026-11-03） | 四阶段排查适配器、带参数初始化、人工取数及判断、声明式展示与模块接入手册；保留旧函数协议 |

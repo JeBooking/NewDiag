@@ -68,6 +68,10 @@ def _normalize(payload: Any) -> dict[str, Any]:
                     "returns": item.get("returns"),
                 }
             )
+            for key in ("protocol", "version", "configParams", "manualFields",
+                        "automaticAcquisition", "automaticJudgment"):
+                if key in item:
+                    functions[-1][key] = item[key]
     error = payload.get("error")
     return {"functions": functions, "error": str(error) if error else None}
 

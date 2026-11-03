@@ -55,11 +55,23 @@ def probe_doc(doc: dict) -> dict:
             continue
 
         key = f"{project_name}:{function_name}"
+        if isinstance(result.get(key), dict) and result[key].get("error"):
+            continue
         matched = [f for f in functions if str(f.get("name")) == function_name]
         if not matched:
             result[key] = {"error": f"工程 {project_name} 里找不到函数 {function_name}"}
             continue
-        result[key] = _param_list(matched[0])
+        func = matched[0]
+        if binding.get("protocol") == "investigation/v1":
+            try:
+                _validate_adapter_binding(binding, func)
+            except ValueError as exc:
+                result[key] = {"error": str(exc)}
+                continue
+        elif func.get("protocol") == "investigation/v1":
+            result[key] = {"error": "四阶段适配器必须使用 investigation/v1 绑定"}
+            continue
+        result[key] = _param_list(func)
     failed = [k for k, v in result.items() if isinstance(v, dict) and v.get("error")]
     logger.info(
         "签名探测：%d 个函数，%d 个失败，%d 个工程，%.0fms%s",
@@ -70,6 +82,22 @@ def probe_doc(doc: dict) -> dict:
         f"，失败：{failed}" if failed else "",
     )
     return result
+
+
+def _validate_adapter_binding(binding: dict, func: dict) -> None:
+    if func.get("protocol") != "investigation/v1":
+        raise ValueError("所选入口不是四阶段排查适配器")
+    if binding.get("version") != func.get("version"):
+        raise ValueError("适配器版本不一致，请重新选择适配器后发布")
+    config = binding.get("config") or {}
+    if not isinstance(config, dict):
+        raise ValueError("适配器初始化配置必须为对象")
+    params = func.get("configParams") or []
+    names = {p["name"] for p in params}
+    unknown = set(config) - names
+    missing = {p["name"] for p in params if p.get("required") and p["name"] not in config}
+    if unknown or missing:
+        raise ValueError(f"初始化配置错误：缺少 {sorted(missing)}，未声明 {sorted(unknown)}")
 
 
 def collect_signatures(

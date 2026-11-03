@@ -41,6 +41,7 @@ class SessionHandle:
     errors: list[str] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
     seq: int = 0
+    project_key: tuple = ()
 
 
 class SessionManager:
@@ -56,11 +57,13 @@ class SessionManager:
             if instance_id in self._cancelled:
                 raise SessionError("实例已终止，不能启动会话")
             handle = self._handles.get(instance_id)
-            if handle is not None and handle.proc.poll() is None:
+            project_key = tuple(getattr(project, key, None) for key in ("path", "module", "python", "factory"))
+            if handle is not None and handle.proc.poll() is None and handle.project_key == project_key:
                 return handle
             if handle is not None:
                 self._dispose(handle)
             handle = self._spawn(instance_id, project)
+            handle.project_key = project_key
             self._handles[instance_id] = handle
             return handle
 

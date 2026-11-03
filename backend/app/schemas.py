@@ -259,6 +259,7 @@ class ReviewDecisionIn(ApiModel):
     result: ReviewResult
     target: str | None = None
     reason: str | None = None
+    data: dict[str, Any] | None = None
 
 
 class RollbackIn(ApiModel):
@@ -285,6 +286,12 @@ class ProjectFunction(ApiModel):
     name: str
     params: list[ProjectParam] = Field(default_factory=list)
     returns: str | None = None
+    protocol: str | None = None
+    version: str | None = None
+    config_params: list[dict[str, Any]] = Field(default_factory=list)
+    manual_fields: list[dict[str, Any]] = Field(default_factory=list)
+    automatic_acquisition: bool | None = None
+    automatic_judgment: bool | None = None
 
 
 class ProjectOut(ApiModel):

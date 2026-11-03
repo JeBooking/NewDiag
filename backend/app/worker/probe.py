@@ -15,6 +15,15 @@ import os
 import sys
 import traceback
 
+if __package__:
+    from . import node_sdk
+    sys.modules.setdefault("node_sdk", node_sdk)
+else:
+    import node_sdk
+
+describe_adapter = node_sdk.describe_adapter
+is_adapter = node_sdk.is_adapter
+
 SKIP_PARAM_KINDS = (
     inspect.Parameter.VAR_POSITIONAL,
     inspect.Parameter.VAR_KEYWORD,
@@ -80,15 +89,33 @@ def _module_functions(module) -> list[dict]:
             if not name.startswith("_")
             and callable(obj)
             and getattr(obj, "__module__", None) == module.__name__
-            and not inspect.isclass(obj)
+            and (not inspect.isclass(obj) or is_adapter(obj))
         ]
     result = []
     for name in names:
         obj = getattr(module, name, None)
+        if is_adapter(obj):
+            result.append(_describe_adapter(name, obj))
+            continue
         if callable(obj) and not inspect.isclass(obj):
             result.append(_describe(name, obj))
     result.sort(key=lambda item: item["name"])
     return result
+
+
+def _describe_adapter(name, cls) -> dict:
+    meta = describe_adapter(cls)
+    if cls.acquire is not None:
+        info = _describe(name, cls.acquire)
+    else:
+        info = {"name": name, "params": [
+            {"name": p["name"], "type": p.get("type", "text"),
+             "required": p.get("required", "default" not in p), "default": p.get("default"),
+             "defaultTrusted": True}
+            for p in cls.inputs
+        ], "returns": "InvestigationResult"}
+    info.update(meta)
+    return info
 
 
 def _class_functions(cls: type) -> list[dict]:

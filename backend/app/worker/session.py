@@ -14,21 +14,35 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
+import logging
 import os
 import sys
 import traceback
+from contextlib import redirect_stdout
+
+if __package__:
+    from . import node_sdk
+    sys.modules.setdefault("node_sdk", node_sdk)
+else:
+    import node_sdk
+
+execute_adapter = node_sdk.execute_adapter
+is_adapter = node_sdk.is_adapter
+json_value = node_sdk.json_value
 
 MAX_DEPTH = 5
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(message)s")
     if len(sys.argv) < 2:
         _write({"id": None, "ok": False, "error": "缺少 config 路径参数"})
         return 2
     with open(sys.argv[1], "r", encoding="utf-8-sig") as fh:
         config = json.load(fh)
 
-    target = _bootstrap(config)
+    with redirect_stdout(sys.stderr):
+        target = _bootstrap(config)
 
     for line in sys.stdin:
         line = line.strip()
@@ -47,9 +61,16 @@ def main() -> int:
             args = request.get("args") or {}
             if not isinstance(args, dict):
                 raise ValueError("args 必须是对象")
-            func = _resolve_callable(target, function_name)
-            value = func(**args)
-            _write({"id": request_id, "ok": True, "value": _json_safe(value)})
+            with redirect_stdout(sys.stderr):
+                if function_name == "__newdiag_pipeline__":
+                    cls = _resolve_callable(target, args["adapter"])
+                    if not is_adapter(cls):
+                        raise TypeError("目标不是 InvestigationNode 适配器类")
+                    value = json_value(execute_adapter(cls, args))
+                else:
+                    func = _resolve_callable(target, function_name)
+                    value = _json_safe(func(**args))
+            _write({"id": request_id, "ok": True, "value": value})
         except BaseException:  # noqa: BLE001 - 业务异常不能带崩子进程
             _write({"id": request_id, "ok": False, "error": traceback.format_exc()})
     return 0
