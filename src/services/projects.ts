@@ -29,6 +29,7 @@ export interface ProjectFunctionParam {
   name: string
   annotation?: string | null
   default?: string | null
+  required?: boolean
 }
 
 export interface ProjectFunction {
@@ -87,6 +88,7 @@ function normalizeParam(raw: unknown, index: number): ProjectFunctionParam | nul
     name: text(item.name) ?? `arg${index + 1}`,
     annotation: text(item.annotation) ?? text(item.type) ?? null,
     default: defaultText(item.default),
+    required: item.required !== false,
   }
 }
 

@@ -235,6 +235,37 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
     }
 
     // 6. 函数绑定
+    if (node.pipeline) {
+      const slots = [
+        ['acquire', '获取数据', false], ['parse', '解析数据', true],
+        ['present', '展示数据', true], ['judge', '判断结果', false],
+      ] as const
+      for (const [stage, label, required] of slots) {
+        const binding = node.pipeline[stage]
+        if ((required && !binding) || (binding && (!binding.project || !binding.function))) {
+          issues.push({
+            id: `node:${node.id}:pipeline:${stage}`, level: 'error', nodeId: node.id,
+            message: `节点「${displayName(node)}」请选择${label}的工程和函数`,
+          })
+        }
+      }
+      if (!node.pipeline.acquire && !node.pipeline.manualFields?.length) {
+        issues.push({
+          id: `node:${node.id}:pipeline:fields`, level: 'error', nodeId: node.id,
+          message: `节点「${displayName(node)}」需要配置人工数据字段`,
+        })
+      }
+      const names = new Set<string>()
+      for (const field of node.pipeline.manualFields ?? []) {
+        if (!field.name.trim() || names.has(field.name)) {
+          issues.push({
+            id: `node:${node.id}:pipeline:field-name`, level: 'error', nodeId: node.id,
+            message: `节点「${displayName(node)}」的人工字段名不能为空或重复`,
+          })
+        }
+        names.add(field.name)
+      }
+    }
     if (node.binding) {
       if (!node.binding.project?.trim() || !node.binding.function?.trim()) {
         issues.push({

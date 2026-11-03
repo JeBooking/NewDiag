@@ -44,6 +44,27 @@ export interface ManualField {
   description?: string
 }
 
+export type StageName = 'acquire' | 'parse' | 'present' | 'judge'
+
+export type StageArgument =
+  | { source: 'raw' | 'parsed' | 'decision' | 'inputs'; path?: string }
+  | { lit: unknown }
+  | { omit: true }
+
+export interface StageFunction {
+  project: string
+  function: string
+  arguments?: Record<string, StageArgument>
+}
+
+export interface FunctionPipeline {
+  acquire?: StageFunction
+  parse?: StageFunction
+  present?: StageFunction
+  judge?: StageFunction
+  manualFields: ManualField[]
+}
+
 /** 开始节点参数的输入控件类型，由函数签名推导，作者可覆盖 */
 export type ParamType = 'text' | 'number' | 'boolean' | 'datetime'
 
@@ -77,6 +98,7 @@ export interface DocNode {
   fields?: InvestigationFields
   attachments?: AttachmentRef[]
   binding?: NodeBinding
+  pipeline?: FunctionPipeline
   /** 该节点返回结构里的字段名，供下游绑定 */
   outputs?: string[]
   /** 参数名 → 来源；不填则按签名自动匹配 */
@@ -158,6 +180,7 @@ export interface PlanCall {
 export interface PlanStep {
   kind: NodeKind
   call?: PlanCall
+  pipeline?: FunctionPipeline & { args: Record<string, ArgExpr> }
   human?: boolean
   text?: string
   next?: Record<string, string[]>

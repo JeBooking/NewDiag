@@ -10,13 +10,21 @@ import {
   type ProjectFunction,
 } from '@/services/projects'
 
-const props = defineProps<{ binding?: NodeBinding; readonly?: boolean }>()
-const emit = defineEmits<{ (e: 'update', value: NodeBinding | undefined): void }>()
+const props = defineProps<{
+  binding?: NodeBinding
+  readonly?: boolean
+  plainOnly?: boolean
+}>()
+const emit = defineEmits<{
+  (e: 'update', value: NodeBinding | undefined): void
+  (e: 'describe', value: ProjectFunction | null): void
+}>()
 
 const projects = ref<Project[]>([])
 const functions = ref<ProjectFunction[]>([])
 const loadingProjects = ref(false)
 const loadingFunctions = ref(false)
+let functionsRequest = 0
 const loadError = ref<string | null>(null)
 const configDraft = ref('{}')
 const configError = ref('')
@@ -36,21 +44,35 @@ const currentProject = computed(
 const selectedFunction = computed(
   () => functions.value.find((item) => item.name === functionName.value) ?? null,
 )
+const availableFunctions = computed(() => props.plainOnly
+  ? functions.value.filter((item) => !item.protocol) : functions.value)
+watch(selectedFunction, (value) => emit('describe', value), { immediate: true })
+
+watch(projectName, (name, previous) => {
+  if (name === previous || !projects.value.length) return
+  const found = projects.value.find((item) => item.name === name)
+  void loadFunctions(found?.id ?? '')
+})
 
 function asText(value: unknown): string {
   return typeof value === 'string' ? value : String(value ?? '')
 }
 
 async function loadFunctions(projectId: string): Promise<void> {
+  const request = ++functionsRequest
   functions.value = []
-  if (!projectId) return
+  if (!projectId) {
+    loadingFunctions.value = false
+    return
+  }
   loadingFunctions.value = true
   try {
-    functions.value = await fetchProjectFunctions(projectId)
+    const result = await fetchProjectFunctions(projectId)
+    if (request === functionsRequest) functions.value = result
   } catch (error) {
     ElMessage.error(errorText(error, '读取函数列表失败'))
   } finally {
-    loadingFunctions.value = false
+    if (request === functionsRequest) loadingFunctions.value = false
   }
 }
 
@@ -70,8 +92,6 @@ onMounted(async () => {
 function onProjectChange(value: unknown): void {
   const name = asText(value)
   emit('update', name ? { project: name, function: '' } : undefined)
-  const found = projects.value.find((item) => item.name === name)
-  void loadFunctions(found?.id ?? '')
 }
 
 function onFunctionChange(value: unknown): void {
@@ -148,7 +168,7 @@ function paramText(fn: ProjectFunction): string {
         @change="onFunctionChange"
       >
         <el-option
-          v-for="fn in functions"
+          v-for="fn in availableFunctions"
           :key="fn.name"
           :label="fn.name"
           :value="fn.name"

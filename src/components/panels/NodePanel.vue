@@ -6,6 +6,7 @@ import type {
   FlowDoc,
   FlowMode,
   InvestigationFields,
+  FunctionPipeline,
   ParamType,
   StartParam,
 } from '@/domain/types'
@@ -14,6 +15,7 @@ import { errorText } from '@/services/api'
 import { probeFlow, type ProbeResult } from '@/services/flows'
 import AttachmentField from './AttachmentField.vue'
 import BindingEditor from './BindingEditor.vue'
+import FunctionPipelineEditor from '@/components/panels/FunctionPipelineEditor.vue'
 import ParamValueInput from './ParamValueInput.vue'
 
 const props = defineProps<{
@@ -43,6 +45,23 @@ const outputs = computed(() => props.node.outputs ?? [])
 const outputDraft = ref('')
 
 const isStart = computed(() => props.node.kind === 'start')
+const allowsCustomInputs = computed(() => props.doc?.nodes.some((node) => node.pipeline))
+const inputName = ref('')
+const inputType = ref<ParamType>('text')
+const inputError = ref('')
+const connectionMode = computed(() => props.node.pipeline ? 'functions' : 'legacy')
+const pipelineValue = computed<FunctionPipeline>(() => ({
+  ...props.node.pipeline, manualFields: props.node.pipeline?.manualFields ?? [],
+}))
+
+function changeConnectionMode(value: unknown): void {
+  if (value === 'functions') emit('update', { pipeline: { manualFields: [] }, binding: undefined })
+  else emit('update', { pipeline: undefined })
+}
+
+function patchPipeline(value: FunctionPipeline): void {
+  emit('update', { pipeline: value, binding: undefined })
+}
 
 /** 只有同组内多于一条出边时才需要排序；不同分支之间互不影响 */
 const orderGroups = computed(() =>
@@ -52,6 +71,7 @@ const orderGroups = computed(() =>
 const codeHint = computed(() => {
   // 能不能绑代码由 KIND_META 声明，别再按类型名判断，否则新增可编程类型时这里会拦错
   if (!KIND_META[props.node.kind].codeCapable) return '该类型由人工完成，不执行代码'
+  if (props.node.pipeline) return '平台依次调用四个阶段，无需编写适配器类'
   if (props.node.binding?.protocol === 'investigation/v1') return '四阶段排查：缺省采集或判断由人工完成'
   return props.node.binding ? '已绑定函数，执行时自动判断' : '未绑定函数，执行时由人工判断'
 })
@@ -159,8 +179,9 @@ const bindings = computed<FunctionBinding[]>(() => {
   const seen = new Set<string>()
   const list: FunctionBinding[] = []
   for (const node of props.doc?.nodes ?? []) {
-    const project = node.binding?.project
-    const name = node.binding?.function
+    const binding = node.pipeline?.acquire ?? (node.pipeline ? undefined : node.binding)
+    const project = binding?.project
+    const name = binding?.function
     if (!project || !name) continue
     const key = `${project}:${name}`
     if (seen.has(key)) continue
@@ -372,6 +393,21 @@ function onGlobalType(name: string, value: unknown): void {
 function onFunctionType(row: ParamRow, value: unknown): void {
   setFunctionType(row, normalizeType(String(value)))
 }
+
+function addGlobalInput(): void {
+  const name = inputName.value.trim()
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    inputError.value = '参数名请使用英文字母、数字和下划线，且不能以数字开头'
+    return
+  }
+  if (inputs.value.some((item) => item.scope === 'global' && item.name === name)) {
+    inputError.value = '该全局参数已存在'
+    return
+  }
+  emitInputs([...inputs.value, { name, scope: 'global', type: inputType.value }])
+  inputName.value = ''
+  inputError.value = ''
+}
 </script>
 
 <template>
@@ -395,8 +431,20 @@ function onFunctionType(row: ParamRow, value: unknown): void {
       <div class="section-title">全局参数</div>
       <div class="section-hint">所有函数都能读到；函数行同名参数默认继承这里的值</div>
       <div v-if="!globals.length" class="section-hint muted">
-        还没有全局参数，可在下方函数参数行点「提升为全局」
+        还没有全局参数，可从获取函数参数行提升，或为四阶段排查添加诊断输入
       </div>
+      <template v-if="allowsCustomInputs && !readonly">
+        <label for="global-input-name" class="label">新增诊断输入</label>
+        <el-input id="global-input-name" v-model="inputName" placeholder="例如 device_id" />
+        <el-select v-model="inputType" aria-label="新增诊断输入类型">
+          <el-option
+            v-for="option in PARAM_TYPES" :key="option.value"
+            :label="option.label" :value="option.value"
+          />
+        </el-select>
+        <el-button @click="addGlobalInput">添加全局参数</el-button>
+        <div v-if="inputError" class="section-hint error" role="alert">{{ inputError }}</div>
+      </template>
       <div v-for="item in globals" :key="item.name" class="param-row">
         <div class="param-line">
           <span class="param-name" :title="item.name">{{ item.name }}</span>
@@ -431,7 +479,7 @@ function onFunctionType(row: ParamRow, value: unknown): void {
       <div class="section-hint" v-if="probing">正在读取函数签名…</div>
       <div v-if="probeError" class="section-hint error">{{ probeError }}</div>
       <div v-if="!bindings.length" class="section-hint muted">
-        还没有可推导的参数，先在排查节点绑定函数
+        未配置获取函数时，可为人工取数直接添加全局诊断输入
       </div>
 
       <div v-for="group in groups" :key="group.key" class="fn-group">
@@ -491,7 +539,7 @@ function onFunctionType(row: ParamRow, value: unknown): void {
       </div>
 
       <div class="section-hint">
-        参数由绑定函数的签名推导，不能手工增删；这里的默认值会写进发布版本，执行时可再改。
+        获取参数由函数签名推导；四阶段排查也可添加全局诊断输入。默认值随发布保存，执行时可再改。
       </div>
     </template>
 
@@ -533,14 +581,26 @@ function onFunctionType(row: ParamRow, value: unknown): void {
 
       <div class="section-title">参数绑定</div>
       <div class="section-hint">{{ codeHint }}</div>
+      <el-select
+        v-if="node.kind === 'investigation'" :model-value="connectionMode" :disabled="readonly"
+        aria-label="排查接入方式" @change="changeConnectionMode"
+      >
+        <el-option label="分别选择四阶段函数" value="functions" />
+        <el-option label="原有函数或适配器类" value="legacy" />
+      </el-select>
+      <FunctionPipelineEditor
+        v-if="node.kind === 'investigation' && connectionMode === 'functions'"
+        :key="node.id" :value="pipelineValue" :readonly="readonly"
+        @update="patchPipeline"
+      />
       <BindingEditor
-        v-if="node.kind === 'investigation'"
+        v-else-if="node.kind === 'investigation'"
         :binding="node.binding"
         :readonly="readonly"
         @update="patchBinding"
       />
 
-      <template v-if="node.binding">
+      <template v-if="node.binding || node.pipeline">
         <div class="section-title">输出字段</div>
         <div class="tag-input">
           <el-tag

@@ -248,7 +248,8 @@ function projectAll(preservePositions: boolean) {
       kind: meta.kind,
       title: meta.title ?? '',
       detail: meta.detail ?? '',
-      hasBinding: Boolean(meta.binding?.project && meta.binding?.function),
+      hasBinding: Boolean(meta.pipeline || (meta.binding?.project && meta.binding?.function)),
+      executionLabel: meta.pipeline ? '四阶段' : undefined,
       hasTarget: !isStart && meta.id !== entry,
       paramCount: isStart ? (meta.inputs?.length ?? 0) : undefined,
       issues: byNode.get(meta.id) ?? [],
@@ -535,6 +536,7 @@ function defaultTitle(kind: NodeKind) {
 function addNode(kind: NodeKind, position: { x: number; y: number }) {
   if (props.readonly) return
   const node: DocNode = { id: nextId('n'), kind, title: defaultTitle(kind), detail: '', position }
+  if (kind === 'investigation') node.pipeline = { manualFields: [] }
   nodeMeta.set(node.id, node)
   projectAll(true)
   emit('select-node', node.id)

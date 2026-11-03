@@ -17,6 +17,7 @@ export interface NodeCardData {
   title: string
   detail: string
   hasBinding: boolean
+  executionLabel?: string
   /** 入口节点不画左侧 target handle */
   hasTarget: boolean
   /** 仅 start：已声明的启动参数数量，用于副标题；不传按 0 处理 */

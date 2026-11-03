@@ -56,7 +56,7 @@ const canReuse = computed(() => {
   if (!token || token.status === 'failed' || !hasOutgoing(token.nodeId)) return false
   const step = plan.value?.steps[token.nodeId]
   const runs = (props.detail?.runs ?? []).filter((run) => run.tokenId === token.id)
-  if (step?.call) return runs.some((run) =>
+  if (step?.call || step?.pipeline) return runs.some((run) =>
     run.status === 'ok' || (run.status === 'abandoned' && !run.error
       && run.output !== undefined && run.output !== null))
   if (!step?.human) return true

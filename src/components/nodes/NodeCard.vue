@@ -30,7 +30,7 @@ const STATUS_META: Record<NodeVisualStatus, { text: string; color: string; bg: s
 const meta = computed(() => KIND_META[props.data.kind])
 const isSelected = computed(() => props.selected || props.data.selected)
 const isStart = computed(() => props.data.kind === 'start')
-const badge = computed(() => (props.data.hasBinding ? '自动' : '人工'))
+const badge = computed(() => props.data.executionLabel ?? (props.data.hasBinding ? '自动' : '人工'))
 const flowClass = computed(() => (props.data.flow ? `flow-${props.data.flow}` : ''))
 const issues = computed(() => props.data.issues ?? [])
 const runCount = computed(() => props.data.runCount ?? 0)
