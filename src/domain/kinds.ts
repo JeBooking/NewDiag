@@ -67,7 +67,7 @@ export const KIND_META: Record<NodeKind, KindMeta> = {
   jump: {
     label: '跳转',
     color: '#64748b',
-    // 转交给另一条诊断链路：当前是人工确认的文本节点，确认成功后接问题解决
+    // 转交给另一条诊断链路：当前是人工确认的文本节点，确认后接任意非 start 节点（仍只一条出线）
     humanOnly: true,
     branch: 'single',
     singleSuccessor: true,

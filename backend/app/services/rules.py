@@ -18,15 +18,24 @@ CONNECTION_RULES: dict[str, list[str]] = {
     "remediation": ["remediation", "problemSolved", "escalation", "jump"],
     "problemSolved": [],
     "escalation": [],
-    # 转交成功后只能接问题解决；转交失败由人工待办回退，不另设分支
-    "jump": ["problemSolved"],
+    # 转交成功后可以接除 start 以外的任意节点类型；转交失败由人工待办回退，不另设分支
+    "jump": [
+        "investigation",
+        "investigationAction",
+        "conclusion",
+        "remediation",
+        "problemSolved",
+        "escalation",
+        "deepDiagnosis",
+        "jump",
+    ],
 }
 
 START_KIND = "start"
 
 # 单个类型的出线语义与能力声明，对应前端 KindMeta。
-# deepDiagnosis / jump 已在前端 KIND_META 里声明，但 V1 面板不暴露，矩阵里也没有它们，
-# 因此导入含这两种节点的文档仍会在编译期被拒绝（快速失败，不留到执行时）。
+# deepDiagnosis / jump 已在前端 KIND_META 里声明，但 V1 面板不暴露，deepDiagnosis 也没有出边规则，
+# 因此导入含 deepDiagnosis 节点的文档仍会在编译期被拒绝（快速失败，不留到执行时）。
 KIND_SPECS: dict[str, dict[str, bool | str]] = {
     START_KIND: {"branch": "single", "entry": True},
     "investigation": {"branch": "yesno", "code_capable": True},
@@ -36,7 +45,7 @@ KIND_SPECS: dict[str, dict[str, bool | str]] = {
     "problemSolved": {"branch": "none", "terminal": True, "success": True},
     "escalation": {"branch": "none", "terminal": True},
     "deepDiagnosis": {"branch": "single"},
-    # 转交给另一条诊断链路：当前是人工确认的文本节点，确认成功后接问题解决
+    # 转交给另一条诊断链路：当前是人工确认的文本节点，确认成功后接任意非 start 节点
     "jump": {"branch": "single", "human_only": True, "single_successor": True},
 }
 

@@ -15,6 +15,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.services.compiler import ValidationError, compile_doc, validate_doc
+from app.services.rules import can_connect, is_single_successor
 
 START_ID = "start"
 
@@ -433,9 +434,42 @@ def test_jump_compiles_to_human_step():
     assert "terminal" not in step
 
 
-def test_jump_only_connects_problem_solved():
+# 转交成功后可以接除 start 以外的任意节点类型。deepDiagnosis 不在 V1 面板暴露，
+# 也没有出边规则，只能在连接表层面覆盖，不构造整份文档。
+JUMP_TARGET_KINDS = (
+    "investigation",
+    "investigationAction",
+    "conclusion",
+    "remediation",
+    "problemSolved",
+    "escalation",
+    "deepDiagnosis",
+    "jump",
+)
+
+
+def test_jump_connects_any_kind_except_start():
+    for kind in JUMP_TARGET_KINDS:
+        assert can_connect("jump", kind), kind
+
+    assert not can_connect("jump", "start")
+    # 单后继约束不随可选目标变多而放宽
+    assert is_single_successor("jump")
+
+
+def test_jump_edge_to_investigation_allowed():
+    # 旧规则下 jump 只能接问题解决，指回排查节点的边会被判成「不允许的连接」
     doc = jump_doc()
     edge(doc, "e3")["to"] = "n1"
+    # 转交回排查后沿「否」上升，p1 不再在路径上
+    doc["nodes"] = [item for item in doc["nodes"] if item["id"] != "p1"]
+
+    assert errors(doc) == []
+
+
+def test_jump_edge_to_start_rejected():
+    doc = jump_doc()
+    edge(doc, "e3")["to"] = START_ID
 
     assert "不允许的连接" in messages(doc)
 

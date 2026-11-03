@@ -14,8 +14,18 @@ export const CONNECTION_RULES: Record<NodeKind, NodeKind[]> = {
   problemSolved: [],
   escalation: [],
   deepDiagnosis: ['investigation'],
-  // 转交成功后只能接问题解决；转交失败由人工待办回退，不另设分支
-  jump: ['problemSolved'],
+  // 跳转是转交到另一条诊断链路的枢纽：除开始节点（唯一入口、只出不进）外都可作为后继。
+  // 仍只允许一条出线，放开的是「能连什么类型」，不是「能连几条」。
+  jump: [
+    'investigation',
+    'investigationAction',
+    'conclusion',
+    'remediation',
+    'problemSolved',
+    'escalation',
+    'deepDiagnosis',
+    'jump',
+  ],
 }
 
 export function canConnect(from: NodeKind, to: NodeKind): boolean {
