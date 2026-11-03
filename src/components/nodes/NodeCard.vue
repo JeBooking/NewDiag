@@ -107,12 +107,13 @@ const worst = computed(() => {
       </div>
       <div v-if="!isStart || action" class="row-foot">
         <span v-if="!isStart" class="badge" :class="{ 'is-auto': data.hasBinding }">{{ badge }}</span>
+        <!-- 不要加 .stop：点击要靠冒泡到 vue-flow 的 node-click，
+             由 FlowCanvas.onNodeClick 用 closest('.node-action') 区分「看详情」和「选中」 -->
         <button
           v-if="action"
           type="button"
           class="node-action"
           :class="`tone-${action.tone}`"
-          @click.stop
         >
           {{ action.text }}
         </button>
