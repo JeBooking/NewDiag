@@ -32,12 +32,7 @@ def probe_doc(doc: dict) -> dict:
     result: dict[str, object] = {}
     cache: dict[str, tuple[list[dict] | None, str]] = {}
     started = time.perf_counter()
-    for node in doc.get("nodes") or []:
-        if not isinstance(node, dict):
-            continue
-        binding = node.get("binding")
-        if not isinstance(binding, dict):
-            continue
+    for binding in _document_bindings(doc):
         project_name = str(binding.get("project") or "")
         function_name = str(binding.get("function") or "")
         if not project_name or not function_name:
@@ -62,6 +57,9 @@ def probe_doc(doc: dict) -> dict:
             result[key] = {"error": f"工程 {project_name} 里找不到函数 {function_name}"}
             continue
         func = matched[0]
+        if binding.get("_function_pipeline") and (func.get("error") or func.get("pipelineError")):
+            result[key] = {"error": func.get("error") or func["pipelineError"]}
+            continue
         if binding.get("protocol") == "investigation/v1":
             try:
                 _validate_adapter_binding(binding, func)
@@ -82,6 +80,19 @@ def probe_doc(doc: dict) -> dict:
         f"，失败：{failed}" if failed else "",
     )
     return result
+
+
+def _document_bindings(doc):
+    for node in doc.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        if isinstance(node.get("pipeline"), dict):
+            for stage in ("acquire", "parse", "present", "judge"):
+                binding = node["pipeline"].get(stage)
+                if isinstance(binding, dict):
+                    yield {**binding, "_function_pipeline": True}
+        elif isinstance(node.get("binding"), dict):
+            yield node["binding"]
 
 
 def _validate_adapter_binding(binding: dict, func: dict) -> None:
@@ -225,12 +236,17 @@ def _format_default(value) -> str:
 def _plan_keys(plan: dict) -> list[str]:
     keys: list[str] = []
     for step in (plan.get("steps") or {}).values():
-        call = step.get("call") if isinstance(step, dict) else None
-        if not call:
+        if not isinstance(step, dict):
             continue
-        key = f"{call.get('project', '')}:{call.get('function', '')}"
-        if key not in keys:
-            keys.append(key)
+        calls = [step.get("call")]
+        pipeline = step.get("pipeline") or {}
+        calls.extend(pipeline.get(stage) for stage in ("acquire", "parse", "present", "judge"))
+        for call in calls:
+            if not call:
+                continue
+            key = f"{call.get('project', '')}:{call.get('function', '')}"
+            if key not in keys:
+                keys.append(key)
     return keys
 
 

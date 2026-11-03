@@ -329,8 +329,16 @@ def _attachment_refs(doc: dict):
 def _bindings(doc: dict) -> list[dict]:
     seen: set[tuple[str, str]] = set()
     result: list[dict] = []
+    bindings = []
     for node in doc.get("nodes") or []:
-        binding = node.get("binding") if isinstance(node, dict) else None
+        if not isinstance(node, dict):
+            continue
+        pipeline = node.get("pipeline")
+        if isinstance(pipeline, dict):
+            bindings.extend(pipeline.get(stage) for stage in ("acquire", "parse", "present", "judge"))
+        else:
+            bindings.append(node.get("binding"))
+    for binding in bindings:
         if not isinstance(binding, dict):
             continue
         project = str(binding.get("project") or "")

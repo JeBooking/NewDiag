@@ -22,6 +22,7 @@ from app.db import SessionLocal, new_id, now_iso
 from app.logging_setup import brief
 from app.services import signatures
 from app.services.sessions import SessionCrashed, SessionError, SessionManager, SessionTimeout
+from app.worker.function_pipeline import PipelineFailure, execute_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -197,10 +198,11 @@ class Scheduler:
                     raise ValueError("判断待办只能选择是或否")
                 if request["type"] == "judgment" and not str(payload.get("reason") or "").strip():
                     raise ValueError("请填写判断依据")
-                call = step.get("call") or {}
                 operation = request["type"]
-                value, failure = self._invoke_pipeline(
-                    db, instance, token, call, request["pipeline"], operation,
+                runner = self._invoke_functions if step.get("pipeline") else self._invoke_pipeline
+                configuration = step.get("pipeline") or step.get("call") or {}
+                value, failure = runner(
+                    db, instance, token, configuration, request["pipeline"], operation,
                     data=payload.get("data"),
                     decision={"result": result, "reason": payload.get("reason")},
                 )
@@ -333,7 +335,9 @@ class Scheduler:
             )
             self._ensure_entry_token(db, instance, plan)
             db.commit()
-            if finished_runs or not any(step.get("call") for step in plan["steps"].values()):
+            if finished_runs or not any(
+                step.get("call") or step.get("pipeline") for step in plan["steps"].values()
+            ):
                 return True  # 只在实例首次启动时比对签名，人工恢复不重新拦
             stored = self._stored_signatures(db, instance)
             expected = plan if plan.get("signature") else {**plan, "signature": stored}
@@ -477,6 +481,10 @@ class Scheduler:
             )
             return
 
+        if step.get("pipeline"):
+            db.commit()
+            self._run_functions(db, instance, plan, token, step)
+            return
         call = step.get("call")
         if call:
             # 长耗时调用开始前持久化到访，让执行轨迹能显示正在运行的节点。
@@ -594,6 +602,66 @@ class Scheduler:
             (time.perf_counter() - t0) * 1000,
         )
 
+    def _run_functions(self, db, instance, plan, token, step):
+        pipeline = step["pipeline"]
+        function = (pipeline.get("acquire") or {}).get("function", "")
+        args, error = self._eval_args(db, instance, token, pipeline["args"], function)
+        state = {"inputs": args, "stages": [], "startedAt": now_iso()}
+        snapshot = self._snapshot_payload(db, instance)
+        context = snapshot.get("global", snapshot)
+        local = (snapshot.get("scope") or {}).get(function, {})
+        state["inputContext"] = {**context, **local, **args}
+        if error:
+            value, failure = None, (ERR_ARGUMENT, error, 1)
+        else:
+            value, failure = self._invoke_functions(db, instance, token, pipeline, state, "start")
+        if self._is_cancelled(instance.id):
+            return
+        if failure:
+            self._write_run(db, instance, token, status="failed", args=args,
+                            error=f"{failure[0]}: {failure[1]}", attempt=failure[2],
+                            evidence={"adapter": "平台四阶段函数", "pipeline": state})
+            self._fail_token(db, instance, token)
+        else:
+            self._accept_pipeline(db, instance, plan, token, step, value)
+
+    def _invoke_functions(self, db, instance, token, pipeline, state, operation, **extra):
+        def invoke(binding, args):
+            request = {"function": binding["function"], "signature": binding["signature"],
+                       "arguments": args}
+            call = {"project": binding["project"], "function": "__newdiag_function__"}
+            value, failure = self._invoke(db, instance, call, request, token)
+            if failure:
+                raise PipelineFailure(failure)
+            return value
+
+        try:
+            if operation == "acquisition":
+                extra["data"] = self._resolve_manual_data(db, state, extra.get("data"))
+            value = execute_pipeline(pipeline, state, operation, invoke, **extra)
+            return value, None
+        except PipelineFailure as exc:
+            return None, exc.failure
+        except (ValueError, TypeError, KeyError) as exc:
+            return None, (ERR_EXCEPTION, str(exc), 1)
+
+    def _resolve_manual_data(self, db, state, data):
+        if not isinstance(data, dict):
+            return data
+        from app.services.storage import resolve
+
+        result = dict(data)
+        for field in state.get("manualFields", []):
+            if field.get("type") != "file" or field["name"] not in result:
+                continue
+            ref = result[field["name"]]
+            digest = ref.get("hash") if isinstance(ref, dict) else None
+            path = resolve(digest) if isinstance(digest, str) else None
+            if path is None or db.get(models.FileBlob, digest) is None:
+                raise ValueError(f"文件 {field['name']} 不存在，请重新上传")
+            result[field["name"]] = {"hash": digest, "path": str(path.resolve())}
+        return result
+
     def _run_pipeline(self, db, instance, plan, token, step, call) -> None:
         args, error = self._eval_args(
             db, instance, token, call.get("args") or {}, str(call.get("function") or "")
@@ -642,7 +710,7 @@ class Scheduler:
             raise ValueError("适配器返回了无效的阶段响应")
         state = value["state"]
         status = value["status"]
-        call = step["call"]
+        call = step.get("call") or {"function": "平台四阶段函数", "version": "1"}
         if status != "complete":
             meta = self._node_meta(db, instance, token.node_id)
             state["manualFields"] = value.get("fields") or state.get("manualFields") or []
@@ -1099,7 +1167,9 @@ class Scheduler:
                 raise ValueError("回退分支必须是是/否")
             if not (step.get("next") or {}).get(branch_key):
                 raise ValueError(f"目标节点没有 {branch_key} 分支的后继")
-            if step.get("call") and self._successful_run(db, instance.id, target_token.id) is None:
+            if (step.get("call") or step.get("pipeline")) and self._successful_run(
+                db, instance.id, target_token.id
+            ) is None:
                 raise ValueError("目标到访没有可复用的成功结果，请选择重新执行")
             if step.get("human") and target_token.status != "done":
                 reviews = db.scalars(select(models.Review).where(

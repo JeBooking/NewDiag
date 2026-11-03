@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 
 from . import rules
+from app.worker.function_pipeline import STAGES, SOURCES, default_argument
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,8 @@ def validate_doc(
 
     for nid, node in nodes_by_id.items():
         kind = node.get("kind")
+        if "pipeline" in node and kind != "investigation":
+            issues.append(_issue(LEVEL_ERROR, "只有排查节点支持四阶段函数", node_id=nid))
         if kind not in rules.V1_KINDS:
             issues.append(_issue(LEVEL_ERROR, f"v1 不支持的节点类型：{kind}", node_id=nid))
 
@@ -101,6 +104,9 @@ class StartNode(NodeDefinition):
 class InvestigationNode(NodeDefinition):
     def compile(self, node, nodes, edges, start, functions):
         step = super().compile(node, nodes, edges, start, functions)
+        if "pipeline" in node:
+            step["pipeline"], _ = _compile_function_pipeline(node, nodes, edges, start, functions)
+            return step
         binding = node.get("binding")
         if not binding:
             step["human"] = True
@@ -197,6 +203,12 @@ def compile_doc(
         for step in steps.values()
         if step.get("call")
     ]
+    for step in steps.values():
+        pipeline = step.get("pipeline") or {}
+        calls.extend(
+            f"{pipeline[stage]['project']}.{pipeline[stage]['function']}"
+            for stage in STAGES if pipeline.get(stage)
+        )
     logger.info(
         "编译 flow=%s release=%s：%d 个节点，%d 个调用，%d 个人工节点，函数 %s",
         flow_id,
@@ -522,7 +534,16 @@ def _check_bindings(
 ) -> None:
     """spec 4.8：参数来源必须在当前版本存在，且位于该节点上游。"""
     for nid, node in nodes_by_id.items():
-        if node.get("kind") != "investigation" or not node.get("binding"):
+        if node.get("kind") != "investigation":
+            continue
+        if "pipeline" in node:
+            _, found = _compile_function_pipeline(node, nodes_by_id, edges, start, functions)
+            for issue in found:
+                if not strict_binding and issue["level"] == LEVEL_ERROR:
+                    issue = {**issue, "level": LEVEL_WARNING}
+                issues.append(issue)
+            continue
+        if not node.get("binding"):
             continue
         binding = node["binding"]
         if isinstance(binding, dict) and binding.get("protocol") == "investigation/v1":
@@ -544,6 +565,99 @@ def _check_bindings(
             if not strict_binding and issue.get("level") == LEVEL_ERROR:
                 issue = {**issue, "level": LEVEL_WARNING}
             issues.append(issue)
+
+
+def _compile_function_pipeline(node, nodes, edges, start, functions):
+    issues = []
+    result = {"args": {}, "manualFields": []}
+
+    def error(message):
+        issues.append(_issue(LEVEL_ERROR, message, node_id=node["id"]))
+
+    pipeline = node.get("pipeline")
+    if not isinstance(pipeline, dict):
+        error("四阶段函数配置必须为对象")
+        return result, issues
+    if node.get("binding"):
+        error("四阶段函数与旧入口绑定不能同时配置")
+    fields = pipeline.get("manualFields", [])
+    if not isinstance(fields, list):
+        error("人工数据字段必须为数组")
+        fields = []
+    names = set()
+    for field in fields:
+        if not isinstance(field, dict) or not isinstance(field.get("name"), str) or not field["name"]:
+            error("人工数据字段必须填写名称")
+            continue
+        if field["name"] in names:
+            error(f"人工数据字段重名：{field['name']}")
+        names.add(field["name"])
+        if field.get("type", "text") not in ("text", "number", "boolean", "datetime", "json", "file"):
+            error(f"不支持的人工字段类型：{field.get('type')}")
+    result["manualFields"] = fields
+    if not pipeline.get("acquire") and not fields:
+        error("人工取数时必须配置数据字段")
+    for stage in STAGES:
+        binding = pipeline.get(stage)
+        if not binding:
+            if stage in ("parse", "present"):
+                error(f"四阶段排查必须选择 {'解析' if stage == 'parse' else '展示'} 函数")
+            continue
+        if not isinstance(binding, dict) or not binding.get("project") or not binding.get("function"):
+            error(f"{stage} 必须选择工程和函数")
+            continue
+        if binding.get("protocol"):
+            error(f"{stage} 请选择普通函数或方法，不能选择整套适配器类")
+            continue
+        key = f"{binding['project']}:{binding['function']}"
+        params = (functions or {}).get(key)
+        if not isinstance(params, list):
+            detail = params.get("error", "接口尚未探测") if isinstance(params, dict) else "接口尚未探测"
+            error(f"{stage} 接口不可用：{detail}")
+            continue
+        entry = {"project": binding["project"], "function": binding["function"], "signature": params}
+        result[stage] = entry
+        if stage == "acquire":
+            args, found = _resolve_args({**node, "binding": binding}, nodes, edges, start, functions)
+            result["args"] = args
+            issues.extend(found)
+            continue
+        configured = binding.get("arguments", {})
+        if not isinstance(configured, dict):
+            error(f"{stage} 的参数映射必须为对象")
+            continue
+        known = {param["name"] for param in params}
+        if set(configured) - known:
+            error(f"{stage} 包含函数未声明的参数")
+        arguments = {}
+        for index, param in enumerate(params):
+            name = param["name"]
+            automatic = default_argument(stage, index)
+            if stage == "present" and index == 1 and name not in ("decision", "judgment", "result"):
+                automatic = None
+            expression = configured.get(name, automatic)
+            if isinstance(expression, dict) and expression.get("omit") is True:
+                expression = None
+            if expression is None:
+                if param.get("required", True):
+                    error(f"{stage} 的必填参数 {name} 缺少数据来源")
+                continue
+            if not isinstance(expression, dict):
+                error(f"{stage}.{name} 的参数映射格式错误")
+                continue
+            if "lit" not in expression:
+                source = expression.get("source")
+                allowed = {"raw", "inputs"} if stage == "parse" else SOURCES
+                if stage == "judge":
+                    allowed = allowed - {"decision"}
+                if source not in allowed or not isinstance(expression.get("path", ""), str):
+                    error(f"{stage}.{name} 的数据来源无效")
+                    continue
+            arguments[name] = expression
+        entry["arguments"] = arguments
+    if not pipeline.get("acquire"):
+        result["args"] = {name: {"snapshot": name, "optional": True} for name in start.global_names()}
+    return result, issues
 
 
 # ---------------------------------------------------------------- 参数绑定

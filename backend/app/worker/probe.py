@@ -166,7 +166,14 @@ def _describe(name: str, func) -> dict:
                 "defaultTrusted": bool(has_default and _plain(param.default)),
             }
         )
-    return {"name": name, "params": params, "returns": _type_name(signature.return_annotation)}
+    pipeline_error = None
+    if inspect.iscoroutinefunction(func):
+        pipeline_error = "四阶段函数必须为同步函数"
+    elif any(p.kind in (*SKIP_PARAM_KINDS, inspect.Parameter.POSITIONAL_ONLY)
+             for p in signature.parameters.values()):
+        pipeline_error = "四阶段函数参数必须显式命名且支持关键字传参，不支持 *args、**kwargs 或位置专用参数"
+    return {"name": name, "params": params, "returns": _type_name(signature.return_annotation),
+            "pipelineError": pipeline_error}
 
 
 def _type_name(annotation) -> str:

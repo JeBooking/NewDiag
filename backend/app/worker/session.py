@@ -67,6 +67,21 @@ def main() -> int:
                     if not is_adapter(cls):
                         raise TypeError("目标不是 InvestigationNode 适配器类")
                     value = json_value(execute_adapter(cls, args))
+                elif function_name == "__newdiag_function__":
+                    if __package__:
+                        from .probe import _describe
+                    else:
+                        from probe import _describe
+                    func = _resolve_callable(target, args["function"])
+                    if inspect.iscoroutinefunction(func):
+                        raise TypeError("四阶段函数必须为同步函数")
+                    actual = _describe(args["function"], func)["params"]
+                    fields = ("name", "type", "required", "default")
+                    def comparable(params):
+                        return [{key: item.get(key) for key in fields} for item in params]
+                    if comparable(actual) != comparable(args["signature"]):
+                        raise ValueError("函数签名与发布计划不一致，请重新发布")
+                    value = json_value(func(**args["arguments"]))
                 else:
                     func = _resolve_callable(target, function_name)
                     value = _json_safe(func(**args))
