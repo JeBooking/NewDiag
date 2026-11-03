@@ -1,0 +1,153 @@
+{
+  "format": 1,
+  "name": "外部类电压排查（人工采集／人工判断）",
+  "mode": "parallel",
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始电压排查",
+      "detail": "",
+      "inputs": [
+        {
+          "name": "device_id",
+          "scope": "global",
+          "type": "text",
+          "default": "motor-01"
+        },
+        {
+          "name": "time_point",
+          "scope": "global",
+          "type": "datetime",
+          "default": "2026-11-03T10:00:00+08:00"
+        }
+      ],
+      "position": {
+        "x": 40,
+        "y": 220
+      }
+    },
+    {
+      "id": "check_voltage",
+      "kind": "investigation",
+      "title": "母线电压是否不足",
+      "detail": "人工采集／人工判断。解析原始单位并应用校准系数；电压低于 210 V 时选择是。",
+      "fields": {
+        "observation": "指定设备、指定时间点的母线电压",
+        "acquisition": "人工提供原始读数、单位和来源",
+        "assessment": "归一到 V 并校准后，严格小于 210 V 为是，等于或大于为否"
+      },
+      "binding": {
+        "project": "电压类模块示例",
+        "function": "ClassBasedManualVoltage",
+        "protocol": "investigation/v1",
+        "version": "1.0.0",
+        "config": {
+          "calibration": 1.0,
+          "threshold": 210
+        }
+      },
+      "params": {
+        "device_id": {
+          "snapshot": "device_id"
+        },
+        "time_point": {
+          "snapshot": "time_point"
+        }
+      },
+      "outputs": [
+        "data",
+        "result",
+        "reason"
+      ],
+      "position": {
+        "x": 340,
+        "y": 220
+      }
+    },
+    {
+      "id": "low_voltage",
+      "kind": "conclusion",
+      "title": "确认电压不足",
+      "detail": "已记录实测电压、校准参数与判断依据，交由现场人员检查供电。",
+      "position": {
+        "x": 660,
+        "y": 80
+      }
+    },
+    {
+      "id": "check_supply",
+      "kind": "remediation",
+      "title": "人工检查供电并复测",
+      "detail": "此为演示待办，平台不操作设备。实际使用时由有权限的现场人员按操作规程排查供电并复测；确认恢复后完成，未恢复则从轨迹回退重执行。",
+      "position": {
+        "x": 960,
+        "y": 80
+      }
+    },
+    {
+      "id": "solved",
+      "kind": "problemSolved",
+      "title": "问题解决",
+      "detail": "现场人员已确认供电恢复并完成复测。",
+      "position": {
+        "x": 1280,
+        "y": 80
+      }
+    },
+    {
+      "id": "normal_voltage",
+      "kind": "conclusion",
+      "title": "排除电压不足",
+      "detail": "该时间点母线电压未低于阈值，当前证据不支持电压不足，应继续其他诊断方向。",
+      "position": {
+        "x": 660,
+        "y": 360
+      }
+    },
+    {
+      "id": "escalate",
+      "kind": "escalation",
+      "title": "转其他诊断方向",
+      "detail": "本示例到此结束；真实流程可接入其他排查方向。",
+      "position": {
+        "x": 960,
+        "y": 360
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-start",
+      "from": "start",
+      "to": "check_voltage"
+    },
+    {
+      "id": "e-yes",
+      "from": "check_voltage",
+      "to": "low_voltage",
+      "branch": "yes"
+    },
+    {
+      "id": "e-no",
+      "from": "check_voltage",
+      "to": "normal_voltage",
+      "branch": "no"
+    },
+    {
+      "id": "e-remediation",
+      "from": "low_voltage",
+      "to": "check_supply"
+    },
+    {
+      "id": "e-solved",
+      "from": "check_supply",
+      "to": "solved"
+    },
+    {
+      "id": "e-escalate",
+      "from": "normal_voltage",
+      "to": "escalate"
+    }
+  ]
+}

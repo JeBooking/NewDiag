@@ -1,0 +1,321 @@
+# 外部模块接入与改造手册
+
+本文对应 `investigation/v1` 四阶段排查协议。SDK 位于
+[`backend/app/worker/node_sdk.py`](../backend/app/worker/node_sdk.py)。包含流程图、离线数据、
+带必填构造参数的外部类和四种组合的[完整示例](../examples/voltage/README.md)，
+入口为 [`class_adapters.py`](../examples/voltage/class_adapters.py)；
+简化的 HTTP 示例保留在 [`voltage.py`](../examples/voltage/voltage.py)。
+
+## 1. 接入对象与边界
+
+平台绑定业务工程内的**适配器类**，不直接绑定桌面窗口，也不要求重写原有业务类。
+
+```text
+节点启动输入 → acquire／人工提供 → parse → present
+                                           ↓
+                                  judge／人工判断
+                                           ↓
+                                  present（含判断结果）
+```
+
+| 接口 | 是否必需 | 调用方式 |
+|---|---|---|
+| 构造器 | 可以使用默认构造器 | `Adapter(**config)`；config 为节点初始化配置 |
+| `acquire(self, ...)` | 否 | 参数来自启动上下文、节点常量或上游输出 |
+| `parse(self, raw_data)` | 是 | 接收自动采集结果或人工提交的数据 |
+| `present(self, parsed_data, decision=None)` | 是 | 判断前调用一次，判断后再次调用 |
+| `judge(self, parsed_data)` | 否 | 返回 `{"result": "yes"或"no", "reason": "非空依据"}` |
+| `close(self)` | 否 | 每次调用完成或失败后关闭资源；默认空实现 |
+
+未实现的 acquire、judge 保持 `None`，不要写一个返回 `None` 的方法，不要用异常表示“请转人工”。
+配置了方法但执行失败时，平台报告执行错误，不自动改走人工。
+“否”是业务判断结果；数据不足、读取失败、解析失败应抛异常，不能当作“否”。
+
+排查节点之外，平台编译器有开始、排查动作、结论、处置、跳转、问题解决、上升等节点类。
+它们继续按现有文本／人工／终止语义执行，不需要实现四阶段接口。
+节点类生成发布计划；等待、分支、回退、终止由调度器管理。
+
+## 2. 最小接入步骤
+
+### 2.1 编写适配器
+
+保存为业务工程目录下的 `diagnosis_adapter.py`：
+
+```python
+from node_sdk import InvestigationNode
+
+__all__ = ["VoltageCheck"]
+
+
+class VoltageCheck(InvestigationNode):
+    version = "1.0.0"
+    inputs = [
+        {"name": "device_id", "type": "text", "required": True},
+        {"name": "time_point", "type": "datetime", "required": True},
+    ]
+    manual_fields = [
+        {"name": "voltage", "label": "电压", "type": "number", "unit": "V", "min": 0},
+        {"name": "source", "label": "测量来源", "type": "text"},
+    ]
+
+    def __init__(self, threshold: float = 210):
+        self.threshold = threshold
+
+    def parse(self, raw_data):
+        voltage = raw_data["voltage"]
+        if isinstance(voltage, bool) or not isinstance(voltage, (int, float)):
+            raise ValueError("电压必须是数字")
+        if voltage < 0:
+            raise ValueError("电压不得为负数")
+        return {"voltage": voltage, "source": raw_data["source"]}
+
+    def present(self, parsed_data, decision=None):
+        blocks = [{"type": "metrics", "items": [
+            {"label": "电压", "value": parsed_data["voltage"], "unit": "V"},
+            {"label": "阈值", "value": self.threshold, "unit": "V"},
+        ]}]
+        if decision is not None:
+            blocks.append({"type": "text", "text": decision["reason"]})
+        return {"blocks": blocks}
+```
+
+这个例子不提供 acquire、judge，因此依次出现“提供数据”和“人工判断”待办。
+`inputs` 是本次诊断的定位参数，平台在人工取数待办里显示它们；`manual_fields` 才是人工需要提交的原始数据。
+增加 acquire 后，启动输入按 acquire 的真实参数签名探测，`inputs` 不再参与探测。
+
+### 2.2 登记工程
+
+在平台“工程”页登记：
+
+| 字段 | 示例 |
+|---|---|
+| 名称 | `电压诊断`，登记后不可改名 |
+| 工程路径 | `D:\Business\Voltage`，必须是后端机器上的目录 |
+| 模块 | `diagnosis_adapter`，不加 `.py` |
+| Python | `D:\Business\Voltage\.venv\Scripts\python.exe` |
+| 工厂 | **留空**；四阶段模式按节点配置创建适配器，不使用旧的无参工程工厂 |
+
+业务工程的第三方依赖装在自己的虚拟环境中。SDK 只依赖 Python 标准库；平台启动探测和执行子进程时可直接导入
+`node_sdk`，不需要业务工程依赖 FastAPI 或 SQLAlchemy。
+不要把不同版本的 SDK 复制到业务工程中覆盖平台提供的模块。
+
+在业务工程中独立运行或让 IDE 识别 SDK 时，将平台的 `backend/app/worker` 加入该工程的 Python 搜索路径。
+例如在 PowerShell 的当前终端临时设置：
+
+```powershell
+$env:PYTHONPATH = 'D:\FILE\Projects\NewDiag\backend\app\worker'
+```
+
+离线部署包中的对应目录是 `app/worker`。这只是独立开发时的设置；平台调用不依赖用户手动设置它。
+
+### 2.3 绑定、配置、发布
+
+1. 工程页查看“接口”，确认列出 `VoltageCheck`。探测只检查类与接口，不创建业务对象、不连接数据中心。
+2. 排查节点的“参数绑定”选择工程和该类，界面显示四阶段模式、版本、采集／判断方式。
+3. 在“初始化配置（JSON）”填写 `{"threshold": 210}`。配置在失焦且 JSON 合法时写回节点；不要忽略格式错误提示。
+4. 开始节点声明 `device_id`、`time_point`，或通过节点 `params` 绑定常量／上游输出。
+5. 填写排查说明，连接“是／否”后继，发布。
+6. 启动诊断后提交原始数据；平台解析并展示；填写判断依据后选择是／否。
+
+发布前检查：适配器必须实现 parse、present；人工采集必须有 manual_fields；构造参数不能缺少，也不能填写未知参数。
+必需运行参数必须有绑定来源。接口探测失败时不允许发布。
+
+可直接使用仓库示例：工程路径填仓库 `examples/voltage` 的绝对路径，模块填 `voltage`，工厂留空。
+`ManualVoltage` 不需要数据服务器；`AutomaticAcquisitionVoltage` 和 `AutomaticVoltage` 需要真实的 `data_url` 配置。
+
+如果要直接导入配套流程，按示例 README 登记名称 `电压类模块示例`、模块 `class_adapters`，
+导入 `examples/voltage/workflow.json`。该版本使用本地离线数据，无需 HTTP 服务；
+另有三份 workflow 变体覆盖其他自动／人工组合，并完整演示外部类必填构造参数的传递。
+
+## 3. 带初始化参数的类如何适配
+
+初始化配置和执行输入分开：
+
+```text
+config：服务地址、算法选项、阈值、凭证环境变量名
+inputs：本次设备编号、时间点等
+```
+
+适配器构造器支持显式位置或关键字参数、仅关键字参数，不支持位置专用参数、`*args` 或 `**kwargs`。
+必填参数没有默认值，可选参数应提供可 JSON 表达的默认值。配置类型与业务约束由构造器检查。
+配置随流程版本保存，密钥不要直接填写在配置中；填写环境变量名称，再由业务进程读取。
+
+例如旧类同时承担分析和设备控制：
+
+```python
+class OldApplication:
+    def __init__(self, server, controller, window):
+        ...
+```
+
+先确认当前功能是否真的依赖 controller、window：
+
+| 实际情况 | 改造方法 |
+|---|---|
+| 已支持传 `None`，当前路径不会访问它们 | 适配器传 `None`，保留原类 |
+| 只有其他功能需要，却在构造器里强制连接 | 改成可选依赖，把连接延迟到使用它的功能 |
+| 解析算法直接使用窗口控件 | 提取独立的分析核心，窗口与平台共用核心 |
+| 第三方不可修改且必须打开窗口 | 保留桌面人工操作，通过上传文件／填写数据接入 |
+
+不能通过包装自动消除真实的必需依赖，不要塞假连接、假窗口让构造器勉强通过。
+
+也可以延迟创建原有业务对象：
+
+```python
+def __init__(self, server_url: str):
+    self.server_url = server_url
+    self.client = None
+
+def acquire(self, device_id: str, time_point: str):
+    self.client = ExistingClient(self.server_url, device_id)
+    return self.client.read_at(time_point)
+
+def close(self):
+    if self.client is not None:
+        self.client.close()
+```
+
+缺省采集直接进入待办，不创建业务对象。处理人工数据或判断时才创建适配器。
+每次开始／人工恢复都会重新构造适配器，因此 parse、present、judge 不能依赖“上次 acquire 写进 self 的数据”。
+进入四阶段人工待办后关闭业务子进程，恢复时重新导入模块并检查版本。
+同一次自动执行内部可以复用连接，但跨人工等待必须通过显式数据恢复。
+
+## 4. 桌面应用如何改造
+
+推荐保留桌面应用，并提取业务核心：
+
+```text
+原桌面窗口 ─┐
+            ├→ 分析核心（采集、解析、判断）
+平台适配器 ─┘
+```
+
+| 原代码中的耦合 | 替换方式 |
+|---|---|
+| `line_edit.text()` 读取设备编号 | acquire 显式接收 `device_id` |
+| 算法往窗口表格写值 | 返回结构化结果，桌面窗口自行显示，平台 present 返回展示描述 |
+| 弹窗询问是／否 | 不实现 judge，由平台人工判断 |
+| 文件选择对话框 | 人工 file 字段上传，parse 接收平台解析后的文件引用 |
+| 构造时创建主窗口或启动事件循环 | 放到桌面程序专用入口，不在模块导入和适配器构造时执行 |
+| 使用全局“当前设备”“当前打开文件” | 明确写入本次输入或数据结果 |
+| 图中选点影响后续判断 | 将选点结果变成显式输入并保存，不能只保存在画布内存中 |
+
+业务方法必须可在无窗口环境调用，不弹窗、不等待键盘输入，不启动 GUI 主事件循环。
+原 Qt/Tk 等控件不能直接嵌入浏览器。本版提供指标、表格、文本、折线展示；特殊交互视图需另行开发网页组件，
+当前协议不加载外部 HTML、JavaScript 或桌面窗口。
+
+暂时无法拆分的桌面软件，可以由人工在本机操作后导出数据，再上传给平台解析。
+本版不控制用户电脑上的桌面进程，也不包含桌面进程间通信服务。后端机器弹出的窗口不是用户浏览器窗口。
+
+## 5. 数据格式与原有对象
+
+不同适配器不必使用相同业务数据结构，但本适配器的采集／人工数据、解析、展示、判断必须相互匹配。
+SDK 不猜测单位，不自动转换 DataFrame、自定义对象或设备数据格式。
+
+同一次调用内，acquire → parse → present／judge 可以传递原有 Python 对象。
+为保存历史并在人工等待后恢复，原始数据和解析结果必须能生成 JSON 快照。
+默认直接保存 JSON 值；不接受 NaN、Infinity，也不使用 repr 冒充业务数据。
+复杂对象可在适配器覆写以下方法，不必修改原业务类：
+
+```python
+def dump_raw(self, value):
+    return value.to_dict(orient="records")
+
+def dump_parsed(self, value):
+    return value.to_dict(orient="records")
+
+def load_parsed(self, value):
+    return pandas.DataFrame.from_records(value)
+```
+
+上述仅适用于采集和解析均使用 DataFrame 的模块，需要在业务环境安装并导入 pandas。
+不同类型应按自己的数据结构实现；JSON 本身不能保留任意 Python 类型、dtype 或索引，
+需要这些信息时应在快照中显式保存。`load_parsed` 只在人工判断恢复时调用；恢复不重新采集或解析。
+历史输出的 `data` 是 dump_parsed 的结果，下游绑定路径例如 `output.data.voltage`。
+
+大文件应上传文件，或由模块使用自己的稳定文件存储；不要把大量二进制内容塞进 JSON。
+远程文件、设备句柄、数据库连接不能充当可恢复的数据快照。
+
+## 6. 人工字段协议
+
+`manual_fields` 为字段数组，每项的 `name` 唯一：
+
+| 字段属性 | 说明 |
+|---|---|
+| name | 传给 parse 的键名 |
+| label | 界面标签，缺省显示 name |
+| type | text／number／boolean／datetime／json／file；缺省 text |
+| required | 缺省 true |
+| default | 可选默认值 |
+| min、max | 数字范围 |
+| unit、description | 单位与填写说明 |
+
+datetime 使用带时区的 ISO8601 字符串，例如 `2026-11-03T10:00:00+08:00`。
+json 字段可提交复杂数组或对象，其业务结构由 parse 校验。
+file 字段上传后，平台验证存储记录，将 `{"hash": "...", "path": "后端绝对路径"}` 传入 parse。
+这是平台存储的文件路径，不接受客户端自行指定的本地路径。
+
+```python
+import json
+
+manual_fields = [{"name": "report", "label": "原始报告", "type": "file"}]
+
+def parse(self, raw_data):
+    with open(raw_data["report"]["path"], encoding="utf-8-sig") as stream:
+        return json.load(stream)
+```
+
+自动取数返回的原始对象与人工上传的文件可以不同，由该适配器的 parse 识别并归一。
+字段类型、必填、范围先由平台校验；业务完整性和数据质量由 parse 校验。
+人工提交解析失败时，原待办保留，界面显示错误，用户可以修正后重新提交。
+
+## 7. 展示协议
+
+present 返回 `{"blocks": [...]}`，按数组顺序渲染；支持空数组，但不能缺少 blocks。
+只输出数据描述，不输出可执行脚本或原生窗口。
+
+```python
+return {"blocks": [
+    {"type": "text", "title": "说明", "text": "采集数据有效"},
+    {"type": "metrics", "items": [
+        {"label": "电压", "value": 205, "unit": "V"},
+    ]},
+    {"type": "table", "title": "测量记录",
+     "columns": ["时间", "电压/V"], "rows": [["10:00", 205], ["10:01", 206]]},
+    {"type": "line", "title": "电压趋势", "unit": "V", "values": [205, 206, 204]},
+]}
+```
+
+折线当前按等间隔样本序号排列，提供可展开的数值列表；不支持自定义时间轴、选点和缩放。
+展示描述用于人工判断待办和运行记录；自动判断结束后也会保存并可回看。
+present 必须接受 decision=None；不能在第一次展示时假设已经有判断结果。
+
+## 8. 执行、版本和故障约束
+
+- 所有接口均为同步方法；需要异步库的模块应在适配层处理，不直接返回协程。
+- 采集、解析、展示、判断必须只读且允许重复调用。默认一次适配器调用总超时 120 秒；超时或进程崩溃重试一次，业务异常不自动重试。
+- 初次自动调用包含多个阶段，120 秒是整次调用预算，不是每个方法各 120 秒。人工等待不占用这个预算。
+- 子进程 stdout 是协议通道，业务 print 会被重定向到 stderr；模块仍应优先使用 logging，不直接操作 stdout 文件描述符。
+- 人工待办保存输入、原始数据、解析快照和展示描述；最终 run 保存结果、依据、阶段耗时、模块标识与版本。
+- 人工提交有提交者与时间；非法提交不会推进分支。回退／终止取消未完成待办，不能用旧待办推进新令牌。
+- 等待不依赖业务对象常驻。当前平台仍不承诺服务重启后自动续跑；这是原有进程恢复能力的边界，不能以适配器对象存活替代它。
+- 发布固定适配器版本及配置，运行及人工恢复时检查版本。改动算法、输入、输出、展示或人工字段后必须递增 version，并重新发布。
+- 版本号不是代码归档。平台不会保存外部源码、依赖或服务响应；需要严格复现时，模块维护者必须保留每版代码、依赖和数据源，旧流程指向独立的版本目录。
+- 同实例切换不同业务工程时会切换子进程。不能依赖另一个工程或另一个节点留在内存中的对象。
+
+## 9. 旧接口兼容与手工验收步骤
+
+旧的普通函数／无参工厂接入仍有效；不含 protocol 的绑定保持原来布尔返回和人工节点语义。
+新四阶段模式必须选择适配器；旧函数返回字典不会自动被当成四阶段结果。
+无绑定的旧人工排查节点也不自动改成四阶段节点，需显式选择适配器。
+
+接入方可按以下步骤验收自己的模块：
+
+1. 用 `ManualVoltage` 发布流程，确认人工取数后显示电压与阈值，再出现判断待办。
+2. 尝试输入负数或清空必填项，确认范围受限或错误可见，待办保留且未推进后继；通过接口提交不合规数据时也应拒绝。
+3. 填写判断依据并选择是／否，确认对应分支执行，历史可见输入、数据和依据。
+4. 换成 `AutomaticJudgmentVoltage`，确认人工取数后直接自动分支。
+5. 配置真实数据服务后，分别使用 `AutomaticAcquisitionVoltage`、`AutomaticVoltage` 验证另外两种组合。
+6. 在等待阶段刷新页面，确认待办与已展示数据保留；回退后旧待办不可提交，重执行使用新令牌。
+7. 修改模块 version 后处理旧待办，确认拒绝使用新版本覆盖旧结果；重新选择适配器并发布新流程后再使用。
+

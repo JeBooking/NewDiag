@@ -21,3 +21,5 @@ __pycache__/
 *.db-wal
 *.db-shm
 data/
+!examples/voltage/data/
+!examples/voltage/data/readings.json

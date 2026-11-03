@@ -1,0 +1,26 @@
+[
+  {
+    "device_id": "motor-01",
+    "time_point": "2026-11-03T10:00:00+08:00",
+    "channel": "bus",
+    "raw_value": 205000,
+    "unit": "mV",
+    "source": "离线示例数据／母线通道"
+  },
+  {
+    "device_id": "motor-02",
+    "time_point": "2026-11-03T10:00:00+08:00",
+    "channel": "bus",
+    "raw_value": 230000,
+    "unit": "mV",
+    "source": "离线示例数据／母线通道"
+  },
+  {
+    "device_id": "motor-03",
+    "time_point": "2026-11-03T10:00:00+08:00",
+    "channel": "bus",
+    "raw_value": 210000,
+    "unit": "mV",
+    "source": "离线示例数据／阈值边界"
+  }
+]
