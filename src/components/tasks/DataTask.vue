@@ -2,7 +2,7 @@
 import { reactive, ref, watch } from 'vue'
 import type { UploadRequestOptions } from 'element-plus'
 import type { ReviewTask } from '@/domain/types'
-import { uploadFile } from '@/services/files'
+import { uploadSizeError, uploadFile } from '@/services/files'
 import { errorText } from '@/services/api'
 import AttachmentList from '@/components/panels/AttachmentList.vue'
 
@@ -20,6 +20,13 @@ watch(() => props.review.id, () => {
       ? JSON.stringify(field.default, null, 2) : field.default
   }
 }, { immediate: true })
+
+function beforeUpload(name: string, file: File): boolean {
+  const message = uploadSizeError(file)
+  if (!message) return true
+  errors[name] = message
+  return false
+}
 
 async function upload(name: string, options: UploadRequestOptions): Promise<void> {
   uploading.value = true
@@ -96,6 +103,7 @@ function submit(): void {
         <div v-else-if="field.type === 'file'">
           <el-upload
             :show-file-list="false" :disabled="busy || uploading"
+            :before-upload="(file: File) => beforeUpload(field.name, file)"
             :http-request="(options: UploadRequestOptions) => upload(field.name, options)"
           >
             <el-button :loading="uploading">上传数据文件</el-button>

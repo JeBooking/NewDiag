@@ -7,6 +7,17 @@ export interface UploadedFile {
   size?: number
 }
 
+/** 单文件上传上限，与 backend/app/services/storage.py 的 MAX_UPLOAD_BYTES 同源 */
+export const MAX_UPLOAD_BYTES = 5 * 1024 ** 3
+
+/** 超限文案，和后端拒绝时的提示保持逐字一致 */
+export const UPLOAD_TOO_LARGE = '文件超过 5 GB 上限'
+
+/** 上传前置校验：只看本地 File.size，超限就不发请求 */
+export function uploadSizeError(file: File): string | null {
+  return file.size > MAX_UPLOAD_BYTES ? UPLOAD_TOO_LARGE : null
+}
+
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined
 }

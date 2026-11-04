@@ -4,13 +4,20 @@ import { ElMessage } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import type { AttachmentRef } from '@/domain/types'
 import { errorText } from '@/services/api'
-import { uploadFile } from '@/services/files'
+import { uploadSizeError, uploadFile } from '@/services/files'
 import AttachmentList from './AttachmentList.vue'
 
 const props = defineProps<{ attachments?: AttachmentRef[]; readonly?: boolean }>()
 const emit = defineEmits<{ (e: 'update', value: AttachmentRef[]): void }>()
 
 const uploading = ref(false)
+
+function beforeUpload(file: File): boolean {
+  const message = uploadSizeError(file)
+  if (!message) return true
+  ElMessage.error(message)
+  return false
+}
 
 async function handleUpload(options: UploadRequestOptions): Promise<void> {
   uploading.value = true
@@ -40,13 +47,14 @@ function remove(hash: string): void {
     <el-upload
       v-if="!readonly"
       :show-file-list="false"
+      :before-upload="beforeUpload"
       :http-request="handleUpload"
       :disabled="uploading"
     >
       <el-button size="small" :loading="uploading">上传附件</el-button>
     </el-upload>
     <p v-if="!readonly" class="hint">
-      参考文件不可在线编辑，要更新就上传新文件替换；单个文件不超过 50 MB
+      参考文件不可在线编辑，要更新就上传新文件替换；单个文件不超过 5 GB
     </p>
   </div>
 </template>
