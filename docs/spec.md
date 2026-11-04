@@ -476,6 +476,8 @@ while 存在可推进的 token:
 - 每个实例一个常驻子进程，`cwd` 为登记工程目录，解释器为登记解释器（缺省用平台自身）
 - 协议：stdin/stdout 上的 JSON 行，请求 `{id, function, args}`，响应 `{id, ok, value|error}`
 - 超时默认 120s，kill 后重启会话重试一次；会话崩溃同样重试一次；业务异常不重试
+- 与子进程的 stdin/stdout/stderr 一律 UTF-8：父进程以 `PYTHONIOENCODING=utf-8` 启动，子进程启动时重设三路流编码；解码失败按错误上报（会话侧计 `execution/crash`，探针侧作发布校验失败），不得用 `errors="replace"` 把坏字节替换成 U+FFFD 后落库
+- 只约束 stdio，不设置 `PYTHONUTF8`：UTF-8 模式会连业务脚本 `open()` 的默认编码一起改掉，读 GBK 文件的老工程会被打挂
 - 采集与判断函数必须只读、可重复调用
 
 ---
@@ -512,7 +514,10 @@ manualFields 使用既有人工字段协议；未绑定获取函数时不能为�
 人工获取时保存全局启动输入，供人工待办定位本次诊断。
 其他阶段 arguments 参数映射支持 `{source:"raw"|"parsed"|"decision"|"inputs", path?:"字段路径"}`、
 `{lit:值}`、`{omit:true}`。inputs 为全局启动输入与获取函数局部启动输入／实际入参合成的上下文。
-缺省映射：解析第一参数接 raw，展示／判断第一参数接 parsed；展示第二参数仅在名为
+缺省映射：解析第一参数接 raw，展示第一参数接 parsed；判断第一参数不能只靠缺省——声明类型为标量
+（text/number/boolean/datetime，以及 float/int/str/bool/date/time/decimal 等 Python 注解，`Optional`／
+`Union` 剥壳后判定）时必须显式写出 `source` 与 `path`，缺 `path` 的发布校验直接报错，避免把整段上游
+数据传给判断函数；非标量参数仍可用缺省的 parsed 接收整段数据。展示第二参数仅在名为
 decision、judgment、result 时接 decision。其余必填参数必须配置，可选参数可省略使用函数默认值。
 解析不能引用 parsed 或 decision，判断不能引用 decision；展示接 decision 时须接受首次调用的 None。
 

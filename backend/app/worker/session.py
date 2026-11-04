@@ -34,6 +34,7 @@ MAX_DEPTH = 5
 
 
 def main() -> int:
+    _force_utf8_stdio()
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(message)s")
     if len(sys.argv) < 2:
         _write({"id": None, "ok": False, "error": "缺少 config 路径参数"})
@@ -154,8 +155,15 @@ def _write(payload: dict) -> None:
     sys.stdout.flush()
 
 
+def _force_utf8_stdio() -> None:
+    """stdio 在解释器启动时按 locale 定死，只能重设流本身；改环境变量已经来不及了。"""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+
+
 if __name__ == "__main__":
-    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     try:
         sys.exit(main())
     except BaseException:  # noqa: BLE001 - 启动失败也要给父进程一个可解析的响应

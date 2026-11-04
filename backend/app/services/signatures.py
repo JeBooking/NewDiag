@@ -295,6 +295,9 @@ def _probe_project(project) -> tuple[list[dict] | None, str]:
         return None, "工程没有登记模块名"
     python = getattr(project, "python", None) or sys.executable
     cwd = config["path"] or None
+    # stdio 编码在解释器启动时就固定了，只能启动前指定；子进程里改环境变量不起作用。
+    # 只动 stdio：PYTHONUTF8=1 会连 open() 的默认编码一起改成 UTF-8，打挂读 GBK 文件的业务脚本
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     fd, config_path = tempfile.mkstemp(prefix="diag-probe-", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -302,12 +305,14 @@ def _probe_project(project) -> tuple[list[dict] | None, str]:
         completed = subprocess.run(
             [python, str(PROBE), config_path],
             cwd=cwd,
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace",
             timeout=PROBE_TIMEOUT,
         )
+    except UnicodeDecodeError as exc:
+        return None, f"探针输出不是 UTF-8：{exc}"
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"探针启动失败：{exc}"
     finally:

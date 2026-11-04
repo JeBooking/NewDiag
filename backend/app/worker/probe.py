@@ -11,7 +11,6 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
-import os
 import sys
 import traceback
 
@@ -31,6 +30,7 @@ SKIP_PARAM_KINDS = (
 
 
 def main() -> int:
+    _force_utf8_stdio()
     if len(sys.argv) < 2:
         _emit({"functions": [], "error": "缺少 config 路径参数"})
         return 2
@@ -218,6 +218,13 @@ def _emit(payload: dict) -> None:
     sys.stdout.flush()
 
 
+def _force_utf8_stdio() -> None:
+    """stdio 在解释器启动时按 locale 定死，只能重设流本身；改环境变量已经来不及了。"""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+
+
 if __name__ == "__main__":
-    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     sys.exit(main())

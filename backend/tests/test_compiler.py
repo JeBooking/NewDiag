@@ -830,3 +830,85 @@ def test_param_list_keeps_trust_flag_without_changing_hash():
 
     trusted = [{**params[0], "defaultTrusted": True}]
     assert signatures._hash_params("f", listed) == signatures._hash_params("f", trusted)
+
+
+# ---------------------------------------------------------------- 四阶段函数管线
+
+
+def pipeline_doc(judge_arguments: dict) -> dict:
+    """取数 → 解析 → 判断 → 展示；judge 的参数映射由用例决定。"""
+    doc = base_doc()
+    n1 = node(doc, "n1")
+    n1.pop("binding", None)
+    n1.pop("outputs", None)
+    n1["pipeline"] = {
+        "acquire": {"project": "cooling", "function": "read_voltage"},
+        "parse": {"project": "cooling", "function": "parse_voltage"},
+        "judge": {
+            "project": "cooling",
+            "function": "judge_voltage",
+            "arguments": judge_arguments,
+        },
+        "present": {"project": "cooling", "function": "present_voltage"},
+    }
+    return doc
+
+
+def pipeline_functions(judge_param: dict | None = None) -> dict:
+    param = judge_param or {
+        "name": "voltage", "type": "float", "required": True, "default": None
+    }
+    return {
+        "cooling:read_voltage": [
+            {"name": "voltage", "type": "number", "required": True, "default": None}
+        ],
+        "cooling:parse_voltage": [
+            {"name": "raw", "type": "any", "required": True, "default": None}
+        ],
+        "cooling:judge_voltage": [param],
+        "cooling:present_voltage": [
+            {"name": "parsed", "type": "any", "required": True, "default": None},
+            {"name": "decision", "type": "text", "required": False, "default": None},
+        ],
+    }
+
+
+def test_judge_scalar_param_without_path_rejected():
+    """judge 拿到整段解析结果会把它塞进 float 参数，必须编译期拦下。"""
+    doc = pipeline_doc({"voltage": {"source": "parsed"}})
+    functions = pipeline_functions()
+
+    with pytest.raises(ValidationError) as info:
+        compile_doc(doc, "f1", 1, functions=functions)
+
+    text = " ".join(issue["message"] for issue in info.value.issues)
+    assert "需要指定上游数据的字段路径" in text
+    assert "voltage" in text
+
+
+def test_judge_scalar_param_with_path_compiles():
+    doc = pipeline_doc({"voltage": {"source": "parsed", "path": "voltage"}})
+    functions = pipeline_functions()
+
+    assert errors(doc, functions=functions) == []
+    plan = compile_doc(doc, "f1", 1, functions=functions)
+    assert plan["steps"]["n1"]["pipeline"]["judge"]["arguments"] == {
+        "voltage": {"source": "parsed", "path": "voltage"}
+    }
+
+
+@pytest.mark.parametrize(
+    "judge_param",
+    [
+        {"name": "voltage", "type": "dict", "required": True, "default": None},
+        # 无类型注解，探针给 any
+        {"name": "voltage", "required": True, "default": None},
+    ],
+)
+def test_judge_non_scalar_param_without_path_allowed(judge_param):
+    """整段数据本来就是这个参数想要的，不触发标量字段路径校验。"""
+    doc = pipeline_doc({"voltage": {"source": "parsed"}})
+    functions = pipeline_functions(judge_param)
+
+    assert errors(doc, functions=functions) == []
+    compile_doc(doc, "f1", 1, functions=functions)

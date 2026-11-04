@@ -17,6 +17,11 @@ LEVEL_WARNING = "warning"
 
 SNAPSHOT_SOURCE = "$snapshot"
 
+# 探针给出注解名（float/int/str/bool），平台类型为 number/text/boolean/datetime，两套都认
+SCALAR_PARAM_TYPES = frozenset(
+    {"text", "number", "boolean", "datetime", "str", "int", "float", "bool", "date", "time", "decimal"}
+)
+
 
 class ValidationError(Exception):
     """doc 校验未通过。issues 与前端 LintIssue 对齐。"""
@@ -653,11 +658,34 @@ def _compile_function_pipeline(node, nodes, edges, start, functions):
                 if source not in allowed or not isinstance(expression.get("path", ""), str):
                     error(f"{stage}.{name} 的数据来源无效")
                     continue
+                # 判断参数多为标量：不指定字段路径就会把整段上游数据传进去，运行期才炸
+                if (
+                    stage == "judge"
+                    and not str(expression.get("path") or "").strip()
+                    and _scalar_type(param.get("type"))
+                ):
+                    error(
+                        f"judge 的参数 {name} 需要指定上游数据的字段路径，"
+                        f"不能把整段 {source} 传给 {param.get('type')} 类型的参数"
+                    )
+                    continue
             arguments[name] = expression
         entry["arguments"] = arguments
     if not pipeline.get("acquire"):
         result["args"] = {name: {"snapshot": name, "optional": True} for name in start.global_names()}
     return result, issues
+
+
+def _scalar_type(kind) -> bool:
+    """注解文本是否为标量；Optional/Union 只要非 None 的成员都是标量就算标量。
+
+    认不出来的类型（any、Optional、dict、list[...]、Literal[...]）一律放行，不猜。
+    """
+    name = str(kind or "").strip().lower().replace("typing.", "")
+    if name.startswith(("optional[", "union[")) and name.endswith("]"):
+        name = name[name.index("[") + 1 : -1]
+    parts = [part.strip() for part in name.replace("|", ",").split(",") if part.strip()]
+    return bool(parts) and all(part == "none" or part in SCALAR_PARAM_TYPES for part in parts)
 
 
 # ---------------------------------------------------------------- 参数绑定

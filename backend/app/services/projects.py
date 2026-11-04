@@ -124,6 +124,8 @@ def probe(project: Any) -> dict[str, Any]:
 
     cwd = Path(project_path) if project_path and Path(project_path).is_dir() else BACKEND_DIR
     env = dict(os.environ)
+    # stdio 编码在解释器启动时就固定了，只能启动前指定；子进程里改环境变量不起作用。
+    # 只动 stdio：PYTHONUTF8=1 会连 open() 的默认编码一起改成 UTF-8，打挂读 GBK 文件的业务脚本
     env["PYTHONIOENCODING"] = "utf-8"
     parts = [str(BACKEND_DIR)]
     if project_path:
@@ -140,12 +142,14 @@ def probe(project: Any) -> dict[str, Any]:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace",
             timeout=PROBE_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
         logger.warning("接口发现超时：%s", project_path)
         return {"functions": [], "error": f"接口发现超时（{PROBE_TIMEOUT_SECONDS}s）"}
+    except UnicodeDecodeError as exc:
+        logger.warning("接口发现输出不是 UTF-8（%s）：%s", project_path, exc)
+        return {"functions": [], "error": f"probe 输出不是 UTF-8：{exc}"}
     except OSError as exc:
         logger.warning("接口发现启动失败：%s", exc)
         return {"functions": [], "error": f"解释器启动失败：{exc}"}

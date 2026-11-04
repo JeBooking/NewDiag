@@ -189,6 +189,9 @@ class SessionManager:
 
         python = getattr(project, "python", None) or sys.executable
         cwd = base["path"] or None
+        # stdio 编码在解释器启动时就固定了，只能启动前指定；子进程里改环境变量不起作用。
+        # 只动 stdio：PYTHONUTF8=1 会连 open() 的默认编码一起改成 UTF-8，打挂读 GBK 文件的业务脚本
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
         try:
             proc = subprocess.Popen(
                 [python, str(WORKER), config_path],
@@ -196,9 +199,9 @@ class SessionManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=cwd,
+                env=env,
                 text=True,
                 encoding="utf-8",
-                errors="replace",
                 bufsize=1,
             )
         except OSError as exc:
@@ -263,6 +266,10 @@ def _pump_stdout(handle: SessionHandle) -> None:
             except json.JSONDecodeError:
                 handle.errors.append(f"无法解析的响应行：{line[:200]}\n")
                 logger.warning("实例 %s 会话输出无法解析：%s", handle.instance_id, line[:200])
+    except UnicodeDecodeError as exc:
+        # 解码失败必须暴露，不能让坏字节被替换成 U+FFFD 落库
+        handle.errors.append(f"会话输出不是 UTF-8：{exc}\n")
+        logger.error("实例 %s 会话输出不是 UTF-8：%s", handle.instance_id, exc)
     finally:
         handle.inbox.put(None)
 
@@ -271,14 +278,31 @@ def _pump_stderr(handle: SessionHandle) -> None:
     stream = handle.proc.stderr
     if stream is None:
         return
+    # 按字节读并逐行解码：业务 print 都被引到 stderr，一旦解码失败就停读，
+    # 管道写满会把子进程阻塞到超时，所以坏字节只标记、不停读。
+    source = getattr(stream, "buffer", None) or stream
     try:
-        for line in stream:
+        for chunk in source:
+            line, decoded = _decode_stderr(chunk)
+            if not decoded:
+                handle.errors.append("会话错误输出不是 UTF-8，已按字节转义记录\n")
+                logger.error("实例 %s 会话错误输出不是 UTF-8", handle.instance_id)
             handle.errors.append(line)
             logger.debug("实例 %s 会话 stderr：%s", handle.instance_id, line.rstrip()[:500])
             if len(handle.errors) > 200:
                 del handle.errors[:100]
     except (OSError, ValueError):
         return
+
+
+def _decode_stderr(chunk) -> tuple[str, bool]:
+    """返回 (文本, 是否按 UTF-8 正常解出)；坏字节转义保留，供排障。"""
+    if isinstance(chunk, str):
+        return chunk, True
+    try:
+        return chunk.decode("utf-8"), True
+    except UnicodeDecodeError:
+        return chunk.decode("utf-8", "backslashreplace"), False
 
 
 def _remove(path: str) -> None:
