@@ -193,8 +193,7 @@ function onSelect(nodeId: string | null): void {
 
 /** 待办卡片上的点击：除了高亮，还要把对应节点挪到视野中央 */
 function focusCanvasNode(nodeId: string): void {
-  const canvas = canvasRef.value as unknown as { focusNode?: (id: string) => void } | null
-  canvas?.focusNode?.(nodeId)
+  canvasRef.value?.focusNode(nodeId)
 }
 
 function onRolledBack(): void {
