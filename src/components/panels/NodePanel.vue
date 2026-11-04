@@ -71,6 +71,8 @@ const orderGroups = computed(() =>
 const codeHint = computed(() => {
   // 能不能绑代码由 KIND_META 声明，别再按类型名判断，否则新增可编程类型时这里会拦错
   if (!KIND_META[props.node.kind].codeCapable) return '该类型由人工完成，不执行代码'
+  if (props.node.kind === 'dataPreparation') return '获取、解析一次，供下游排查共享数据'
+  if (props.node.pipeline?.dataSource) return '复用数据准备结果，只执行展示与判断'
   if (props.node.pipeline) return '平台依次调用四个阶段，无需编写适配器类'
   if (props.node.binding?.protocol === 'investigation/v1') return '四阶段排查：缺省采集或判断由人工完成'
   return props.node.binding ? '已绑定函数，执行时自动判断' : '未绑定函数，执行时由人工判断'
@@ -589,8 +591,10 @@ function addGlobalInput(): void {
         <el-option label="原有函数或适配器类" value="legacy" />
       </el-select>
       <FunctionPipelineEditor
-        v-if="node.kind === 'investigation' && connectionMode === 'functions'"
+        v-if="node.kind === 'dataPreparation'
+          || (node.kind === 'investigation' && connectionMode === 'functions')"
         :key="node.id" :value="pipelineValue" :readonly="readonly"
+        :preparation="node.kind === 'dataPreparation'" :doc="doc" :node-id="node.id"
         @update="patchPipeline"
       />
       <BindingEditor

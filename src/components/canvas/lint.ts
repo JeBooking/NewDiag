@@ -4,6 +4,7 @@ import { canConnect, isSingleSuccessor, needsBranch } from '@/domain/rules'
 import type { DocEdge, DocNode, FlowDoc, InvestigationFields, LintIssue } from '@/domain/types'
 import type { ProjectFunction } from '@/services/projects'
 import { isScalarAnnotation } from '@/services/paramTypes'
+import { dataPreparationDominates } from '@/domain/dataSources'
 
 const FIELD_LABELS: Array<[keyof InvestigationFields, string]> = [
   ['observation', '观察对象'],
@@ -105,6 +106,8 @@ function judgePathIssues(
   for (const param of fn.params) {
     if (!isScalarAnnotation(param.annotation)) continue
     const expression = args[param.name]
+    if (node.pipeline?.dataSource?.path?.trim()
+      && (!expression || ('source' in expression && expression.source === 'parsed'))) continue
     const emptyPath = !!expression && 'source' in expression && !expression.path?.trim()
     const autoWhole = !expression && firstParam?.name === param.name
     if (!emptyPath && !autoWhole) continue
@@ -210,6 +213,13 @@ export function lintDoc(
       }
     }
 
+    if (node.kind === 'dataPreparation' && (outs.some((edge) => edge.branch)
+      || new Set(outs.map((edge) => edge.to)).size !== outs.length)) {
+      issues.push({
+        id: `node:${node.id}:preparation:edges`, level: 'error', nodeId: node.id,
+        message: '数据准备节点的出线不区分是或否，且不能重复连接同一目标',
+      })
+    }
     // 4. 出线数量：终止节点无出线，结论恰好一条，其余至少一条
     if (isTerminalKind(node.kind)) {
       if (outs.length > 0) {
@@ -273,11 +283,34 @@ export function lintDoc(
       }
     }
 
+    if (node.kind === 'dataPreparation' && !node.pipeline) {
+      issues.push({
+        id: `node:${node.id}:pipeline:missing`, level: 'error', nodeId: node.id,
+        message: '数据准备节点必须配置获取与解析阶段',
+      })
+    }
     // 6. 函数绑定
     if (node.pipeline) {
+      const preparation = node.kind === 'dataPreparation'
+      const shared = node.pipeline.dataSource
+      if (shared && (byId.get(shared.node)?.kind !== 'dataPreparation'
+        || !dataPreparationDominates(doc, shared.node, node.id))) {
+        issues.push({
+          id: `node:${node.id}:pipeline:source`, level: 'error', nodeId: node.id,
+          message: '共享数据必须来自在所有进入当前节点的路径上先执行的数据准备节点',
+        })
+      }
+      if ((shared && (preparation || node.pipeline.acquire || node.pipeline.parse
+        || node.pipeline.manualFields?.length))
+        || (preparation && (node.pipeline.present || node.pipeline.judge))) {
+        issues.push({
+          id: `node:${node.id}:pipeline:conflict`, level: 'error', nodeId: node.id,
+          message: '数据准备只配置获取和解析；共享数据排查只配置展示和判断',
+        })
+      }
       const slots = [
-        ['acquire', '获取数据', false], ['parse', '解析数据', true],
-        ['present', '展示数据', true], ['judge', '判断结果', false],
+        ['acquire', '获取数据', false], ['parse', '解析数据', !shared],
+        ['present', '展示数据', !preparation], ['judge', '判断结果', false],
       ] as const
       for (const [stage, label, required] of slots) {
         const binding = node.pipeline[stage]
@@ -288,7 +321,7 @@ export function lintDoc(
           })
         }
       }
-      if (!node.pipeline.acquire && !node.pipeline.manualFields?.length) {
+      if (!shared && !node.pipeline.acquire && !node.pipeline.manualFields?.length) {
         issues.push({
           id: `node:${node.id}:pipeline:fields`, level: 'error', nodeId: node.id,
           message: `节点「${displayName(node)}」需要配置人工数据字段`,

@@ -21,9 +21,10 @@ import traceback
 from contextlib import redirect_stdout
 
 if __package__:
-    from . import node_sdk
+    from . import artifacts, node_sdk
     sys.modules.setdefault("node_sdk", node_sdk)
 else:
+    import artifacts
     import node_sdk
 
 execute_adapter = node_sdk.execute_adapter
@@ -82,7 +83,13 @@ def main() -> int:
                         return [{key: item.get(key) for key in fields} for item in params]
                     if comparable(actual) != comparable(args["signature"]):
                         raise ValueError("函数签名与发布计划不一致，请重新发布")
-                    value = json_value(func(**args["arguments"]))
+                    arguments = dict(args["arguments"])
+                    root = args.get("artifactRoot")
+                    for name, reference in (args.get("artifactArguments") or {}).items():
+                        arguments[name] = artifacts.load(root, reference)
+                    value = json_value(func(**arguments))
+                    if args.get("storeArtifact"):
+                        value = artifacts.save(root, value)
                 else:
                     func = _resolve_callable(target, function_name)
                     value = _json_safe(func(**args))

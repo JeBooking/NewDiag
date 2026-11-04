@@ -6,9 +6,10 @@ import { KIND_META } from './kinds'
  * 开始节点是唯一入口，只出不进；出边只到排查节点。
  */
 export const CONNECTION_RULES: Record<NodeKind, NodeKind[]> = {
-  start: ['investigation'],
-  investigation: ['investigation', 'investigationAction', 'conclusion', 'escalation', 'jump'],
-  investigationAction: ['investigation'],
+  start: ['investigation', 'dataPreparation'],
+  dataPreparation: ['dataPreparation', 'investigation'],
+  investigation: ['dataPreparation', 'investigation', 'investigationAction', 'conclusion', 'escalation', 'jump'],
+  investigationAction: ['investigation', 'dataPreparation'],
   conclusion: ['remediation', 'escalation', 'jump'],
   remediation: ['remediation', 'problemSolved', 'escalation', 'jump'],
   problemSolved: [],
@@ -17,6 +18,7 @@ export const CONNECTION_RULES: Record<NodeKind, NodeKind[]> = {
   // 跳转是转交到另一条诊断链路的枢纽：除开始节点（唯一入口、只出不进）外都可作为后继。
   // 仍只允许一条出线，放开的是「能连什么类型」，不是「能连几条」。
   jump: [
+    'dataPreparation',
     'investigation',
     'investigationAction',
     'conclusion',

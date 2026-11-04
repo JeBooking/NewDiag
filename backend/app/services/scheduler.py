@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import threading
 import time
@@ -23,6 +24,7 @@ from app.logging_setup import brief
 from app.services import signatures
 from app.services.sessions import SessionCrashed, SessionError, SessionManager, SessionTimeout
 from app.worker.function_pipeline import PipelineFailure, execute_pipeline, persisted_state
+from app.worker import artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -611,6 +613,16 @@ class Scheduler:
         context = snapshot.get("global", snapshot)
         local = (snapshot.get("scope") or {}).get(function, {})
         state["inputContext"] = {**context, **local, **args}
+        if not error and pipeline.get("dataSource"):
+            source = pipeline["dataSource"]
+            found, reference = self._lookup_run(db, instance, token, source["node"], "output.data")
+            if not found or not artifacts.is_reference(reference):
+                error = "当前诊断路径上没有可复用的数据准备结果"
+            else:
+                state["parsed"] = artifacts.select(reference, source.get("path", ""))
+                state["dataSource"] = {**source, "artifact": state["parsed"]}
+                logger.info("实例 %s 节点 %s 复用数据准备 %s 产物 %s", instance.id, token.node_id,
+                            source["node"], reference["$artifact"])
         if error:
             value, failure = None, (ERR_ARGUMENT, error, 1)
         else:
@@ -628,8 +640,17 @@ class Scheduler:
 
     def _invoke_functions(self, db, instance, token, pipeline, state, operation, **extra):
         def invoke(binding, args):
+            shared = pipeline.get("preparation") or pipeline.get("dataSource")
             request = {"function": binding["function"], "signature": binding["signature"],
                        "arguments": args}
+            if shared:
+                request["artifactRoot"] = str(self._artifact_root(instance.id))
+                request["artifactArguments"] = {
+                    name: value for name, value in args.items()
+                    if artifacts.is_reference(value)
+                    and (binding.get("arguments", {}).get(name) or {}).get("source") in ("raw", "parsed")
+                }
+                request["storeArtifact"] = binding.get("_stage") in ("acquire", "parse")
             call = {"project": binding["project"], "function": "__newdiag_function__"}
             value, failure = self._invoke(db, instance, call, request, token)
             if failure:
@@ -645,6 +666,10 @@ class Scheduler:
             return None, exc.failure
         except (ValueError, TypeError, KeyError) as exc:
             return None, (ERR_EXCEPTION, str(exc), 1)
+
+    def _artifact_root(self, instance_id):
+        # 按实例分目录，业务返回的标识不能访问另一实例的数据。
+        return db_module.data_dir() / "artifacts" / hashlib.sha256(instance_id.encode()).hexdigest()
 
     def _resolve_manual_data(self, db, state, data):
         if not isinstance(data, dict):
@@ -707,11 +732,20 @@ class Scheduler:
         return self._invoke(db, instance, rpc_call, request, token)
 
     def _accept_pipeline(self, db, instance, plan, token, step, value) -> None:
-        if not isinstance(value, dict) or value.get("status") not in ("acquisition", "judgment", "complete"):
+        if not isinstance(value, dict) or value.get("status") not in ("acquisition", "judgment", "complete", "prepared"):
             raise ValueError("适配器返回了无效的阶段响应")
         state = value["state"]
         status = value["status"]
         call = step.get("call") or {"function": "平台四阶段函数", "version": "1"}
+        if status == "prepared":
+            self._write_run(db, instance, token, status="ok", args=state["inputs"],
+                            started=state.get("startedAt"), output={"data": state["parsed"]},
+                            evidence={"pipeline": persisted_state(state), "prepared": True})
+            self._spawn_successors(db, instance, plan, token, step, "default")
+            token.status = "done"
+            token.updated_at = now_iso()
+            db.flush()
+            return
         if status != "complete":
             meta = self._node_meta(db, instance, token.node_id)
             state["manualFields"] = value.get("fields") or state.get("manualFields") or []
@@ -720,7 +754,7 @@ class Scheduler:
                 kind="decision", status="pending", created_at=now_iso(),
                 request_json=_dumps({
                     "title": meta.get("title") or token.node_id,
-                    "detail": meta.get("detail") or "", "nodeKind": "investigation",
+                    "detail": meta.get("detail") or "", "nodeKind": step["kind"],
                     "type": status, "pipeline": persisted_state(state, include_parsed=True),
                     "fields": state["manualFields"] if status == "acquisition" else [],
                     "evidence": state.get("parsed"), "presentation": state.get("presentation"),
@@ -821,6 +855,11 @@ class Scheduler:
                     if expr.get("optional"):
                         continue
                     return {}, f"找不到节点 {expr['run']} 的输出 {expr.get('path')}"
+                if artifacts.is_reference(value):
+                    try:
+                        value = artifacts.load(self._artifact_root(instance.id), value)
+                    except (ValueError, OSError) as exc:
+                        return {}, f"参数 {name} 的共享数据读取失败：{exc}"
                 args[name] = value
             else:
                 return {}, f"参数 {name} 的表达式不合法"
@@ -849,7 +888,17 @@ class Scheduler:
         elif parts and parts[0] == "input":
             root = _loads(run.input_json)
             parts = parts[1:]
-        return _lookup(root, ".".join(parts)) if parts else (True, root)
+        for index, part in enumerate(parts):
+            if artifacts.is_reference(root):
+                try:
+                    reference = artifacts.select(root, ".".join(parts[index:]))
+                    return True, artifacts.load(self._artifact_root(instance.id), reference)
+                except (ValueError, OSError):
+                    return False, None
+            found, root = _lookup(root, part)
+            if not found:
+                return False, None
+        return True, root
 
     def _snapshot_payload(self, db, instance) -> dict:
         if not instance.snapshot_id:

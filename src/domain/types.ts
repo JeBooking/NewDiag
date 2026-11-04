@@ -3,6 +3,7 @@ export type FlowMode = 'parallel' | 'serial'
 export type NodeKind =
   | 'start'
   | 'investigation'
+  | 'dataPreparation'
   | 'investigationAction'
   | 'conclusion'
   | 'remediation'
@@ -58,6 +59,7 @@ export interface StageFunction {
 }
 
 export interface FunctionPipeline {
+  dataSource?: { node: string; path?: string }
   acquire?: StageFunction
   parse?: StageFunction
   present?: StageFunction
