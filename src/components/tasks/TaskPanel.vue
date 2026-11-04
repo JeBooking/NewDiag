@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import type { FlowDoc, ReviewTask } from '@/domain/types'
+import type { FlowDoc, InstanceDetail, ReviewTask } from '@/domain/types'
 import { errorText } from '@/services/api'
 import { useInstancesStore } from '@/stores/instances'
 import ActionTask from './ActionTask.vue'
 import DecisionTask from './DecisionTask.vue'
 import DataTask from './DataTask.vue'
+import RollbackDialog from './RollbackDialog.vue'
 
 const props = defineProps<{
   reviews: ReviewTask[]
+  detail: InstanceDetail | null
   doc: FlowDoc | null
   /** 画布上选中的节点：待办列表跟着高亮，形成「节点 ↔ 待办」双向指向 */
   focusNodeId?: string | null
@@ -27,6 +29,7 @@ const selectedId = ref<string | null>(null)
 const busy = ref(false)
 const submitError = ref('')
 watch(selectedId, () => { submitError.value = '' })
+const rollbackVisible = ref(false)
 
 const selected = computed(() => props.reviews.find((item) => item.id === selectedId.value) ?? null)
 
@@ -130,6 +133,12 @@ async function complete(): Promise<void> {
     busy.value = false
   }
 }
+
+function onRolledBack(): void {
+  selectedId.value = null
+  emit('changed')
+  emit('select', null)
+}
 </script>
 
 <template>
@@ -184,9 +193,17 @@ async function complete(): Promise<void> {
           :review="selected"
           :busy="busy"
           @complete="complete"
+          @rollback="rollbackVisible = true"
         />
       </div>
     </template>
+
+    <RollbackDialog
+      v-model="rollbackVisible"
+      :detail="detail"
+      :doc="doc"
+      @submitted="onRolledBack"
+    />
   </div>
 </template>
 
