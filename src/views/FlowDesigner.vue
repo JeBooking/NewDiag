@@ -2,7 +2,16 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { FullScreen, RefreshLeft, RefreshRight, Share, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
+import {
+  ArrowLeft,
+  ArrowRight,
+  FullScreen,
+  RefreshLeft,
+  RefreshRight,
+  Share,
+  ZoomIn,
+  ZoomOut,
+} from '@element-plus/icons-vue'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import FlowCanvas from '@/components/canvas/FlowCanvas.vue'
 import { layoutDoc } from '@/components/canvas/autolayout'
@@ -412,14 +421,6 @@ onBeforeRouteLeave(async () => {
 
       <el-button :icon="FullScreen" :disabled="!canvas" @click="fitCanvas">适应画布</el-button>
       <el-button :icon="Share" :disabled="!editor.editable" @click="autoLayout">自动布局</el-button>
-      <el-button
-        class="properties-toggle"
-        aria-controls="designer-properties"
-        :aria-expanded="propertiesExpanded"
-        @click="propertiesExpanded = !propertiesExpanded"
-      >
-        {{ propertiesExpanded ? '收起属性栏' : '展开属性栏' }}
-      </el-button>
     </div>
 
     <div class="body" v-loading="editor.loading">
@@ -438,30 +439,48 @@ onBeforeRouteLeave(async () => {
         <el-empty v-else-if="!editor.loading" description="流程不存在或没有可编辑的文档" />
       </div>
 
-      <aside id="designer-properties" v-show="propertiesExpanded" class="panel" aria-label="属性栏">
-        <NodePanel
-          v-if="editor.selectedNode"
-          :node="editor.selectedNode"
-          :successor-groups="successorGroups"
-          :mode="editor.doc?.mode ?? 'parallel'"
-          :readonly="editor.readonly"
-          :flow-id="editor.flow?.id"
-          :doc="editor.doc ?? undefined"
-          @update="patchNode"
-          @delete="deleteNode"
-          @reorder="reorderEdge"
-        />
-        <FlowPanel
-          v-else-if="editor.flow"
-          :flow="editor.flow"
-          :snapshot-fields="editor.doc?.snapshotFields ?? []"
-          :readonly="editor.readonly"
-          :publishing="editor.publishing"
-          @update-meta="patchMeta"
-          @update-snapshot-fields="patchSnapshotFields"
-          @publish="publish"
-        />
-      </aside>
+      <!-- 收起控件挂在属性栏自身边缘：收起后属性栏宽度归零，箭头仍贴在画布右缘可再点开 -->
+      <div class="panel-dock">
+        <button
+          type="button"
+          class="panel-toggle"
+          aria-controls="designer-properties"
+          :aria-expanded="propertiesExpanded"
+          :aria-label="propertiesExpanded ? '收起属性栏' : '展开属性栏'"
+          :title="propertiesExpanded ? '收起属性栏' : '展开属性栏'"
+          @click="propertiesExpanded = !propertiesExpanded"
+        >
+          <el-icon>
+            <ArrowRight v-if="propertiesExpanded" />
+            <ArrowLeft v-else />
+          </el-icon>
+        </button>
+
+        <aside id="designer-properties" v-show="propertiesExpanded" class="panel" aria-label="属性栏">
+          <NodePanel
+            v-if="editor.selectedNode"
+            :node="editor.selectedNode"
+            :successor-groups="successorGroups"
+            :mode="editor.doc?.mode ?? 'parallel'"
+            :readonly="editor.readonly"
+            :flow-id="editor.flow?.id"
+            :doc="editor.doc ?? undefined"
+            @update="patchNode"
+            @delete="deleteNode"
+            @reorder="reorderEdge"
+          />
+          <FlowPanel
+            v-else-if="editor.flow"
+            :flow="editor.flow"
+            :snapshot-fields="editor.doc?.snapshotFields ?? []"
+            :readonly="editor.readonly"
+            :publishing="editor.publishing"
+            @update-meta="patchMeta"
+            @update-snapshot-fields="patchSnapshotFields"
+            @publish="publish"
+          />
+        </aside>
+      </div>
     </div>
 
     <el-dialog v-model="issuesVisible" title="校验问题" width="560px">
@@ -525,10 +544,6 @@ onBeforeRouteLeave(async () => {
   flex: none;
 }
 
-.opsbar .properties-toggle {
-  margin-left: auto;
-}
-
 .opsbar :deep(.el-button-group) {
   display: inline-flex;
 }
@@ -567,6 +582,13 @@ onBeforeRouteLeave(async () => {
   background: var(--el-bg-color-page);
 }
 
+/* 属性栏底座：宽度由属性栏撑开，收起后归零；箭头绝对定位在底座左缘外侧，收起时随底座落到画布右缘 */
+.panel-dock {
+  display: flex;
+  flex: none;
+  position: relative;
+}
+
 .panel {
   width: var(--app-panel-width);
   flex: none;
@@ -574,6 +596,33 @@ onBeforeRouteLeave(async () => {
   background: var(--el-bg-color);
   padding: 14px 16px 24px;
   overflow: auto;
+}
+
+/* 展开与收起共用同一位置：整块贴在属性栏左边框外侧，收起后自然落在画布右缘 */
+.panel-toggle {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translate(-100%, -50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--el-border-color);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  background: var(--el-bg-color);
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.panel-toggle:hover {
+  color: var(--el-color-primary);
+  border-color: var(--el-color-primary);
 }
 
 .issue-list {
