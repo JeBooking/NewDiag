@@ -69,8 +69,8 @@ def validate_doc(
 
     for nid, node in nodes_by_id.items():
         kind = node.get("kind")
-        if "pipeline" in node and kind != "investigation":
-            issues.append(_issue(LEVEL_ERROR, "只有排查节点支持四阶段函数", node_id=nid))
+        if "pipeline" in node and kind not in ("investigation", "dataPreparation"):
+            issues.append(_issue(LEVEL_ERROR, "只有排查或数据准备节点支持阶段函数", node_id=nid))
         if kind not in rules.V1_KINDS:
             issues.append(_issue(LEVEL_ERROR, f"v1 不支持的节点类型：{kind}", node_id=nid))
 
@@ -127,6 +127,13 @@ class InvestigationNode(NodeDefinition):
         return step
 
 
+class DataPreparationNode(NodeDefinition):
+    def compile(self, node, nodes, edges, start, functions):
+        step = super().compile(node, nodes, edges, start, functions)
+        step["pipeline"], _ = _compile_function_pipeline(node, nodes, edges, start, functions)
+        return step
+
+
 class HumanNode(NodeDefinition):
     def compile(self, node, nodes, edges, start, functions):
         return {**super().compile(node, nodes, edges, start, functions), "human": True}
@@ -165,6 +172,7 @@ class EscalationNode(TerminalNode):
 
 NODE_DEFINITIONS = {
     "start": StartNode(), "investigation": InvestigationNode(),
+    "dataPreparation": DataPreparationNode(),
     "investigationAction": InvestigationActionNode(), "remediation": RemediationNode(),
     "jump": JumpNode(), "conclusion": ConclusionNode(),
     "problemSolved": ProblemSolvedNode(), "escalation": EscalationNode(),
@@ -357,6 +365,12 @@ def _check_out_edges(
                 issues.append(
                     _issue(LEVEL_ERROR, f"重复连接：{pair[0]}（{pair[1]}）", node_id=nid)
                 )
+        elif kind == "dataPreparation":
+            targets = [edge.get("to") for edge in out_edges]
+            if len(targets) != len(set(targets)):
+                issues.append(_issue(LEVEL_ERROR, "数据准备节点不能重复连接同一目标", node_id=nid))
+            if any(edge.get("branch") is not None for edge in out_edges):
+                issues.append(_issue(LEVEL_ERROR, "数据准备节点的出线不能配置是/否分支", node_id=nid))
         elif rules.is_single_successor(kind):
             if len(out_edges) != 1:
                 issues.append(
@@ -539,7 +553,10 @@ def _check_bindings(
 ) -> None:
     """spec 4.8：参数来源必须在当前版本存在，且位于该节点上游。"""
     for nid, node in nodes_by_id.items():
-        if node.get("kind") != "investigation":
+        if node.get("kind") not in ("investigation", "dataPreparation"):
+            continue
+        if node.get("kind") == "dataPreparation" and "pipeline" not in node:
+            issues.append(_issue(LEVEL_ERROR, "数据准备节点必须配置获取与解析阶段", node_id=nid))
             continue
         if "pipeline" in node:
             _, found = _compile_function_pipeline(node, nodes_by_id, edges, start, functions)
@@ -584,7 +601,27 @@ def _compile_function_pipeline(node, nodes, edges, start, functions):
         error("四阶段函数配置必须为对象")
         return result, issues
     if node.get("binding"):
-        error("四阶段函数与旧入口绑定不能同时配置")
+        error("阶段函数与旧入口绑定不能同时配置")
+    preparation = node.get("kind") == "dataPreparation"
+    data_source = pipeline.get("dataSource")
+    if preparation:
+        result["preparation"] = True
+        if data_source is not None or pipeline.get("present") or pipeline.get("judge"):
+            error("数据准备节点只支持获取与解析阶段")
+    if data_source is not None:
+        if not isinstance(data_source, dict) or not isinstance(data_source.get("node"), str):
+            error("共享数据来源必须指定数据准备节点")
+        else:
+            producer = nodes.get(data_source["node"], {})
+            if producer.get("kind") != "dataPreparation" or data_source["node"] == node["id"]:
+                error("共享数据来源必须是其他数据准备节点")
+            elif not _dominates(data_source["node"], node["id"], nodes, edges, start.id):
+                error("数据准备节点必须在所有进入当前节点的路径上先执行，不能引用旁路或未来结果")
+            if not isinstance(data_source.get("path", ""), str):
+                error("共享数据字段路径必须为字符串")
+            result["dataSource"] = data_source
+        if pipeline.get("acquire") or pipeline.get("parse") or pipeline.get("manualFields"):
+            error("使用共享数据时不能同时配置获取、解析或人工数据字段")
     fields = pipeline.get("manualFields", [])
     if not isinstance(fields, list):
         error("人工数据字段必须为数组")
@@ -600,9 +637,13 @@ def _compile_function_pipeline(node, nodes, edges, start, functions):
         if field.get("type", "text") not in ("text", "number", "boolean", "datetime", "json", "file"):
             error(f"不支持的人工字段类型：{field.get('type')}")
     result["manualFields"] = fields
-    if not pipeline.get("acquire") and not fields:
+    if data_source is None and not pipeline.get("acquire") and not fields:
         error("人工取数时必须配置数据字段")
     for stage in STAGES:
+        if preparation and stage in ("present", "judge"):
+            continue
+        if data_source is not None and stage in ("acquire", "parse"):
+            continue
         binding = pipeline.get(stage)
         if not binding:
             if stage in ("parse", "present"):
@@ -664,6 +705,8 @@ def _compile_function_pipeline(node, nodes, edges, start, functions):
                     stage == "judge"
                     and not str(expression.get("path") or "").strip()
                     and _scalar_type(param.get("type"))
+                    and not (source == "parsed" and isinstance(data_source, dict)
+                             and str(data_source.get("path") or "").strip())
                 ):
                     error(
                         f"judge 的参数 {name} 需要指定上游数据的字段路径，"
@@ -675,6 +718,22 @@ def _compile_function_pipeline(node, nodes, edges, start, functions):
     if not pipeline.get("acquire"):
         result["args"] = {name: {"snapshot": name, "optional": True} for name in start.global_names()}
     return result, issues
+
+
+def _dominates(producer, consumer, nodes, edges, entry):
+    if not entry or producer not in _upstream_ids(consumer, edges):
+        return False
+    outgoing = _outgoing_map(nodes, edges)
+    visited, pending = set(), [entry]
+    while pending:
+        current = pending.pop()
+        if current == producer or current in visited:
+            continue
+        if current == consumer:
+            return False
+        visited.add(current)
+        pending.extend(outgoing.get(current, []))
+    return True
 
 
 def _scalar_type(kind) -> bool:
@@ -1071,6 +1130,7 @@ def _kind_label(kind: str) -> str:
     return {
         "start": "开始",
         "investigation": "排查",
+        "dataPreparation": "数据准备",
         "investigationAction": "排查动作",
         "conclusion": "结论",
         "remediation": "处置措施",

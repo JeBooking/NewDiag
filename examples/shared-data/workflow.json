@@ -1,0 +1,207 @@
+{
+  "format": 1,
+  "name": "共享报告排查",
+  "mode": "parallel",
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始",
+      "detail": "",
+      "position": {
+        "x": 0,
+        "y": 120
+      }
+    },
+    {
+      "id": "report",
+      "kind": "dataPreparation",
+      "title": "准备同一份报告",
+      "detail": "获取文件路径并解析一次",
+      "position": {
+        "x": 260,
+        "y": 120
+      },
+      "pipeline": {
+        "acquire": {
+          "project": "共享报告示例",
+          "function": "locate_report"
+        },
+        "parse": {
+          "project": "共享报告示例",
+          "function": "decode_report"
+        },
+        "manualFields": []
+      }
+    },
+    {
+      "id": "voltage",
+      "kind": "investigation",
+      "title": "检查电压",
+      "detail": "复用报告中的对应字段",
+      "fields": {
+        "observation": "检查电压",
+        "acquisition": "共享准备结果",
+        "assessment": "高于 230 为是"
+      },
+      "position": {
+        "x": 520,
+        "y": 0
+      },
+      "pipeline": {
+        "dataSource": {
+          "node": "report"
+        },
+        "manualFields": [],
+        "present": {
+          "project": "共享报告示例",
+          "function": "describe_value",
+          "arguments": {
+            "value": {
+              "source": "parsed",
+              "path": "voltage"
+            }
+          }
+        },
+        "judge": {
+          "project": "共享报告示例",
+          "function": "above_limit",
+          "arguments": {
+            "value": {
+              "source": "parsed",
+              "path": "voltage"
+            },
+            "limit": {
+              "lit": 230
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "voltage-yes",
+      "kind": "escalation",
+      "title": "检查电压超限",
+      "detail": "本示例到此结束",
+      "position": {
+        "x": 800,
+        "y": 0
+      }
+    },
+    {
+      "id": "voltage-no",
+      "kind": "escalation",
+      "title": "检查电压未超限",
+      "detail": "本示例到此结束",
+      "position": {
+        "x": 800,
+        "y": 120
+      }
+    },
+    {
+      "id": "current",
+      "kind": "investigation",
+      "title": "检查电流",
+      "detail": "复用报告中的对应字段",
+      "fields": {
+        "observation": "检查电流",
+        "acquisition": "共享准备结果",
+        "assessment": "高于 10 为是"
+      },
+      "position": {
+        "x": 520,
+        "y": 260
+      },
+      "pipeline": {
+        "dataSource": {
+          "node": "report"
+        },
+        "manualFields": [],
+        "present": {
+          "project": "共享报告示例",
+          "function": "describe_value",
+          "arguments": {
+            "value": {
+              "source": "parsed",
+              "path": "current"
+            }
+          }
+        },
+        "judge": {
+          "project": "共享报告示例",
+          "function": "above_limit",
+          "arguments": {
+            "value": {
+              "source": "parsed",
+              "path": "current"
+            },
+            "limit": {
+              "lit": 10
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "current-yes",
+      "kind": "escalation",
+      "title": "检查电流超限",
+      "detail": "本示例到此结束",
+      "position": {
+        "x": 800,
+        "y": 300
+      }
+    },
+    {
+      "id": "current-no",
+      "kind": "escalation",
+      "title": "检查电流未超限",
+      "detail": "本示例到此结束",
+      "position": {
+        "x": 800,
+        "y": 420
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "start-report",
+      "from": "start",
+      "to": "report"
+    },
+    {
+      "id": "report-voltage",
+      "from": "report",
+      "to": "voltage"
+    },
+    {
+      "id": "voltage-yes",
+      "from": "voltage",
+      "to": "voltage-yes",
+      "branch": "yes"
+    },
+    {
+      "id": "voltage-no",
+      "from": "voltage",
+      "to": "voltage-no",
+      "branch": "no"
+    },
+    {
+      "id": "report-current",
+      "from": "report",
+      "to": "current"
+    },
+    {
+      "id": "current-yes",
+      "from": "current",
+      "to": "current-yes",
+      "branch": "yes"
+    },
+    {
+      "id": "current-no",
+      "from": "current",
+      "to": "current-no",
+      "branch": "no"
+    }
+  ]
+}

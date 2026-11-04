@@ -17,6 +17,7 @@ FlowMode = Literal["parallel", "serial"]
 NodeKind = Literal[
     "start",
     "investigation",
+    "dataPreparation",
     "investigationAction",
     "conclusion",
     "remediation",

@@ -122,6 +122,7 @@ const verdict = computed(() => {
   const branch = (evidence as { branch?: unknown }).branch
   if (branch === 'yes') return '是'
   if (branch === 'no') return '否'
+  if ('prepared' in evidence) return '数据已准备，可供下游共享'
   return pretty(evidence)
 })
 

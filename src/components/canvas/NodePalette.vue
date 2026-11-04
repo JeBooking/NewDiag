@@ -10,6 +10,7 @@ const emit = defineEmits<{
 }>()
 
 const descriptions: Partial<Record<NodeKind, string>> = {
+  dataPreparation: '获取并解析一次数据，供后续多个排查节点按字段复用。沿默认出线继续，不作是或否判断。',
   investigation: '判断一个排查条件。可绑定函数自动判断，也可由执行人判断；结果沿“是”或“否”分支继续。',
   investigationAction: '要求执行人先完成一项检查或采集操作，再进入后续排查节点判断结果。',
   conclusion: '记录这条排查路径得出的结论。显示预先填写的结论文本，再沿唯一后继进入处置或上升。',

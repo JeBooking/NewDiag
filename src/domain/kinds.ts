@@ -23,6 +23,12 @@ export const KIND_META: Record<NodeKind, KindMeta> = {
     branch: 'single',
     entry: true,
   },
+  dataPreparation: {
+    label: '数据准备',
+    color: '#0e7490',
+    codeCapable: true,
+    branch: 'single',
+  },
   investigation: {
     label: '排查',
     color: '#2563eb',
@@ -75,6 +81,7 @@ export const KIND_META: Record<NodeKind, KindMeta> = {
 }
 
 export const V1_KINDS: NodeKind[] = [
+  'dataPreparation',
   'investigation',
   'investigationAction',
   'conclusion',

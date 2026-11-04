@@ -5,6 +5,7 @@ import json
 import time
 
 from .node_sdk import json_value, presentation, validate_fields
+from . import artifacts
 
 STAGES = ("acquire", "parse", "present", "judge")
 SOURCES = {"raw", "parsed", "decision", "inputs"}
@@ -27,7 +28,7 @@ def default_argument(stage: str, index: int):
     return None
 
 
-def map_arguments(binding, state):
+def map_arguments(binding, state, *, references=False):
     result = {}
     for name, expression in binding.get("arguments", {}).items():
         if "lit" in expression:
@@ -35,6 +36,9 @@ def map_arguments(binding, state):
             continue
         value = (state.get("inputContext", state.get("inputs"))
                  if expression["source"] == "inputs" else state.get(expression["source"]))
+        if references and expression["source"] in ("raw", "parsed") and artifacts.is_reference(value):
+            result[name] = artifacts.select(value, expression.get("path", ""))
+            continue
         for part in expression.get("path", "").split("."):
             if not part:
                 continue
@@ -99,6 +103,7 @@ def persisted_state(state, *, include_parsed: bool = False):
         "inputs": state.get("inputs"),
         "stages": [_summary_stage(stage) for stage in state.get("stages") or []],
         "startedAt": state.get("startedAt"),
+        **({"dataSource": state["dataSource"]} if "dataSource" in state else {}),
     }
     if state.get("raw") is not None:
         projection["raw"] = _summary(state["raw"])
@@ -115,10 +120,12 @@ def execute_pipeline(pipeline, state, operation, invoke, *, data=None, decision=
 
     def run(stage, arguments=None):
         binding = pipeline[stage]
-        args = arguments if arguments is not None else map_arguments(binding, state)
+        args = arguments if arguments is not None else map_arguments(
+            binding, state, references=bool(pipeline.get("preparation") or pipeline.get("dataSource")),
+        )
         started = time.perf_counter()
         try:
-            value = json_value(invoke(binding, args))
+            value = json_value(invoke({**binding, "_stage": stage}, args))
         except PipelineFailure as exc:
             code, message, attempts = exc.failure
             state["stages"].append({"stage": stage, "arguments": args, "error": message})
@@ -132,15 +139,21 @@ def execute_pipeline(pipeline, state, operation, invoke, *, data=None, decision=
         })
         return value
 
-    if operation == "start" and not pipeline.get("acquire"):
+    if operation == "start" and not pipeline.get("acquire") and not pipeline.get("dataSource"):
         return {"status": "acquisition", "state": state, "fields": pipeline["manualFields"]}
     if operation in ("start", "acquisition"):
-        if operation == "start":
+        if pipeline.get("dataSource"):
+            if "parsed" not in state:
+                raise ValueError("未找到共享数据准备结果")
+        elif operation == "start":
             state["raw"] = run("acquire", state["inputs"])
         else:
             state["raw"] = validate_fields(pipeline["manualFields"], data)
             state["stages"].append({"stage": "manualAcquisition"})
-        state["parsed"] = run("parse")
+        if not pipeline.get("dataSource"):
+            state["parsed"] = run("parse")
+        if pipeline.get("preparation"):
+            return {"status": "prepared", "state": state}
         state["decision"] = None
         state["presentation"] = normalize_presentation(run("present"))
         if not pipeline.get("judge"):

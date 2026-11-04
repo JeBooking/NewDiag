@@ -10,16 +10,18 @@ from __future__ import annotations
 # 连接矩阵：key 为来源类型，value 为允许的目标类型。
 # start 只用于入口判定，generic 只用于非诊断元素的边界（本模型无此节点）。
 CONNECTION_RULES: dict[str, list[str]] = {
-    "start": ["investigation", "generic"],
+    "start": ["investigation", "dataPreparation", "generic"],
+    "dataPreparation": ["dataPreparation", "investigation"],
     "generic": ["remediation", "problemSolved", "escalation", "generic"],
-    "investigation": ["investigation", "investigationAction", "conclusion", "escalation", "jump"],
-    "investigationAction": ["investigation"],
+    "investigation": ["dataPreparation", "investigation", "investigationAction", "conclusion", "escalation", "jump"],
+    "investigationAction": ["investigation", "dataPreparation"],
     "conclusion": ["remediation", "escalation", "jump"],
     "remediation": ["remediation", "problemSolved", "escalation", "jump"],
     "problemSolved": [],
     "escalation": [],
     # 转交成功后可以接除 start 以外的任意节点类型；转交失败由人工待办回退，不另设分支
     "jump": [
+        "dataPreparation",
         "investigation",
         "investigationAction",
         "conclusion",
@@ -38,6 +40,7 @@ START_KIND = "start"
 # 因此导入含 deepDiagnosis 节点的文档仍会在编译期被拒绝（快速失败，不留到执行时）。
 KIND_SPECS: dict[str, dict[str, bool | str]] = {
     START_KIND: {"branch": "single", "entry": True},
+    "dataPreparation": {"branch": "single", "code_capable": True},
     "investigation": {"branch": "yesno", "code_capable": True},
     "investigationAction": {"branch": "single", "human_only": True},
     "conclusion": {"branch": "single", "single_successor": True},
@@ -51,6 +54,7 @@ KIND_SPECS: dict[str, dict[str, bool | str]] = {
 
 V1_KINDS = (
     START_KIND,
+    "dataPreparation",
     "investigation",
     "investigationAction",
     "conclusion",
@@ -110,7 +114,7 @@ def needs_branch(kind: str) -> bool:
 
 def allows_multiple_targets(kind: str) -> bool:
     """开始节点把出边一次性全部投递，不算隐式分叉。"""
-    return kind == START_KIND
+    return kind in (START_KIND, "dataPreparation")
 
 
 def is_single_successor(kind: str) -> bool:

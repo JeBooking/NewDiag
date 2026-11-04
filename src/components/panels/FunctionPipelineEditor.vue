@@ -1,13 +1,20 @@
 <script setup lang="ts">
-import { reactive } from 'vue'
+import { computed, reactive } from 'vue'
 import type {
-  FunctionPipeline, ManualField, NodeBinding, StageArgument, StageName,
+  FlowDoc, FunctionPipeline, ManualField, NodeBinding, StageArgument, StageName,
 } from '@/domain/types'
 import type { ProjectFunction, ProjectFunctionParam } from '@/services/projects'
 import { isScalarParam } from '@/services/paramTypes'
+import { dataPreparationDominates } from '@/domain/dataSources'
 import BindingEditor from '@/components/panels/BindingEditor.vue'
 
-const props = defineProps<{ value: FunctionPipeline; readonly?: boolean }>()
+const props = defineProps<{
+  value: FunctionPipeline
+  readonly?: boolean
+  preparation?: boolean
+  doc?: FlowDoc
+  nodeId?: string
+}>()
 const emit = defineEmits<{ (e: 'update', value: FunctionPipeline): void }>()
 const descriptions = reactive<Partial<Record<StageName, ProjectFunction>>>({})
 const errors = reactive<Record<string, string>>({})
@@ -17,6 +24,36 @@ const stages: { name: StageName; title: string; hint: string }[] = [
   { name: 'present', title: '展示数据', hint: '必选；默认接收解析结果，判断前后各调用一次。' },
   { name: 'judge', title: '判断结果', hint: '可选；留空时展示数据并等待人工判断。' },
 ]
+const visibleStages = computed(() => stages.filter((stage) => {
+  if (props.preparation) return stage.name === 'acquire' || stage.name === 'parse'
+  if (props.value.dataSource) return stage.name === 'present' || stage.name === 'judge'
+  return true
+}))
+const preparations = computed(() => props.doc?.nodes.filter((node) =>
+  node.kind === 'dataPreparation' && node.id !== props.nodeId,
+) ?? [])
+const invalidSource = computed(() => {
+  const source = props.value.dataSource
+  return !!source && (!props.doc || !props.nodeId
+    || !preparations.value.some((node) => node.id === source.node)
+    || !dataPreparationDominates(props.doc, source.node, props.nodeId))
+})
+
+function changeDataMode(value: unknown): void {
+  if (value === 'shared') {
+    emit('update', { present: props.value.present, judge: props.value.judge,
+      dataSource: { node: '' }, manualFields: [] })
+  } else {
+    const { dataSource: _source, ...pipeline } = props.value
+    emit('update', pipeline)
+  }
+}
+
+function updateSource(patch: { node?: string; path?: string }): void {
+  emit('update', { ...props.value,
+    dataSource: { node: props.value.dataSource?.node ?? '', ...props.value.dataSource, ...patch } })
+}
+
 const sources = [
   { value: 'raw', label: '原始数据' }, { value: 'parsed', label: '解析结果' },
   { value: 'decision', label: '判断结果' }, { value: 'inputs', label: '本次启动输入' },
@@ -61,11 +98,15 @@ function missingPath(stage: StageName, name: string): boolean {
   if (stage !== 'judge') return false
   const expression = argument(stage, name)
   return !!expression && 'source' in expression && !expression.path?.trim()
+    && !(expression.source === 'parsed' && props.value.dataSource?.path?.trim())
 }
 
 // 后端编译期会拒绝「judge 标量参数没填字段路径」，前端同步标必填，避免发布时才报错
 function pathRequired(stage: StageName, param: ProjectFunctionParam): boolean {
   if (stage !== 'judge' || !isScalarParam(param)) return false
+  const selected = argument(stage, param.name)
+  if (props.value.dataSource?.path?.trim()
+    && (!selected || ('source' in selected && selected.source === 'parsed'))) return false
   const expression = argument(stage, param.name)
   // 未配置的可选参数可省略、后端不要求路径；但 index 0 会被缺省映射，不选来源等于传整段
   if (!expression) {
@@ -147,12 +188,50 @@ function removeField(index: number): void {
 
 <template>
   <div class="pipeline-editor">
-    <section v-for="stage in stages" :key="stage.name" class="stage">
+    <section v-if="!preparation" class="stage">
+      <label for="pipeline-data-mode">数据来源</label>
+      <el-select
+        id="pipeline-data-mode" :model-value="value.dataSource ? 'shared' : 'own'"
+        :disabled="readonly" @change="changeDataMode"
+      >
+        <el-option label="自行获取并解析" value="own" />
+        <el-option label="使用数据准备结果" value="shared" />
+      </el-select>
+      <template v-if="value.dataSource">
+        <label for="pipeline-data-node">数据准备节点</label>
+        <el-select
+          id="pipeline-data-node" :model-value="value.dataSource.node" :disabled="readonly"
+          :aria-invalid="invalidSource" :aria-describedby="invalidSource ? 'pipeline-source-error' : undefined"
+          placeholder="选择此前执行的数据准备节点"
+          @change="updateSource({ node: String($event) })"
+        >
+          <el-option
+            v-for="node in preparations" :key="node.id" :value="node.id"
+            :label="`${node.title || '数据准备'}（${node.id}）`"
+            :disabled="!doc || !nodeId || !dataPreparationDominates(doc, node.id, nodeId)"
+          />
+        </el-select>
+        <p v-if="invalidSource" id="pipeline-source-error" class="error" role="alert">
+          请选择在所有进入当前节点的路径上先执行的数据准备节点。
+        </p>
+        <label for="pipeline-data-path">数据范围</label>
+        <el-input
+          id="pipeline-data-path" :model-value="value.dataSource.path ?? ''" :disabled="readonly"
+          placeholder="留空使用全部结果，例如 measurements"
+          @update:model-value="updateSource({ path: $event })"
+        />
+        <p class="hint">复用本次准备的数据；展示和判断函数可继续按字段路径取值。</p>
+      </template>
+    </section>
+    <p v-if="preparation" class="hint">
+      在此获取并解析一次，后续排查节点共享这次结果。重新执行本节点会产生新版本。
+    </p>
+    <section v-for="stage in visibleStages" :key="stage.name" class="stage">
       <strong>{{ stage.title }}</strong>
       <p class="hint">{{ stage.hint }}</p>
       <p v-if="stage.name === 'judge'" class="hint judge-tip">
         判断函数需要的是「解析结果」里的某个字段（例如 voltage），不是整个解析结果对象。
-        数值、文本等标量参数必须填写字段路径，留空会在发布时被拒绝。
+        数值、文本等标量参数需填写字段路径；若数据范围已选定具体字段，可直接使用该值。
       </p>
       <BindingEditor
         :binding="value[stage.name]" :readonly="readonly" plain-only
@@ -201,7 +280,7 @@ function removeField(index: number): void {
         </div>
       </template>
     </section>
-    <section v-if="!value.acquire" class="stage">
+    <section v-if="!value.acquire && !value.dataSource" class="stage">
       <strong>人工数据字段</strong>
       <p class="hint">定义执行人员需要填写或上传的数据，解析函数接收以字段名为键的对象。</p>
       <div v-for="(field, index) in value.manualFields" :key="index" class="manual-field">
