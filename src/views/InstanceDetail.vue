@@ -9,6 +9,7 @@ import ExecutionTrace from '@/components/history/ExecutionTrace.vue'
 import RunDetailCard from '@/components/history/RunDetailCard.vue'
 import RunTimeline from '@/components/history/RunTimeline.vue'
 import TaskPanel from '@/components/tasks/TaskPanel.vue'
+import RollbackDialog from '@/components/tasks/RollbackDialog.vue'
 import type { InstanceStatus, ReviewTask, RunRecord } from '@/domain/types'
 import { errorText } from '@/services/api'
 import { useInstancesStore } from '@/stores/instances'
@@ -23,8 +24,11 @@ const selectedNodeId = ref<string | null>(null)
 const activeTab = ref<'runs' | 'paths' | 'trace'>('runs')
 const refreshing = ref(false)
 const terminating = ref(false)
+const rollbackVisible = ref(false)
 /** 卡片里正在看执行详情的节点；同一时刻只允许一个 */
 const inspectNodeId = ref<string | null>(null)
+/** 只用于把待办卡片的点击传导到画布，画布自身上报的选中不需要回打 */
+const canvasRef = ref<InstanceType<typeof FlowCanvas> | null>(null)
 
 const STATUS_TEXT: Record<InstanceStatus, string> = {
   running: '运行中',
@@ -52,6 +56,10 @@ const formatTime = (value?: string | null): string =>
 const detail = computed(() => store.detail)
 const canTerminate = computed(() =>
   detail.value ? ['running', 'waiting', 'paused'].includes(detail.value.status) : false,
+)
+/** 回退只在还能继续推进的状态下有意义，终止/成功之后没有可回退的路径 */
+const canRollback = computed(() =>
+  detail.value ? ['running', 'waiting', 'paused', 'failed'].includes(detail.value.status) : false,
 )
 
 async function terminate(): Promise<void> {
@@ -183,6 +191,18 @@ function onSelect(nodeId: string | null): void {
   if (!nodeId) inspectNodeId.value = null
 }
 
+/** 待办卡片上的点击：除了高亮，还要把对应节点挪到视野中央 */
+function focusCanvasNode(nodeId: string): void {
+  const canvas = canvasRef.value as unknown as { focusNode?: (id: string) => void } | null
+  canvas?.focusNode?.(nodeId)
+}
+
+function onRolledBack(): void {
+  selectedNodeId.value = null
+  inspectNodeId.value = null
+  void reload()
+}
+
 function onInspect(nodeId: string): void {
   inspectNodeId.value = inspectNodeId.value === nodeId ? null : nodeId
   selectedNodeId.value = nodeId
@@ -217,6 +237,11 @@ function onInspect(nodeId: string): void {
         <span v-if="detail.snapshot" class="meta">
           快照 {{ formatTime(detail.snapshot.capturedAt) }}
         </span>
+        <el-button
+          v-if="canRollback"
+          size="small"
+          @click="rollbackVisible = true"
+        >从轨迹回退</el-button>
         <el-button size="small" :loading="refreshing" @click="reload">刷新</el-button>
         <el-button
           v-if="canTerminate"
@@ -250,6 +275,7 @@ function onInspect(nodeId: string): void {
       <div class="canvas-area" v-loading="store.loading">
         <FlowCanvas
           v-if="detail && store.doc"
+          ref="canvasRef"
           :doc="store.doc"
           readonly
           :issues="[]"
@@ -279,10 +305,10 @@ function onInspect(nodeId: string): void {
         <TaskPanel
           v-if="detail && detail.status !== 'terminated'"
           :reviews="store.pendingReviews"
-          :detail="detail"
           :doc="store.doc"
           :focus-node-id="selectedNodeId"
           @select="onSelect"
+          @focus="focusCanvasNode"
           @changed="reload"
         />
         <el-empty v-else-if="detail" description="诊断已终止，待办已取消" :image-size="60" />
@@ -316,6 +342,13 @@ function onInspect(nodeId: string): void {
     >
       <el-button @click="router.push({ name: 'instances' })">返回执行记录</el-button>
     </el-empty>
+
+    <RollbackDialog
+      v-model="rollbackVisible"
+      :detail="detail"
+      :doc="store.doc"
+      @submitted="onRolledBack"
+    />
   </div>
 </template>
 

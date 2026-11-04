@@ -1,23 +1,23 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import type { FlowDoc, InstanceDetail, ReviewTask } from '@/domain/types'
+import type { FlowDoc, ReviewTask } from '@/domain/types'
 import { errorText } from '@/services/api'
 import { useInstancesStore } from '@/stores/instances'
 import ActionTask from './ActionTask.vue'
 import DecisionTask from './DecisionTask.vue'
 import DataTask from './DataTask.vue'
-import RollbackDialog from './RollbackDialog.vue'
 
 const props = defineProps<{
   reviews: ReviewTask[]
-  detail: InstanceDetail | null
   doc: FlowDoc | null
   /** 画布上选中的节点：待办列表跟着高亮，形成「节点 ↔ 待办」双向指向 */
   focusNodeId?: string | null
 }>()
 const emit = defineEmits<{
   (e: 'select', nodeId: string | null): void
+  /** 用户点了卡片：父级需要把画布移到这个节点，程序化选中（首屏/联动）不发这个事件 */
+  (e: 'focus', nodeId: string): void
   (e: 'changed'): void
 }>()
 
@@ -27,7 +27,6 @@ const selectedId = ref<string | null>(null)
 const busy = ref(false)
 const submitError = ref('')
 watch(selectedId, () => { submitError.value = '' })
-const rollbackVisible = ref(false)
 
 const selected = computed(() => props.reviews.find((item) => item.id === selectedId.value) ?? null)
 
@@ -68,6 +67,12 @@ onMounted(() => {
 function select(review: ReviewTask): void {
   selectedId.value = review.id
   emit('select', review.nodeId)
+}
+
+/** 卡片被点开：选中 + 请求画布把节点挪到视野中央 */
+function onCardClick(review: ReviewTask): void {
+  select(review)
+  emit('focus', review.nodeId)
 }
 
 const formatTime = (value?: string | null): string =>
@@ -125,23 +130,12 @@ async function complete(): Promise<void> {
     busy.value = false
   }
 }
-
-function onRolledBack(): void {
-  selectedId.value = null
-  emit('changed')
-  emit('select', null)
-}
 </script>
 
 <template>
   <div class="task-panel">
     <div class="panel-head">
       <span class="panel-title">待办</span>
-      <el-button
-        v-if="detail && ['running', 'waiting', 'paused', 'failed'].includes(detail.status)"
-        size="small"
-        @click="rollbackVisible = true"
-      >从轨迹回退</el-button>
       <el-tag v-if="reviews.length" size="small" type="warning">{{ reviews.length }}</el-tag>
     </div>
 
@@ -157,7 +151,7 @@ function onRolledBack(): void {
           type="button"
           class="review-item"
           :class="{ active: review.id === selectedId }"
-          @click="select(review)"
+          @click="onCardClick(review)"
         >
           <div class="review-head">
             <el-tag size="small" :type="review.kind === 'decision' ? 'primary' : 'success'" effect="plain">
@@ -190,17 +184,9 @@ function onRolledBack(): void {
           :review="selected"
           :busy="busy"
           @complete="complete"
-          @rollback="rollbackVisible = true"
         />
       </div>
     </template>
-
-    <RollbackDialog
-      v-model="rollbackVisible"
-      :detail="detail"
-      :doc="doc"
-      @submitted="onRolledBack"
-    />
   </div>
 </template>
 
@@ -222,7 +208,7 @@ function onRolledBack(): void {
 .panel-title {
   font-size: 13px;
   font-weight: 600;
-  flex: 1;
+  flex: none;
 }
 
 .empty {

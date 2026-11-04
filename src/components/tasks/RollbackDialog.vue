@@ -159,6 +159,7 @@ async function submit(): Promise<void> {
     :model-value="modelValue"
     title="从执行轨迹回退"
     width="min(720px, 95vw)"
+    draggable
     @update:model-value="emit('update:modelValue', $event)"
   >
     <el-alert
