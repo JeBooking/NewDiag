@@ -1,4 +1,4 @@
-import { ApiError, request } from './api'
+import { ApiError, uploadForm } from './api'
 
 export interface UploadedFile {
   hash: string
@@ -22,10 +22,27 @@ function text(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined
 }
 
-export async function uploadFile(file: File): Promise<UploadedFile> {
+export interface UploadOptions {
+  /** 已上传百分比（0-100），只增不减；100 之后仍可能等后端落盘 */
+  onProgress?: (percent: number) => void
+  /** 中断上传；abort 后后端会清理临时文件，前端无需额外善后 */
+  signal?: AbortSignal
+}
+
+export async function uploadFile(file: File, options: UploadOptions = {}): Promise<UploadedFile> {
   const form = new FormData()
   form.append('file', file)
-  const data = await request<Record<string, unknown>>('/files', { method: 'POST', body: form })
+  let last = 0
+  const data = await uploadForm<Record<string, unknown>>('/files', form, {
+    signal: options.signal,
+    onProgress: ({ loaded, total }) => {
+      if (!options.onProgress || !total) return
+      const percent = Math.min(100, Math.max(last, Math.round((loaded / total) * 100)))
+      if (percent === last) return
+      last = percent
+      options.onProgress(percent)
+    },
+  })
   const hash = text(data?.hash)
   if (!hash) throw new ApiError(500, '上传响应缺少文件哈希')
   return {

@@ -71,14 +71,28 @@ function toIssues(detail: unknown): LintIssue[] {
   })
 }
 
-async function readBody(response: Response): Promise<unknown> {
-  const text = await response.text()
+function parseBody(text: string): unknown {
   if (!text) return null
   try {
     return JSON.parse(text)
   } catch {
     return text
   }
+}
+
+async function readBody(response: Response): Promise<unknown> {
+  return parseBody(await response.text())
+}
+
+/** 把后端返回体统一转成 ApiError：detail 可能是字符串、问题数组或 FastAPI 的 422 数组 */
+function toApiError(status: number, payload: unknown): ApiError {
+  const detail =
+    payload && typeof payload === 'object' && !Array.isArray(payload) && 'detail' in payload
+      ? (payload as { detail: unknown }).detail
+      : payload
+  const issues = toIssues(detail)
+  const message = issues.map((issue) => issue.message).join('；') || `请求失败（HTTP ${status}）`
+  return new ApiError(status, message, detail, issues)
 }
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -102,20 +116,79 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const requestId = response.headers.get('X-Request-ID') ?? '-'
 
   if (!response.ok) {
-    const payload = await readBody(response)
-    const detail =
-      payload && typeof payload === 'object' && !Array.isArray(payload) && 'detail' in payload
-        ? (payload as { detail: unknown }).detail
-        : payload
-    const issues = toIssues(detail)
-    const message = issues.map((issue) => issue.message).join('；') || `请求失败（HTTP ${response.status}）`
-    warnLog(`${method} ${path} ${response.status} ${cost}ms req=${requestId}`, detail)
-    throw new ApiError(response.status, message, detail, issues)
+    const error = toApiError(response.status, await readBody(response))
+    warnLog(`${method} ${path} ${response.status} ${cost}ms req=${requestId}`, error.detail)
+    throw error
   }
 
   debugLog(`${method} ${path} ${response.status} ${cost}ms req=${requestId}`)
   if (response.status === 204) return undefined as T
   return (await readBody(response)) as T
+}
+
+/**
+ * 文件上传走 XHR：fetch 拿不到上传进度，取消也只能靠 AbortSignal 中断整个请求。
+ * 与 request 共用错误归一化和日志，区别只在于能上报 upload.onprogress。
+ */
+export function uploadForm<T>(
+  path: string,
+  form: FormData,
+  options: { signal?: AbortSignal; onProgress?: (progress: { loaded: number; total: number }) => void } = {},
+): Promise<T> {
+  const method = 'POST'
+  return new Promise<T>((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(new DOMException('上传已取消', 'AbortError'))
+      return
+    }
+
+    const xhr = new XMLHttpRequest()
+    const started = performance.now()
+    let settled = false
+
+    function onAbort(): void {
+      xhr.abort()
+    }
+
+    const settle = (run: () => void): void => {
+      if (settled) return
+      settled = true
+      options.signal?.removeEventListener('abort', onAbort)
+      run()
+    }
+
+    xhr.open(method, `/api${path}`)
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) options.onProgress?.({ loaded: event.loaded, total: event.total })
+    }
+    // 字节发完不等于完成，服务端还要落盘和校验
+    xhr.upload.onload = () => options.onProgress?.({ loaded: 1, total: 1 })
+
+    xhr.onload = () => settle(() => {
+      const cost = Math.round(performance.now() - started)
+      const requestId = xhr.getResponseHeader('X-Request-ID') ?? '-'
+      const payload = parseBody(xhr.responseText)
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const error = toApiError(xhr.status, payload)
+        warnLog(`${method} ${path} ${xhr.status} ${cost}ms req=${requestId}`, error.detail)
+        reject(error)
+        return
+      }
+      debugLog(`${method} ${path} ${xhr.status} ${cost}ms req=${requestId}`)
+      resolve((xhr.status === 204 ? null : payload) as T)
+    })
+    xhr.onerror = () => settle(() => reject(new ApiError(0, '无法连接后端服务：网络错误')))
+    xhr.ontimeout = () => settle(() => reject(new ApiError(0, '上传超时')))
+    xhr.onabort = () => settle(() => reject(new DOMException('上传已取消', 'AbortError')))
+
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+    xhr.send(form)
+  })
+}
+
+/** 用户主动取消时不该再弹「上传失败」，调用方据此静默收尾 */
+export function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
 }
 
 export function isApiError(error: unknown): error is ApiError {

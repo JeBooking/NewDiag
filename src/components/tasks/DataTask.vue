@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { onBeforeUnmount, reactive, ref, watch } from 'vue'
 import type { UploadRequestOptions } from 'element-plus'
 import type { ReviewTask } from '@/domain/types'
 import { uploadSizeError, uploadFile } from '@/services/files'
-import { errorText } from '@/services/api'
+import { errorText, isAbortError } from '@/services/api'
 import AttachmentList from '@/components/panels/AttachmentList.vue'
 
 const props = defineProps<{ review: ReviewTask; busy?: boolean; error?: string }>()
 const emit = defineEmits<{ (e: 'submit', data: Record<string, unknown>): void }>()
 const values = reactive<Record<string, unknown>>({})
 const errors = reactive<Record<string, string>>({})
-const uploading = ref(false)
+/** 正在上传的字段名，空串表示空闲；同一时刻只允许一个上传 */
+const activeField = ref('')
+const percent = ref(0)
+let controller: AbortController | null = null
 
 watch(() => props.review.id, () => {
+  controller?.abort()
   for (const name of Object.keys(values)) delete values[name]
   for (const name of Object.keys(errors)) delete errors[name]
   for (const field of props.review.request.fields ?? []) {
@@ -29,17 +33,32 @@ function beforeUpload(name: string, file: File): boolean {
 }
 
 async function upload(name: string, options: UploadRequestOptions): Promise<void> {
-  uploading.value = true
+  controller = new AbortController()
+  activeField.value = name
+  percent.value = 0
   try {
-    const file = await uploadFile(options.file)
+    const file = await uploadFile(options.file, {
+      signal: controller.signal,
+      onProgress: (value) => { percent.value = value },
+    })
     values[name] = { hash: file.hash, name: file.name }
     delete errors[name]
   } catch (error) {
-    errors[name] = errorText(error, '上传失败')
+    // 用户主动取消不当作失败提示
+    if (!isAbortError(error)) errors[name] = errorText(error, '上传失败')
   } finally {
-    uploading.value = false
+    controller = null
+    activeField.value = ''
+    percent.value = 0
   }
 }
+
+function cancelUpload(): void {
+  controller?.abort()
+}
+
+// 面板切走或卸载时不该让上传继续跑，界面上已经没有地方能取消了
+onBeforeUnmount(() => controller?.abort())
 
 function fileName(name: string): string {
   const value = values[name]
@@ -102,12 +121,19 @@ function submit(): void {
         </el-select>
         <div v-else-if="field.type === 'file'">
           <el-upload
-            :show-file-list="false" :disabled="busy || uploading"
+            :show-file-list="false" :disabled="busy || activeField !== ''"
             :before-upload="(file: File) => beforeUpload(field.name, file)"
             :http-request="(options: UploadRequestOptions) => upload(field.name, options)"
           >
-            <el-button :loading="uploading">上传数据文件</el-button>
+            <el-button :loading="activeField === field.name">
+              {{ activeField === field.name ? '上传中' : '上传数据文件' }}
+            </el-button>
           </el-upload>
+          <div v-if="activeField === field.name" class="upload-progress">
+            <el-progress :percentage="percent" :stroke-width="6" />
+            <span v-if="percent >= 100" class="hint">字节已发完，等待服务端接收…</span>
+            <el-button size="small" text type="danger" @click="cancelUpload">取消上传</el-button>
+          </div>
           <span>{{ fileName(field.name) }}</span>
         </div>
         <el-input
@@ -118,7 +144,7 @@ function submit(): void {
         <div v-if="field.description" class="hint">{{ field.description }}</div>
       </el-form-item>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <el-button type="primary" native-type="submit" :loading="busy" :disabled="uploading">
+      <el-button type="primary" native-type="submit" :loading="busy" :disabled="activeField !== ''">
         提交数据并解析
       </el-button>
     </el-form>
@@ -132,6 +158,8 @@ function submit(): void {
 .data-task { display: grid; gap: 10px; }
 p { margin: 0; white-space: pre-wrap; font-size: 13px; line-height: 1.6; }
 .hint { width: 100%; color: var(--el-text-color-secondary); font-size: 12px; }
+.upload-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
+.upload-progress :deep(.el-progress) { flex: 1; min-width: 160px; }
 .error { color: var(--el-color-danger); }
 pre { overflow: auto; max-height: 160px; font-size: 12px; }
 </style>
