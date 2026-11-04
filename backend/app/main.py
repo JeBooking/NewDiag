@@ -12,12 +12,13 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import db
 from app.api import files, flows, instances, projects, releases
 from app.logging_setup import setup_logging
+from app.services import storage
 
 setup_logging()
 
@@ -31,10 +32,17 @@ if not (WEB_DIR / "index.html").is_file():
 
 DEV_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"]
 
+# multipart 表单自身开销的粗筛余量
+MULTIPART_SLACK_BYTES = 1024 * 1024
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     db.init_db()
+    try:
+        storage.cleanup_temp_files()
+    except Exception:  # 清扫失败不能挡住启动
+        logger.warning("上传临时文件清扫失败", exc_info=True)
     logger.info(
         "启动完成：python=%s pid=%s cwd=%s db=%s",
         sys.version.split()[0],
@@ -56,6 +64,30 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def reject_oversized_upload(request: Request, call_next):
+    """上传前置粗筛。
+
+    FastAPI 在进入 endpoint 前就会把整个 multipart 收完，所以只能靠 Content-Length
+    提前拒绝。该值是整个表单大小（含 boundary、part 头、其他字段），比文件本身大，
+    因此留 1 MiB 余量只做粗筛：命中即拒，未命中交给流式计数精确判定。
+    这里绝不能读 body，也绝不能抛 HTTPException（middleware 里不会被转成响应）。
+    """
+    if request.method == "POST" and request.url.path == "/api/files":
+        raw = request.headers.get("content-length")
+        if raw is not None:
+            try:
+                declared = int(raw)
+            except ValueError:
+                declared = None
+            if declared is not None and declared > storage.MAX_UPLOAD_BYTES + MULTIPART_SLACK_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": storage.UPLOAD_TOO_LARGE_DETAIL},
+                )
+    return await call_next(request)
 
 
 @app.middleware("http")

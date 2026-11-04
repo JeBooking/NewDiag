@@ -6,7 +6,9 @@ import logging
 from pathlib import PurePath
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -61,29 +63,39 @@ def inline_media_type(filename: str) -> str | None:
 async def upload(
     file: UploadFile = File(...), db: Session = Depends(get_db)
 ) -> FileOut:
-    buffer = bytearray()
-    while True:
-        chunk = await file.read(storage.CHUNK_SIZE)
-        if not chunk:
-            break
-        buffer.extend(chunk)
-        if len(buffer) > storage.MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=413, detail="文件超过 50MB 限制")
+    # UploadFile 大文件已落到临时文件，这里分块拷贝到自己的临时对象，不在内存里攒整份；
+    # 同步 IO 丢线程池，避免大文件阻塞事件循环。
+    try:
+        digest, path, size = await run_in_threadpool(storage.store_stream, file.file)
+    except storage.UploadTooLarge:
+        await file.close()
+        raise HTTPException(
+            status_code=413, detail=storage.UPLOAD_TOO_LARGE_DETAIL
+        ) from None
 
-    data = bytes(buffer)
-    digest, path = storage.store(data)
     existing = db.get(FileBlob, digest)
     if existing is None:
         existing = FileBlob(
             hash=digest,
             filename=file.filename or digest,
             media_type=file.content_type or "application/octet-stream",
-            size=len(data),
+            size=size,
             path=str(path),
         )
         db.add(existing)
-        db.commit()
-        db.refresh(existing)
+        try:
+            db.commit()
+        except IntegrityError:
+            # 并发上传同一文件：另一个请求先插了，回滚后取它那条即可
+            db.rollback()
+            existing = db.get(FileBlob, digest)
+            if existing is None:
+                logger.warning("写库冲突且回查不到记录：%s", digest)
+                raise HTTPException(
+                    status_code=503, detail="文件记录写入冲突，请重试"
+                ) from None
+        else:
+            db.refresh(existing)
     return FileOut(
         hash=existing.hash,
         name=existing.filename,
