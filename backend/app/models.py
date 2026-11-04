@@ -156,6 +156,18 @@ class Review(Base):
     decided_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class DiagnosisState(Base):
+    __tablename__ = "diagnosis_states"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    instance_id: Mapped[str] = mapped_column(String(32), ForeignKey("instances.id"), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    token_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reference_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(String(32), nullable=False, default=now_iso)
+
+
 class FileBlob(Base):
     __tablename__ = "files"
 
@@ -187,3 +199,5 @@ Index("ix_instances_flow", Instance.flow_id)
 Index("ix_tokens_instance", Token.instance_id)
 Index("ix_runs_instance", Run.instance_id)
 Index("ix_reviews_instance", Review.instance_id)
+Index("ix_diagnosis_states_scope", DiagnosisState.instance_id, DiagnosisState.generation,
+      DiagnosisState.seq)

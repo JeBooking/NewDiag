@@ -28,7 +28,7 @@ export interface InvestigationFields {
 export interface NodeBinding {
   project: string
   function: string
-  protocol?: 'investigation/v1'
+  protocol?: 'investigation/v1' | 'diagnosis/v1'
   version?: string
   config?: Record<string, unknown>
 }
@@ -101,6 +101,7 @@ export interface DocNode {
   attachments?: AttachmentRef[]
   binding?: NodeBinding
   pipeline?: FunctionPipeline
+  method?: string
   /** 该节点返回结构里的字段名，供下游绑定 */
   outputs?: string[]
   /** 参数名 → 来源；不填则按签名自动匹配 */
@@ -122,6 +123,7 @@ export interface FlowDoc {
   format: 1
   name: string
   mode: FlowMode
+  diagnosis?: NodeBinding
   nodes: DocNode[]
   edges: DocEdge[]
   /** 旧版全局启动字段；新文档改用 start 节点的 inputs，读取时兼容 */
@@ -182,6 +184,7 @@ export interface PlanCall {
 export interface PlanStep {
   kind: NodeKind
   call?: PlanCall
+  diagnosisMethod?: { name: string; args: Record<string, ArgExpr> }
   pipeline?: FunctionPipeline & { args: Record<string, ArgExpr> }
   human?: boolean
   text?: string
@@ -197,6 +200,10 @@ export interface Plan {
   entry: string
   steps: Record<string, PlanStep>
   signature: Record<string, string>
+  diagnosis?: NodeBinding & {
+    args: Record<string, ArgExpr>
+    definition: Record<string, unknown>
+  }
 }
 
 export type InstanceStatus =

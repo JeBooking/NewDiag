@@ -1,0 +1,119 @@
+{
+  "format": 1,
+  "name": "同级分支共享实例缓存",
+  "mode": "parallel",
+  "diagnosis": {
+    "project": "诊断实例示例",
+    "function": "MotorDiagnosis",
+    "protocol": "diagnosis/v1",
+    "version": "1.0.0",
+    "config": {
+      "voltage_limit": 210,
+      "waveform_limit": 5
+    }
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始",
+      "detail": "开始",
+      "position": {
+        "x": 0,
+        "y": 160
+      },
+      "inputs": [
+        {
+          "name": "device_id",
+          "scope": "global",
+          "type": "text",
+          "default": "motor-01"
+        },
+        {
+          "name": "time_point",
+          "scope": "global",
+          "type": "datetime",
+          "default": "2026-11-05T08:00:00+08:00"
+        }
+      ]
+    },
+    {
+      "id": "first",
+      "kind": "investigation",
+      "title": "分支一首次使用波形",
+      "detail": "分支一首次使用波形",
+      "position": {
+        "x": 300,
+        "y": 40
+      },
+      "method": "check_waveform",
+      "fields": {
+        "observation": "分支一首次使用波形",
+        "acquisition": "诊断实例共享数据",
+        "assessment": "业务方法判断或人工确认"
+      }
+    },
+    {
+      "id": "second",
+      "kind": "investigation",
+      "title": "分支二复用波形",
+      "detail": "分支二复用波形",
+      "position": {
+        "x": 300,
+        "y": 280
+      },
+      "method": "confirm_waveform",
+      "fields": {
+        "observation": "分支二复用波形",
+        "acquisition": "诊断实例共享数据",
+        "assessment": "业务方法判断或人工确认"
+      }
+    },
+    {
+      "id": "end",
+      "kind": "escalation",
+      "title": "示例诊断结束",
+      "detail": "示例诊断结束",
+      "position": {
+        "x": 600,
+        "y": 160
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "s-first",
+      "from": "start",
+      "to": "first"
+    },
+    {
+      "id": "s-second",
+      "from": "start",
+      "to": "second"
+    },
+    {
+      "id": "first-yes",
+      "from": "first",
+      "to": "end",
+      "branch": "yes"
+    },
+    {
+      "id": "first-no",
+      "from": "first",
+      "to": "end",
+      "branch": "no"
+    },
+    {
+      "id": "second-yes",
+      "from": "second",
+      "to": "end",
+      "branch": "yes"
+    },
+    {
+      "id": "second-no",
+      "from": "second",
+      "to": "end",
+      "branch": "no"
+    }
+  ]
+}

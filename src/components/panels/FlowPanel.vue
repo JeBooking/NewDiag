@@ -1,17 +1,20 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { FlowDetail, FlowMode } from '@/domain/types'
+import type { FlowDetail, FlowMode, NodeBinding } from '@/domain/types'
+import BindingEditor from '@/components/panels/BindingEditor.vue'
 
 const props = defineProps<{
   flow: FlowDetail
   snapshotFields?: string[]
   readonly?: boolean
   publishing?: boolean
+  diagnosis?: NodeBinding
 }>()
 const emit = defineEmits<{
   (e: 'update-meta', patch: { name?: string; mode?: FlowMode }): void
   (e: 'update-snapshot-fields', value: string[]): void
   (e: 'publish'): void
+  (e: 'update-diagnosis', value: NodeBinding | undefined): void
 }>()
 
 const draft = ref('')
@@ -108,7 +111,14 @@ function removeField(name: string): void {
       并行：同组后继同时推进；串行：按出线顺序逐条尝试，遇到问题解决节点后由人决定结束或继续
     </div>
 
-    <div class="section-title">快照字段</div>
+    <div class="section-title">诊断实例</div>
+    <BindingEditor
+      :binding="diagnosis" :readonly="readonly" diagnosis-only
+      @update="emit('update-diagnosis', $event)"
+    />
+    <div class="section-hint">可选。选择后，排查节点直接调用该诊断类的方法，获取和解析由实例统一管理。启动参数在开始节点配置。</div>
+
+    <div class="section-title">快照字段（旧版兼容）</div>
     <div class="tag-input">
       <el-tag
         v-for="field in fields"

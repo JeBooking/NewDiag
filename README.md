@@ -8,8 +8,10 @@
 
 设计细节见 [docs/spec.md](docs/spec.md)，协作规则见 [AGENTS.md](AGENTS.md)，**部署到内网服务器上长期运行**看 [docs/deploy.md](docs/deploy.md)。
 
-外部 Python 类、四阶段排查模块和桌面应用改造，见 [模块接入手册](docs/module-integration.md)。
-排查节点可直接选择四阶段函数，由平台连接数据和人工待办，无需编写适配器类。
+外部 Python 类和桌面应用改造，见 [模块接入手册](docs/module-integration.md)。
+推荐一张流程绑定一个诊断类，一次执行创建一个逻辑对象：启动准备主要数据，节点调用实例方法，
+其余资源首次访问时加载并缓存，人工等待后恢复已有数据。
+[完整实例示例](examples/diagnosis-instance/README.md)包含三份可导入流程；旧函数、四阶段及数据准备节点保持兼容。
 
 ## 快速开始
 
@@ -71,6 +73,7 @@ backend/.venv/Scripts/python scripts/build_bundle.py
 
 - 开始节点是唯一入口，不能删除；它声明的启动参数由下游绑定函数的签名派生
 - 排查节点绑定了 Python 函数就自动判断，没绑定就是人工判断
+- 使用诊断类时，在流程属性选择业务类，在排查节点选择实例方法；启动参数由 initialize 及节点方法签名派生
 - 节点右上角显示校验问题数量，悬停能看到具体问题
 - 工具栏「自动布局」可以整图重排；导入没有坐标的 JSON 时会自动排好再保存
 

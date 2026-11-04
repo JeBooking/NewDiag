@@ -17,6 +17,7 @@ import AttachmentField from './AttachmentField.vue'
 import BindingEditor from './BindingEditor.vue'
 import FunctionPipelineEditor from '@/components/panels/FunctionPipelineEditor.vue'
 import ParamValueInput from './ParamValueInput.vue'
+import DiagnosisMethodEditor from '@/components/panels/DiagnosisMethodEditor.vue'
 
 const props = defineProps<{
   node: DocNode
@@ -45,7 +46,7 @@ const outputs = computed(() => props.node.outputs ?? [])
 const outputDraft = ref('')
 
 const isStart = computed(() => props.node.kind === 'start')
-const allowsCustomInputs = computed(() => props.doc?.nodes.some((node) => node.pipeline))
+const allowsCustomInputs = computed(() => !!props.doc?.diagnosis || props.doc?.nodes.some((node) => node.pipeline))
 const inputName = ref('')
 const inputType = ref<ParamType>('text')
 const inputError = ref('')
@@ -69,6 +70,7 @@ const orderGroups = computed(() =>
 )
 
 const codeHint = computed(() => {
+  if (props.doc?.diagnosis) return '调用本次诊断对象的方法，共享初始化数据与按需缓存'
   // 能不能绑代码由 KIND_META 声明，别再按类型名判断，否则新增可编程类型时这里会拦错
   if (!KIND_META[props.node.kind].codeCapable) return '该类型由人工完成，不执行代码'
   if (props.node.kind === 'dataPreparation') return '获取、解析一次，供下游排查共享数据'
@@ -180,6 +182,19 @@ const inputs = computed<StartParam[]>(() => props.node.inputs ?? [])
 const bindings = computed<FunctionBinding[]>(() => {
   const seen = new Set<string>()
   const list: FunctionBinding[] = []
+  const diagnosis = props.doc?.diagnosis
+  if (diagnosis?.project && diagnosis.function) {
+    list.push({ key: `${diagnosis.project}:${diagnosis.function}`,
+      project: diagnosis.project, name: diagnosis.function })
+    seen.add(`${diagnosis.project}:${diagnosis.function}`)
+    for (const node of props.doc?.nodes ?? []) {
+      if (!node.method) continue
+      const name = `${diagnosis.function}.${node.method}`
+      const key = `${diagnosis.project}:${name}`
+      if (!seen.has(key)) list.push({ key, project: diagnosis.project, name })
+      seen.add(key)
+    }
+  }
   for (const node of props.doc?.nodes ?? []) {
     const binding = node.pipeline?.acquire ?? (node.pipeline ? undefined : node.binding)
     const project = binding?.project
@@ -541,7 +556,7 @@ function addGlobalInput(): void {
       </div>
 
       <div class="section-hint">
-        获取参数由函数签名推导；四阶段排查也可添加全局诊断输入。默认值随发布保存，执行时可再改。
+        参数由所选入口的签名推导，也可添加全局诊断输入。默认值随发布保存，执行时可再改。
       </div>
     </template>
 
@@ -584,14 +599,19 @@ function addGlobalInput(): void {
       <div class="section-title">参数绑定</div>
       <div class="section-hint">{{ codeHint }}</div>
       <el-select
-        v-if="node.kind === 'investigation'" :model-value="connectionMode" :disabled="readonly"
+        v-if="node.kind === 'investigation' && !doc?.diagnosis" :model-value="connectionMode" :disabled="readonly"
         aria-label="排查接入方式" @change="changeConnectionMode"
       >
         <el-option label="分别选择四阶段函数" value="functions" />
         <el-option label="原有函数或适配器类" value="legacy" />
       </el-select>
+      <DiagnosisMethodEditor
+        v-if="node.kind === 'investigation' && doc?.diagnosis"
+        :diagnosis="doc.diagnosis" :value="node.method" :readonly="readonly"
+        @update="emit('update', { method: $event, pipeline: undefined, binding: undefined })"
+      />
       <FunctionPipelineEditor
-        v-if="node.kind === 'dataPreparation'
+        v-else-if="node.kind === 'dataPreparation'
           || (node.kind === 'investigation' && connectionMode === 'functions')"
         :key="node.id" :value="pipelineValue" :readonly="readonly"
         :preparation="node.kind === 'dataPreparation'" :doc="doc" :node-id="node.id"
@@ -604,7 +624,7 @@ function addGlobalInput(): void {
         @update="patchBinding"
       />
 
-      <template v-if="node.binding || node.pipeline">
+      <template v-if="node.binding || node.pipeline || node.method">
         <div class="section-title">输出字段</div>
         <div class="tag-input">
           <el-tag

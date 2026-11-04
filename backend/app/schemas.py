@@ -293,6 +293,8 @@ class ProjectFunction(ApiModel):
     manual_fields: list[dict[str, Any]] = Field(default_factory=list)
     automatic_acquisition: bool | None = None
     automatic_judgment: bool | None = None
+    methods: list[dict[str, Any]] = Field(default_factory=list)
+    resources: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ProjectOut(ApiModel):

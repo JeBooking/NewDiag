@@ -14,6 +14,7 @@ const props = defineProps<{
   binding?: NodeBinding
   readonly?: boolean
   plainOnly?: boolean
+  diagnosisOnly?: boolean
 }>()
 const emit = defineEmits<{
   (e: 'update', value: NodeBinding | undefined): void
@@ -44,8 +45,10 @@ const currentProject = computed(
 const selectedFunction = computed(
   () => functions.value.find((item) => item.name === functionName.value) ?? null,
 )
-const availableFunctions = computed(() => props.plainOnly
-  ? functions.value.filter((item) => !item.protocol) : functions.value)
+const availableFunctions = computed(() => functions.value.filter((item) =>
+  props.diagnosisOnly ? item.protocol === 'diagnosis/v1'
+    : props.plainOnly ? !item.protocol : item.protocol !== 'diagnosis/v1',
+))
 watch(selectedFunction, (value) => emit('describe', value), { immediate: true })
 
 watch(projectName, (name, previous) => {
@@ -161,7 +164,8 @@ function paramText(fn: ProjectFunction): string {
       <el-select
         :model-value="functionName"
         :disabled="readonly || !currentProject"
-        placeholder="选择函数"
+        :placeholder="diagnosisOnly ? '选择诊断类' : '选择函数'"
+        :aria-label="diagnosisOnly ? '诊断业务类' : '业务函数'"
         :loading="loadingFunctions"
         filterable
         class="field"
@@ -184,12 +188,13 @@ function paramText(fn: ProjectFunction): string {
     <div v-else-if="currentProject && !loadingFunctions && !functions.length" class="hint">
       该工程没有可用函数
     </div>
-    <template v-if="binding?.protocol === 'investigation/v1'">
-      <div class="hint">
+    <template v-if="binding?.protocol">
+      <div v-if="binding.protocol === 'investigation/v1'" class="hint">
         四阶段适配器 · {{ binding.version }}<br>
         采集：{{ selectedFunction?.automaticAcquisition ? '自动' : '人工' }}；
         判断：{{ selectedFunction?.automaticJudgment ? '自动' : '人工' }}
       </div>
+      <div v-else class="hint">诊断实例 · {{ binding.version }}。启动时初始化，节点共用数据，人工等待后恢复。</div>
       <label for="adapter-config">初始化配置（JSON）</label>
       <div v-if="selectedFunction?.configParams?.length" class="hint">
         {{ selectedFunction.configParams.map((p) => `${p.name}${p.required ? '（必填）' : '（可选）'}`).join('、') }}
@@ -199,7 +204,7 @@ function paramText(fn: ProjectFunction): string {
         :disabled="readonly" @blur="saveConfig" :aria-invalid="!!configError"
       />
       <div v-if="configError" class="hint error" role="alert">{{ configError }}</div>
-      <div class="hint">配置随流程发布保存；凭证请填写环境变量名称，在适配器内读取。</div>
+      <div class="hint">配置随流程发布保存；凭证请填写环境变量名称，由业务代码读取。</div>
     </template>
   </div>
 </template>

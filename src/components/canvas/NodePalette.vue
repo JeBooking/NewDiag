@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { KIND_META, V1_KINDS } from '@/domain/kinds'
 import type { NodeKind } from '@/domain/types'
 import { NODE_DRAG_TYPE } from '@/components/nodes'
 
-const props = withDefaults(defineProps<{ disabled?: boolean }>(), { disabled: false })
+const props = withDefaults(defineProps<{ disabled?: boolean; instanceMode?: boolean }>(), { disabled: false })
+const availableKinds = computed(() => V1_KINDS.filter((kind) => !props.instanceMode || kind !== 'dataPreparation'))
 
 const emit = defineEmits<{
   (event: 'add', kind: NodeKind): void
@@ -35,7 +37,7 @@ function onDragStart(event: DragEvent, kind: NodeKind) {
   <div class="palette" :class="{ 'is-disabled': disabled }">
     <div class="palette-title">节点</div>
     <el-tooltip
-      v-for="kind in V1_KINDS"
+      v-for="kind in availableKinds"
       :key="kind"
       :content="descriptions[kind]"
       placement="right"

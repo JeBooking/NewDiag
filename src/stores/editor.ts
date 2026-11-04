@@ -32,6 +32,7 @@ function coerceDoc(raw: unknown, name: string, mode: FlowMode): FlowDoc {
     mode: record.mode === 'serial' ? 'serial' : record.mode === 'parallel' ? 'parallel' : mode,
     nodes: Array.isArray(record.nodes) ? record.nodes : [],
     edges: Array.isArray(record.edges) ? record.edges : [],
+    diagnosis: record.diagnosis,
   }
 }
 

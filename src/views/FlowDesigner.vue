@@ -517,11 +517,13 @@ onBeforeRouteLeave(async () => {
           <FlowPanel
             v-else-if="editor.flow"
             :flow="editor.flow"
+            :diagnosis="editor.doc?.diagnosis"
             :snapshot-fields="editor.doc?.snapshotFields ?? []"
             :readonly="editor.readonly"
             :publishing="editor.publishing"
             @update-meta="patchMeta"
             @update-snapshot-fields="patchSnapshotFields"
+            @update-diagnosis="editor.doc && editor.applyDoc({ ...editor.doc, diagnosis: $event })"
             @publish="publish"
           />
         </aside>

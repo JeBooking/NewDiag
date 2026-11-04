@@ -56,7 +56,8 @@ function candidateKinds(sourceId: string): NodeKind[] {
     for (const edge of edgeMeta.values()) if (edge.from === sourceId) return []
   }
   return (Object.keys(KIND_META) as NodeKind[]).filter(
-    (kind) => !KIND_META[kind].entry && kind !== 'start' && canConnect(source.kind, kind),
+    (kind) => !KIND_META[kind].entry && kind !== 'start'
+      && (!props.doc.diagnosis || kind !== 'dataPreparation') && canConnect(source.kind, kind),
   )
 }
 
@@ -247,9 +248,9 @@ function projectAll(preservePositions: boolean) {
       kind: meta.kind,
       title: meta.title ?? '',
       detail: meta.detail ?? '',
-      hasBinding: Boolean(meta.pipeline || (meta.binding?.project && meta.binding?.function)),
+      hasBinding: Boolean(meta.method || meta.pipeline || (meta.binding?.project && meta.binding?.function)),
       executionLabel: meta.kind === 'dataPreparation' ? '数据准备'
-        : meta.pipeline?.dataSource ? '共享数据' : meta.pipeline ? '四阶段' : undefined,
+        : meta.method ? '实例方法' : meta.pipeline?.dataSource ? '共享数据' : meta.pipeline ? '四阶段' : undefined,
       hasTarget: !isStart && meta.id !== entry,
       paramCount: isStart ? (meta.inputs?.length ?? 0) : undefined,
       issues: byNode.get(meta.id) ?? [],
@@ -541,7 +542,9 @@ function defaultTitle(kind: NodeKind) {
 function addNode(kind: NodeKind, position: { x: number; y: number }) {
   if (props.readonly) return
   const node: DocNode = { id: nextId('n'), kind, title: defaultTitle(kind), detail: '', position }
-  if (kind === 'investigation' || kind === 'dataPreparation') node.pipeline = { manualFields: [] }
+  if (kind === 'dataPreparation' || (kind === 'investigation' && !props.doc.diagnosis)) {
+    node.pipeline = { manualFields: [] }
+  }
   nodeMeta.set(node.id, node)
   projectAll(true)
   emit('select-node', node.id)
@@ -856,7 +859,8 @@ defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom, focusNode })
       <FlowOverview />
       <Panel v-if="!readonly" position="top-left" class="palette-panel">
         <div class="palette-stack">
-          <NodePalette :disabled="readonly" @add="(kind) => addNode(kind, centerPosition())" />
+          <NodePalette :disabled="readonly" :instance-mode="!!doc.diagnosis"
+            @add="(kind) => addNode(kind, centerPosition())" />
           <div v-if="issues.length" class="issue-global-wrap" :class="globalWorst">
             <span class="issue-global-badge">
               <svg v-if="globalWorst === 'error'" viewBox="0 0 512 512" aria-hidden="true">

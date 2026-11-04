@@ -1,0 +1,185 @@
+{
+  "format": 1,
+  "name": "实例共享数据与按需缓存",
+  "mode": "parallel",
+  "diagnosis": {
+    "project": "诊断实例示例",
+    "function": "MotorDiagnosis",
+    "protocol": "diagnosis/v1",
+    "version": "1.0.0",
+    "config": {
+      "voltage_limit": 210,
+      "waveform_limit": 5
+    }
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始",
+      "detail": "开始",
+      "position": {
+        "x": 0,
+        "y": 120
+      },
+      "inputs": [
+        {
+          "name": "device_id",
+          "scope": "global",
+          "type": "text",
+          "default": "motor-01"
+        },
+        {
+          "name": "time_point",
+          "scope": "global",
+          "type": "datetime",
+          "default": "2026-11-05T08:00:00+08:00"
+        }
+      ]
+    },
+    {
+      "id": "voltage",
+      "kind": "investigation",
+      "title": "检查启动报告电压",
+      "detail": "检查启动报告电压",
+      "position": {
+        "x": 260,
+        "y": 120
+      },
+      "method": "check_voltage",
+      "fields": {
+        "observation": "检查启动报告电压",
+        "acquisition": "诊断实例共享数据",
+        "assessment": "业务方法判断或人工确认"
+      }
+    },
+    {
+      "id": "action",
+      "kind": "investigationAction",
+      "title": "请现场确认设备状态，完成后继续",
+      "detail": "请现场确认设备状态，完成后继续",
+      "position": {
+        "x": 520,
+        "y": 120
+      }
+    },
+    {
+      "id": "waveform",
+      "kind": "investigation",
+      "title": "首次按需检查波形",
+      "detail": "首次按需检查波形",
+      "position": {
+        "x": 780,
+        "y": 120
+      },
+      "method": "check_waveform",
+      "fields": {
+        "observation": "首次按需检查波形",
+        "acquisition": "诊断实例共享数据",
+        "assessment": "业务方法判断或人工确认"
+      }
+    },
+    {
+      "id": "review",
+      "kind": "investigation",
+      "title": "人工确认波形",
+      "detail": "人工确认波形",
+      "position": {
+        "x": 1040,
+        "y": 120
+      },
+      "method": "review_waveform",
+      "fields": {
+        "observation": "人工确认波形",
+        "acquisition": "诊断实例共享数据",
+        "assessment": "业务方法判断或人工确认"
+      }
+    },
+    {
+      "id": "confirm",
+      "kind": "investigation",
+      "title": "等待后再次使用同一波形",
+      "detail": "等待后再次使用同一波形",
+      "position": {
+        "x": 1300,
+        "y": 120
+      },
+      "method": "confirm_waveform",
+      "fields": {
+        "observation": "等待后再次使用同一波形",
+        "acquisition": "诊断实例共享数据",
+        "assessment": "业务方法判断或人工确认"
+      }
+    },
+    {
+      "id": "end",
+      "kind": "escalation",
+      "title": "示例诊断结束",
+      "detail": "示例诊断结束",
+      "position": {
+        "x": 1560,
+        "y": 120
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "s",
+      "from": "start",
+      "to": "voltage"
+    },
+    {
+      "id": "v-y",
+      "from": "voltage",
+      "to": "action",
+      "branch": "yes"
+    },
+    {
+      "id": "v-n",
+      "from": "voltage",
+      "to": "end",
+      "branch": "no"
+    },
+    {
+      "id": "a",
+      "from": "action",
+      "to": "waveform"
+    },
+    {
+      "id": "waveform-yes",
+      "from": "waveform",
+      "to": "review",
+      "branch": "yes"
+    },
+    {
+      "id": "waveform-no",
+      "from": "waveform",
+      "to": "review",
+      "branch": "no"
+    },
+    {
+      "id": "review-yes",
+      "from": "review",
+      "to": "confirm",
+      "branch": "yes"
+    },
+    {
+      "id": "review-no",
+      "from": "review",
+      "to": "confirm",
+      "branch": "no"
+    },
+    {
+      "id": "confirm-yes",
+      "from": "confirm",
+      "to": "end",
+      "branch": "yes"
+    },
+    {
+      "id": "confirm-no",
+      "from": "confirm",
+      "to": "end",
+      "branch": "no"
+    }
+  ]
+}

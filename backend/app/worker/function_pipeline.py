@@ -105,6 +105,11 @@ def persisted_state(state, *, include_parsed: bool = False):
         "startedAt": state.get("startedAt"),
         **({"dataSource": state["dataSource"]} if "dataSource" in state else {}),
     }
+    if state.get("diagnosisState"):
+        projection.update({key: state[key] for key in
+                           ("diagnosisState", "diagnosisClass", "diagnosisVersion") if key in state})
+        if include_parsed:
+            projection["presentation"] = state.get("presentation")
     if state.get("raw") is not None:
         projection["raw"] = _summary(state["raw"])
     if include_parsed:

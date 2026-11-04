@@ -329,7 +329,7 @@ def _attachment_refs(doc: dict):
 def _bindings(doc: dict) -> list[dict]:
     seen: set[tuple[str, str]] = set()
     result: list[dict] = []
-    bindings = []
+    bindings = [doc.get("diagnosis")]
     for node in doc.get("nodes") or []:
         if not isinstance(node, dict):
             continue

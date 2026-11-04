@@ -48,6 +48,8 @@ def probe_doc(doc: dict) -> dict:
         if functions is None:
             result.setdefault(project_name, {"error": error or "探测失败"})
             continue
+        from app.worker.probe import expanded_functions
+        functions = expanded_functions(functions)
 
         key = f"{project_name}:{function_name}"
         if isinstance(result.get(key), dict) and result[key].get("error"):
@@ -60,7 +62,13 @@ def probe_doc(doc: dict) -> dict:
         if binding.get("_function_pipeline") and (func.get("error") or func.get("pipelineError")):
             result[key] = {"error": func.get("error") or func["pipelineError"]}
             continue
-        if binding.get("protocol") == "investigation/v1":
+        if binding.get("protocol") == "diagnosis/v1":
+            try:
+                _validate_diagnosis_binding(binding, func)
+            except ValueError as exc:
+                result[key] = {"error": str(exc)}
+                continue
+        elif binding.get("protocol") == "investigation/v1":
             try:
                 _validate_adapter_binding(binding, func)
             except ValueError as exc:
@@ -83,6 +91,15 @@ def probe_doc(doc: dict) -> dict:
 
 
 def _document_bindings(doc):
+    diagnosis = doc.get("diagnosis")
+    if isinstance(diagnosis, dict):
+        yield diagnosis
+        yield {"project": diagnosis.get("project"),
+               "function": str(diagnosis.get("function") or "") + ".__definition__"}
+        for node in doc.get("nodes") or []:
+            if isinstance(node, dict) and node.get("method"):
+                yield {"project": diagnosis.get("project"),
+                       "function": str(diagnosis.get("function") or "") + "." + str(node["method"])}
     for node in doc.get("nodes") or []:
         if not isinstance(node, dict):
             continue
@@ -93,6 +110,21 @@ def _document_bindings(doc):
                     yield {**binding, "_function_pipeline": True}
         elif isinstance(node.get("binding"), dict):
             yield node["binding"]
+
+
+def _validate_diagnosis_binding(binding, function):
+    if function.get("protocol") != "diagnosis/v1":
+        raise ValueError("流程入口不是诊断业务类")
+    if binding.get("version") != function.get("version"):
+        raise ValueError("诊断类版本不一致，请重新选择并发布")
+    config = binding.get("config") or {}
+    if not isinstance(config, dict):
+        raise ValueError("诊断类配置必须为对象")
+    params = function.get("configParams") or []
+    names = {item["name"] for item in params}
+    missing = {item["name"] for item in params if item.get("required") and item["name"] not in config}
+    if set(config) - names or missing:
+        raise ValueError(f"诊断类配置错误：缺少 {sorted(missing)}，未声明 {sorted(set(config) - names)}")
 
 
 def _validate_adapter_binding(binding: dict, func: dict) -> None:
@@ -221,6 +253,8 @@ def _hash_params(name: str, params: list[dict]) -> str:
 
 
 def _hash_function(discovered: list[dict], function_name: str) -> str:
+    from app.worker.probe import expanded_functions
+    discovered = expanded_functions(discovered)
     matched = [f for f in discovered if str(f.get("name")) == function_name]
     if not matched:
         return ""
@@ -235,9 +269,17 @@ def _format_default(value) -> str:
 
 def _plan_keys(plan: dict) -> list[str]:
     keys: list[str] = []
+    diagnosis = plan.get("diagnosis")
+    if diagnosis:
+        prefix = f"{diagnosis['project']}:{diagnosis['function']}"
+        keys.extend([prefix, prefix + ".__definition__"])
     for step in (plan.get("steps") or {}).values():
         if not isinstance(step, dict):
             continue
+        if step.get("diagnosisMethod") and diagnosis:
+            key = f"{diagnosis['project']}:{diagnosis['function']}.{step['diagnosisMethod']['name']}"
+            if key not in keys:
+                keys.append(key)
         calls = [step.get("call")]
         pipeline = step.get("pipeline") or {}
         calls.extend(pipeline.get(stage) for stage in ("acquire", "parse", "present", "judge"))

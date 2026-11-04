@@ -15,10 +15,12 @@ import sys
 import traceback
 
 if __package__:
-    from . import node_sdk
+    from . import node_sdk, diagnosis_sdk
     sys.modules.setdefault("node_sdk", node_sdk)
+    sys.modules.setdefault("diagnosis_sdk", diagnosis_sdk)
 else:
     import node_sdk
+    import diagnosis_sdk
 
 describe_adapter = node_sdk.describe_adapter
 is_adapter = node_sdk.is_adapter
@@ -89,17 +91,31 @@ def _module_functions(module) -> list[dict]:
             if not name.startswith("_")
             and callable(obj)
             and getattr(obj, "__module__", None) == module.__name__
-            and (not inspect.isclass(obj) or is_adapter(obj))
+            and (not inspect.isclass(obj) or is_adapter(obj) or diagnosis_sdk.is_diagnosis(obj))
         ]
     result = []
     for name in names:
         obj = getattr(module, name, None)
+        if diagnosis_sdk.is_diagnosis(obj):
+            result.append({"name": name, **diagnosis_sdk.describe_diagnosis(obj)})
+            continue
         if is_adapter(obj):
             result.append(_describe_adapter(name, obj))
             continue
         if callable(obj) and not inspect.isclass(obj):
             result.append(_describe(name, obj))
     result.sort(key=lambda item: item["name"])
+    return result
+
+
+def expanded_functions(functions):
+    result = list(functions)
+    for entry in functions:
+        if entry.get("protocol") == diagnosis_sdk.PROTOCOL:
+            meta = {key: value for key, value in entry.items() if key != "name"}
+            result.append(diagnosis_sdk.definition_function(entry["name"], meta))
+            result.extend({**method, "name": entry["name"] + "." + method["name"]}
+                          for method in entry["methods"])
     return result
 
 

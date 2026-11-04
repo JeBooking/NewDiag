@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import json
 
 from . import rules
 from app.worker.function_pipeline import STAGES, SOURCES, default_argument
@@ -92,6 +93,8 @@ def validate_doc(
         _check_cycles(entry, outgoing, issues)
     start = StartParams(doc)
     _check_bindings(nodes_by_id, valid_edges, start, issues, functions, strict_binding)
+    _, found = _compile_diagnosis(doc, nodes_by_id, valid_edges, start, functions)
+    issues.extend({**issue, "level": LEVEL_WARNING} if not strict_binding else issue for issue in found)
     return issues
 
 
@@ -109,6 +112,8 @@ class StartNode(NodeDefinition):
 class InvestigationNode(NodeDefinition):
     def compile(self, node, nodes, edges, start, functions):
         step = super().compile(node, nodes, edges, start, functions)
+        if node.get("method"):
+            return step
         if "pipeline" in node:
             step["pipeline"], _ = _compile_function_pipeline(node, nodes, edges, start, functions)
             return step
@@ -210,6 +215,13 @@ def compile_doc(
         steps[nid] = NODE_DEFINITIONS[node["kind"]].compile(
             node, nodes_by_id, valid_edges, start, functions,
         )
+        if node.get("method") and doc.get("diagnosis"):
+            binding = doc["diagnosis"]
+            method_binding = {"project": binding["project"],
+                              "function": binding["function"] + "." + node["method"]}
+            args, _ = _resolve_args({**node, "binding": method_binding}, nodes_by_id,
+                                    valid_edges, start, functions)
+            steps[nid]["diagnosisMethod"] = {"name": node["method"], "args": args}
 
     calls = [
         f"{step['call'].get('project')}.{step['call'].get('function')}"
@@ -232,7 +244,7 @@ def compile_doc(
         sorted(set(calls)) or "无",
     )
 
-    return {
+    plan = {
         "format": 1,
         "flowId": flow_id,
         "release": release_no,
@@ -241,6 +253,9 @@ def compile_doc(
         "steps": steps,
         "signature": {},
     }
+    if doc.get("diagnosis"):
+        plan["diagnosis"], _ = _compile_diagnosis(doc, nodes_by_id, valid_edges, start, functions)
+    return plan
 
 
 # ---------------------------------------------------------------- 校验细节
@@ -553,6 +568,8 @@ def _check_bindings(
 ) -> None:
     """spec 4.8：参数来源必须在当前版本存在，且位于该节点上游。"""
     for nid, node in nodes_by_id.items():
+        if node.get("method"):
+            continue
         if node.get("kind") not in ("investigation", "dataPreparation"):
             continue
         if node.get("kind") == "dataPreparation" and "pipeline" not in node:
@@ -587,6 +604,53 @@ def _check_bindings(
             if not strict_binding and issue.get("level") == LEVEL_ERROR:
                 issue = {**issue, "level": LEVEL_WARNING}
             issues.append(issue)
+
+
+def _compile_diagnosis(doc, nodes, edges, start, functions):
+    issues = []
+    binding = doc.get("diagnosis")
+    method_nodes = [node for node in nodes.values() if "method" in node]
+    if binding is None:
+        if method_nodes:
+            issues.append(_issue(LEVEL_ERROR, "调用实例方法前必须配置流程诊断类"))
+        return None, issues
+    if (not isinstance(binding, dict) or binding.get("protocol") != "diagnosis/v1"
+            or not all(isinstance(binding.get(key), str) and binding[key].strip()
+                       for key in ("project", "function", "version"))
+            or not isinstance(binding.get("config", {}), dict)):
+        return None, [_issue(LEVEL_ERROR, "诊断类配置需要工程、类、协议、版本及合法初始化配置")]
+    prefix = f"{binding['project']}:{binding['function']}"
+    definition = (functions or {}).get(prefix + ".__definition__")
+    try:
+        meta = json.loads(definition[0]["type"])
+        if meta["protocol"] != "diagnosis/v1" or meta["version"] != binding["version"]:
+            raise ValueError("诊断类版本不一致")
+    except (ValueError, TypeError, IndexError, KeyError):
+        return None, [_issue(LEVEL_ERROR, "诊断类接口尚未探测或版本不一致，请重新选择诊断类")]
+    names = {param["name"] for param in meta["configParams"]}
+    config = binding.get("config") or {}
+    if set(config) - names or any(param["required"] and param["name"] not in config
+                                  for param in meta["configParams"]):
+        issues.append(_issue(LEVEL_ERROR, "诊断类初始化配置缺少必填参数或包含未知参数"))
+    methods = {entry["name"] for entry in meta["methods"]}
+    for node in method_nodes:
+        if (node.get("kind") != "investigation" or not isinstance(node.get("method"), str)
+                or node.get("method") not in methods
+                or node.get("pipeline") or node.get("binding")):
+            issues.append(_issue(LEVEL_ERROR, "实例方法只支持排查节点，须选择诊断类公开方法且不能混用其他绑定",
+                                 node_id=node["id"]))
+            continue
+        method_binding = {"project": binding["project"],
+                          "function": binding["function"] + "." + node["method"]}
+        _, found = _resolve_args({**node, "binding": method_binding}, nodes, edges, start, functions)
+        issues.extend(found)
+    if any(node.get("binding") or node.get("pipeline") or node.get("kind") == "dataPreparation"
+           for node in nodes.values()):
+        issues.append(_issue(LEVEL_ERROR, "诊断类流程的自动排查统一调用实例方法；旧接入方式请用于未配置诊断类的流程"))
+    init_node = {"id": start.id, "binding": binding}
+    args, found = _resolve_args(init_node, nodes, edges, start, functions)
+    issues.extend(found)
+    return {**binding, "args": args, "definition": meta}, issues
 
 
 def _compile_function_pipeline(node, nodes, edges, start, functions):

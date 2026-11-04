@@ -21,11 +21,13 @@ import traceback
 from contextlib import redirect_stdout
 
 if __package__:
-    from . import artifacts, node_sdk
+    from . import artifacts, node_sdk, diagnosis_sdk
     sys.modules.setdefault("node_sdk", node_sdk)
+    sys.modules.setdefault("diagnosis_sdk", diagnosis_sdk)
 else:
     import artifacts
     import node_sdk
+    import diagnosis_sdk
 
 execute_adapter = node_sdk.execute_adapter
 is_adapter = node_sdk.is_adapter
@@ -45,6 +47,7 @@ def main() -> int:
 
     with redirect_stdout(sys.stderr):
         target = _bootstrap(config)
+    diagnosis = diagnosis_sdk.DiagnosisRuntime()
 
     for line in sys.stdin:
         line = line.strip()
@@ -57,6 +60,8 @@ def main() -> int:
                 raise ValueError("请求必须是 JSON 对象")
             request_id = request.get("id")
             if request.get("op") == "shutdown":
+                with redirect_stdout(sys.stderr):
+                    diagnosis.close()
                 _write({"id": request_id, "ok": True, "value": None})
                 break
             function_name = request.get("function")
@@ -64,7 +69,9 @@ def main() -> int:
             if not isinstance(args, dict):
                 raise ValueError("args 必须是对象")
             with redirect_stdout(sys.stderr):
-                if function_name == "__newdiag_pipeline__":
+                if function_name == "__newdiag_diagnosis__":
+                    value = diagnosis.execute(target, args)
+                elif function_name == "__newdiag_pipeline__":
                     cls = _resolve_callable(target, args["adapter"])
                     if not is_adapter(cls):
                         raise TypeError("目标不是 InvestigationNode 适配器类")

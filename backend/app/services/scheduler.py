@@ -201,7 +201,8 @@ class Scheduler:
                 if request["type"] == "judgment" and not str(payload.get("reason") or "").strip():
                     raise ValueError("请填写判断依据")
                 operation = request["type"]
-                runner = self._invoke_functions if step.get("pipeline") else self._invoke_pipeline
+                runner = (self._resume_diagnosis if step.get("diagnosisMethod") else
+                          self._invoke_functions if step.get("pipeline") else self._invoke_pipeline)
                 configuration = step.get("pipeline") or step.get("call") or {}
                 value, failure = runner(
                     db, instance, token, configuration, request["pipeline"], operation,
@@ -337,9 +338,9 @@ class Scheduler:
             )
             self._ensure_entry_token(db, instance, plan)
             db.commit()
-            if finished_runs or not any(
+            if finished_runs or (not plan.get("diagnosis") and not any(
                 step.get("call") or step.get("pipeline") for step in plan["steps"].values()
-            ):
+            )):
                 return True  # 只在实例首次启动时比对签名，人工恢复不重新拦
             stored = self._stored_signatures(db, instance)
             expected = plan if plan.get("signature") else {**plan, "signature": stored}
@@ -418,7 +419,9 @@ class Scheduler:
             plan = self._plan(db, instance)
             self._refresh(db, instance, plan)
             db.commit()
-            if instance.status in TERMINAL_INSTANCE:
+            if instance.status in TERMINAL_INSTANCE or (
+                plan.get("diagnosis") and instance.status in ("waiting", "paused")
+            ):
                 self._close_session(instance_id)
         finally:
             db.close()
@@ -465,6 +468,10 @@ class Scheduler:
             step.get("kind"),
             token.generation,
         )
+        if plan.get("diagnosis") and step.get("kind") != "start":
+            reference = self._diagnosis_state(db, instance.id, token.generation)
+            if reference is not None:
+                self._save_diagnosis_state(db, instance, token, reference)
 
         if step.get("terminal"):
             token.status = "done"
@@ -478,9 +485,20 @@ class Scheduler:
             token.status = "waiting"
             token.updated_at = now_iso()
             db.flush()
+            if plan.get("diagnosis"):
+                self._close_session(instance.id)
             logger.info(
                 "实例 %s 等待人工：节点 %s（%s）", instance.id, token.node_id, step.get("kind")
             )
+            return
+
+        if plan.get("diagnosis") and step.get("kind") == "start":
+            db.commit()
+            self._run_diagnosis(db, instance, plan, token, step, initialize=True)
+            return
+        if step.get("diagnosisMethod"):
+            db.commit()
+            self._run_diagnosis(db, instance, plan, token, step)
             return
 
         if step.get("pipeline"):
@@ -603,6 +621,98 @@ class Scheduler:
             branch,
             (time.perf_counter() - t0) * 1000,
         )
+
+    def _diagnosis_state(self, db, instance_id, generation):
+        saved = db.scalars(select(models.DiagnosisState).where(
+            models.DiagnosisState.instance_id == instance_id,
+            models.DiagnosisState.generation == generation,
+        ).order_by(models.DiagnosisState.seq.desc())).first()
+        return _loads(saved.reference_json) if saved else None
+
+    def _save_diagnosis_state(self, db, instance, token, reference, *, generation=None):
+        if not artifacts.is_reference(reference):
+            raise ValueError("诊断对象返回了无效的数据版本")
+        db.add(models.DiagnosisState(
+            id=new_id(), instance_id=instance.id,
+            generation=generation if generation is not None else token.generation,
+            # 平台时间戳精确到秒，随机 id 不能代表同秒多次写入的先后。
+            seq=(db.scalar(select(func.max(models.DiagnosisState.seq)).where(
+                models.DiagnosisState.instance_id == instance.id,
+            )) or 0) + 1,
+            token_id=token.id if token else None, reference_json=_dumps(reference),
+            created_at=now_iso(),
+        ))
+        db.flush()
+
+    def _diagnosis_visit_state(self, db, instance, token):
+        seen = set()
+        while token and token.id not in seen:
+            seen.add(token.id)
+            saved = db.scalars(select(models.DiagnosisState).where(
+                models.DiagnosisState.instance_id == instance.id,
+                models.DiagnosisState.token_id == token.id,
+            ).order_by(models.DiagnosisState.seq.desc())).first()
+            if saved:
+                return _loads(saved.reference_json)
+            token = db.get(models.Token, token.parent_token_id) if token.parent_token_id else None
+        return None
+
+    def _run_diagnosis(self, db, instance, plan, token, step, *, initialize=False):
+        binding = plan["diagnosis"]
+        method = step.get("diagnosisMethod") or {}
+        function = binding["function"] + ("." + method["name"] if method else "")
+        args, error = self._eval_args(db, instance, token,
+                                     binding["args"] if initialize else method["args"], function)
+        started = now_iso()
+        reference = None if initialize else self._diagnosis_state(db, instance.id, token.generation)
+        state = {"inputs": args, "stages": [], "startedAt": started,
+                 "diagnosisClass": binding["function"], "diagnosisVersion": binding["version"]}
+        value, failure = None, None
+        if error:
+            failure = (ERR_ARGUMENT, error, 1)
+        else:
+            request = {"class": binding["function"], "version": binding["version"],
+                       "config": binding.get("config") or {}, "definition": binding["definition"],
+                       "artifactRoot": str(self._artifact_root(instance.id)), "state": reference,
+                       "operation": "initialize" if initialize else "method",
+                       "inputs": args if initialize else {}, "method": method.get("name"),
+                       "arguments": args}
+            value, failure = self._invoke(db, instance, {
+                "project": binding["project"], "function": "__newdiag_diagnosis__",
+            }, request, token)
+        if self._is_cancelled(instance.id):
+            return
+        if value and value.get("state"):
+            state["diagnosisState"] = value["state"]
+            self._save_diagnosis_state(db, instance, token, value["state"])
+        if value and value.get("error"):
+            failure = (ERR_EXCEPTION, value["error"], 1)
+        if failure:
+            self._write_run(db, instance, token, status="failed", args=args,
+                            error=f"{failure[0]}: {failure[1]}", started=started,
+                            attempt=failure[2], evidence={"pipeline": persisted_state(state)})
+            self._fail_token(db, instance, token)
+            return
+        if initialize:
+            self._write_run(db, instance, token, status="ok", args=args,
+                            output={"initialized": True}, started=started,
+                            evidence={"pipeline": persisted_state(state)})
+            self._spawn_successors(db, instance, plan, token, step, "default")
+            token.status, token.updated_at = "done", now_iso()
+            db.flush()
+            return
+        result = value["result"]
+        state.update({"presentation": result["presentation"], "parsed": result["data"],
+                      "decision": {"result": result["result"], "reason": result["reason"]}})
+        self._accept_pipeline(db, instance, plan, token, step, {
+            "status": "judgment" if result["result"] is None else "complete", "state": state,
+        })
+
+    def _resume_diagnosis(self, db, instance, token, configuration, state, operation, **extra):
+        state = dict(state)
+        state["decision"] = extra["decision"]
+        state["stages"] = [*state.get("stages", []), {"stage": "manualJudgment"}]
+        return {"status": "complete", "state": state}, None
 
     def _run_functions(self, db, instance, plan, token, step):
         pipeline = step["pipeline"]
@@ -737,6 +847,9 @@ class Scheduler:
         state = value["state"]
         status = value["status"]
         call = step.get("call") or {"function": "平台四阶段函数", "version": "1"}
+        if step.get("diagnosisMethod"):
+            call = {"function": state["diagnosisClass"] + "." + step["diagnosisMethod"]["name"],
+                    "version": state["diagnosisVersion"]}
         if status == "prepared":
             self._write_run(db, instance, token, status="ok", args=state["inputs"],
                             started=state.get("startedAt"), output={"data": state["parsed"]},
@@ -1257,6 +1370,12 @@ class Scheduler:
 
         # 历史 run 的成功/失败结果不能被回退覆盖，轨迹仍需展示真实执行结论。
         new_generation = max((t.generation for t in tokens), default=1) + 1
+        if plan.get("diagnosis"):
+            reference = self._diagnosis_visit_state(db, instance, target_token)
+            if reference is None:
+                raise ValueError("所选到访缺少诊断数据版本，无法恢复")
+            self._save_diagnosis_state(db, instance, None, reference, generation=new_generation)
+            self._close_session(instance.id)
         parent = SimpleNamespace(id=parent_id, sort_order=target_token.sort_order)
         targets = [target] if mode == "retry" else step["next"][branch_key]
         self._create_tokens(

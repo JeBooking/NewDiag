@@ -37,7 +37,8 @@ export interface ProjectFunction {
   doc?: string | null
   params: ProjectFunctionParam[]
   returns?: string | null
-  protocol?: 'investigation/v1'
+  protocol?: 'investigation/v1' | 'diagnosis/v1'
+  methods?: { name: string; params: ProjectFunctionParam[] }[]
   version?: string
   configParams?: { name: string; required: boolean; default?: unknown }[]
   automaticAcquisition?: boolean
@@ -105,7 +106,15 @@ function normalizeFunction(raw: unknown): ProjectFunction | null {
     doc: text(item.doc) ?? text(item.description) ?? null,
     params,
     returns: text(item.returns) ?? null,
-    protocol: item.protocol === 'investigation/v1' ? 'investigation/v1' : undefined,
+    protocol: item.protocol === 'investigation/v1' || item.protocol === 'diagnosis/v1'
+      ? item.protocol : undefined,
+    methods: Array.isArray(item.methods) ? item.methods.flatMap((raw) => {
+      const method = record(raw)
+      return method && typeof method.name === 'string'
+        ? [{ name: method.name, params: Array.isArray(method.params)
+          ? method.params.map(normalizeParam).filter((p): p is ProjectFunctionParam => Boolean(p)) : [] }]
+        : []
+    }) : [],
     version: text(item.version),
     configParams: Array.isArray(item.configParams)
       ? item.configParams.flatMap((raw) => {
