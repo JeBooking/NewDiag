@@ -5,6 +5,7 @@ import AttachmentList from '@/components/panels/AttachmentList.vue'
 defineProps<{ review: ReviewTask; busy?: boolean }>()
 const emit = defineEmits<{
   (e: 'complete'): void
+  (e: 'rollback'): void
 }>()
 
 function pretty(value: unknown): string {
@@ -37,9 +38,10 @@ function pretty(value: unknown): string {
 
     <div class="actions">
       <el-button type="success" :loading="busy" @click="emit('complete')">完成</el-button>
+      <el-button type="warning" plain :loading="busy" @click="emit('rollback')">回退</el-button>
     </div>
     <div class="hint">
-      对着设备完成处置后点「完成」；没有做成请在顶部「从轨迹回退」回到已执行的节点重新排查
+      对着设备完成处置后点「完成」；没有做成选择「回退」，回到已执行的祖先节点重新排查
     </div>
   </div>
 </template>
