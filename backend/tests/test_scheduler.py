@@ -814,3 +814,130 @@ def test_jump_waits_review_then_reaches_success(env):
 
     assert token_of(env.factory, "j1").status == "done"
     assert token_of(env.factory, "p1").status == "done"
+
+
+# ---------------------------------------------------------------- 四阶段落库
+
+
+PIPELINE_FUNCTIONS = {
+    "demo:read_report": [],
+    "demo:parse_report": [{"name": "raw", "type": "any", "required": True, "default": None}],
+    "demo:present_report": [
+        {"name": "parsed", "type": "any", "required": True, "default": None},
+        {"name": "decision", "type": "text", "required": False, "default": None},
+    ],
+    "demo:judge_report": [{"name": "voltage", "type": "float", "required": True, "default": None}],
+}
+
+BIG_RAW = "R" * 200_000
+BIG_PARSED = {"voltage": 199.0, "note": "P" * 200_000}
+
+
+def pipeline_doc(with_judge: bool = True) -> dict:
+    """一份检测报告，取数 → 解析 → 展示 → 判断；解析结果远大于落库阈值。"""
+    pipeline = {
+        "acquire": {"project": "demo", "function": "read_report"},
+        "parse": {"project": "demo", "function": "parse_report"},
+        "present": {"project": "demo", "function": "present_report"},
+    }
+    if with_judge:
+        pipeline["judge"] = {
+            "project": "demo", "function": "judge_report",
+            "arguments": {"voltage": {"source": "parsed", "path": "voltage"}},
+        }
+    return {
+        "format": 1,
+        "name": "四阶段",
+        "mode": "parallel",
+        "nodes": [
+            _start(),
+            {
+                "id": "n1",
+                "kind": "investigation",
+                "title": "读检测报告",
+                "detail": "从整份报告里取母线电压",
+                "fields": {"observation": "报告", "acquisition": "读取文件", "assessment": "低于 210V"},
+                "pipeline": pipeline,
+                "position": {"x": 0, "y": 0},
+            },
+            _node("c1", "conclusion", "电压不足"),
+            _node("e1", "escalation", "结论后上升"),
+            _node("e2", "escalation", "未命中上升"),
+        ],
+        "edges": [
+            {"id": "a1", "from": "start", "to": "n1", "order": 1},
+            {"id": "a2", "from": "n1", "to": "c1", "branch": "yes", "order": 1},
+            {"id": "a3", "from": "n1", "to": "e2", "branch": "no", "order": 2},
+            {"id": "a4", "from": "c1", "to": "e1", "order": 1},
+        ],
+    }
+
+
+def pipeline_results() -> dict:
+    def dispatch(request):
+        name = request["function"]
+        if name == "read_report":
+            return BIG_RAW
+        if name == "parse_report":
+            return BIG_PARSED
+        if name == "present_report":
+            return "母线电压 199.0V"
+        if name == "judge_report":
+            return True
+        raise AssertionError(f"未预期调用 {name}")
+
+    return {"__newdiag_function__": dispatch}
+
+
+def test_pipeline_raw_persisted_as_summary(env):
+    """整份原始数据不进运行记录：每个节点各存一遍会把库撑爆。"""
+    seed(env.factory, pipeline_doc(), functions=PIPELINE_FUNCTIONS)
+    env.sessions.results = pipeline_results()
+
+    env.scheduler.start("i1")
+    wait_for(env.factory, lambda: status_of(env.factory) == "escalated", label="实例结束")
+
+    run = runs(env.factory, "n1")[0]
+    evidence = json.loads(run.evidence_json)
+    assert evidence["pipeline"]["raw"]["omitted"] is True
+    assert evidence["pipeline"]["raw"]["bytes"] >= len(BIG_RAW)
+    assert "parsed" not in evidence["pipeline"], "解析结果在 output 里，不该在证据里再来一份"
+    assert "P" * 100 not in run.evidence_json, "解析阶段的入参也要压成摘要"
+    assert json.loads(run.output_json)["data"]["note"] == BIG_PARSED["note"]
+
+
+def test_pipeline_review_keeps_parsed_for_resume(env):
+    """人工判断恢复要重跑展示，parsed 必须留在待办里；raw 不需要。"""
+    seed(env.factory, pipeline_doc(with_judge=False), functions=PIPELINE_FUNCTIONS)
+    env.sessions.results = pipeline_results()
+
+    env.scheduler.start("i1")
+    wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="判断待办")
+
+    review = pending_reviews(env.factory)[0]
+    request = json.loads(review.request_json)
+    assert request["type"] == "judgment"
+    assert request["pipeline"]["parsed"]["note"] == BIG_PARSED["note"]
+    assert request["pipeline"]["raw"]["omitted"] is True
+
+    env.scheduler.submit_review("i1", review.id, {"result": "yes", "reason": "电压不足"})
+    wait_for(env.factory, lambda: status_of(env.factory) == "escalated", label="判断后结束")
+
+    assert json.loads(runs(env.factory, "n1")[0].output_json)["result"] == "yes"
+
+
+def test_pipeline_acquisition_review_keeps_manual_fields(env):
+    """人工采集恢复时靠 manualFields 把文件哈希换成存储路径，待办里必须留着。"""
+    doc = pipeline_doc(with_judge=False)
+    pipeline = doc["nodes"][1]["pipeline"]
+    pipeline.pop("acquire")
+    pipeline["manualFields"] = [{"name": "report", "type": "text", "required": True}]
+    seed(env.factory, doc, functions=PIPELINE_FUNCTIONS)
+    env.sessions.results = pipeline_results()
+
+    env.scheduler.start("i1")
+    wait_for(env.factory, lambda: status_of(env.factory) == "waiting", label="采集待办")
+
+    request = json.loads(pending_reviews(env.factory)[0].request_json)
+    assert request["type"] == "acquisition"
+    assert [field["name"] for field in request["pipeline"]["manualFields"]] == ["report"]

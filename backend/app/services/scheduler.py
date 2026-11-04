@@ -22,7 +22,7 @@ from app.db import SessionLocal, new_id, now_iso
 from app.logging_setup import brief
 from app.services import signatures
 from app.services.sessions import SessionCrashed, SessionError, SessionManager, SessionTimeout
-from app.worker.function_pipeline import PipelineFailure, execute_pipeline
+from app.worker.function_pipeline import PipelineFailure, execute_pipeline, persisted_state
 
 logger = logging.getLogger(__name__)
 
@@ -620,7 +620,8 @@ class Scheduler:
         if failure:
             self._write_run(db, instance, token, status="failed", args=args,
                             error=f"{failure[0]}: {failure[1]}", attempt=failure[2],
-                            evidence={"adapter": "平台四阶段函数", "pipeline": state})
+                            evidence={"adapter": "平台四阶段函数",
+                                      "pipeline": persisted_state(state)})
             self._fail_token(db, instance, token)
         else:
             self._accept_pipeline(db, instance, plan, token, step, value)
@@ -720,7 +721,7 @@ class Scheduler:
                 request_json=_dumps({
                     "title": meta.get("title") or token.node_id,
                     "detail": meta.get("detail") or "", "nodeKind": "investigation",
-                    "type": status, "pipeline": state,
+                    "type": status, "pipeline": persisted_state(state, include_parsed=True),
                     "fields": state["manualFields"] if status == "acquisition" else [],
                     "evidence": state.get("parsed"), "presentation": state.get("presentation"),
                     "attachments": meta.get("attachments") or [],
@@ -743,7 +744,8 @@ class Scheduler:
             args=state["inputs"], started=state.get("startedAt"), error=error,
             output={"data": state["parsed"], **decision},
             evidence={"branch": branch, "presentation": state["presentation"],
-                      "pipeline": state, "adapter": call["function"], "version": call["version"]},
+                      "pipeline": persisted_state(state), "adapter": call["function"],
+                      "version": call["version"]},
         )
         if error:
             self._fail_token(db, instance, token)

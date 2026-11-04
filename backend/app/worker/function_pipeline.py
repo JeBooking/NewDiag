@@ -1,5 +1,6 @@
 """平台内置四阶段编排；业务函数无须继承 SDK 或使用固定方法名。"""
 
+import hashlib
 import json
 import time
 
@@ -7,6 +8,9 @@ from .node_sdk import json_value, presentation, validate_fields
 
 STAGES = ("acquire", "parse", "present", "judge")
 SOURCES = {"raw", "parsed", "decision", "inputs"}
+
+# 单个值序列化后的落库上限。原始数据可能是整份文件，不该跟着每次运行进库。
+SUMMARY_CHARS = 4096
 
 
 class PipelineFailure(Exception):
@@ -67,6 +71,43 @@ def normalize_decision(value, function):
     if result not in ("yes", "no") or not isinstance(reason, str) or not reason.strip():
         raise ValueError("判断函数须返回布尔值、yes/no，或包含 result 和非空 reason 的对象")
     return {"result": result, "reason": reason}
+
+
+def _summary(value):
+    """超过阈值的值压成摘要；小值原样保留，运行记录仍然可读。"""
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if len(text) <= SUMMARY_CHARS:
+        return value
+    encoded = text.encode("utf-8")
+    return {"omitted": True, "bytes": len(encoded), "sha256": hashlib.sha256(encoded).hexdigest()}
+
+
+def _summary_stage(stage):
+    arguments = stage.get("arguments")
+    if not isinstance(arguments, dict):
+        return stage
+    return {**stage, "arguments": {name: _summary(value) for name, value in arguments.items()}}
+
+
+def persisted_state(state, *, include_parsed: bool = False):
+    """运行记录与待办的落库投影。
+
+    raw 只留摘要：解析完成后没人再读它，整份文件留在库里只会让每个节点各存一遍。
+    parsed 只在待办里保留——人工判断恢复要重跑展示，需要它；运行记录里它在 output.data。
+    """
+    projection = {
+        "inputs": state.get("inputs"),
+        "stages": [_summary_stage(stage) for stage in state.get("stages") or []],
+        "startedAt": state.get("startedAt"),
+    }
+    if state.get("raw") is not None:
+        projection["raw"] = _summary(state["raw"])
+    if include_parsed:
+        projection["parsed"] = state.get("parsed")
+        projection["inputContext"] = state.get("inputContext")
+        # 恢复人工采集时按它把文件哈希换成存储路径
+        projection["manualFields"] = state.get("manualFields") or []
+    return projection
 
 
 def execute_pipeline(pipeline, state, operation, invoke, *, data=None, decision=None):
