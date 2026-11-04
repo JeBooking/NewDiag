@@ -118,9 +118,14 @@ function changeLiteral(stage: StageName, name: string, value: string): void {
 }
 
 function allowed(stage: StageName) {
-  return sources.filter((item) => stage === 'parse'
-    ? ['raw', 'inputs', 'lit'].includes(item.value)
-    : stage !== 'judge' || item.value !== 'decision')
+  // raw 只在解析阶段可用：人工判断恢复只重跑展示，那时上下文里已经没有原始数据
+  const usable: Record<StageName, string[]> = {
+    acquire: [],
+    parse: ['raw', 'inputs', 'lit'],
+    present: ['parsed', 'decision', 'inputs', 'lit'],
+    judge: ['parsed', 'inputs', 'lit'],
+  }
+  return sources.filter((item) => usable[stage].includes(item.value))
 }
 
 function updateField(index: number, patch: Partial<ManualField>): void {

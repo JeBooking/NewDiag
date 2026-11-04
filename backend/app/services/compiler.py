@@ -652,7 +652,8 @@ def _compile_function_pipeline(node, nodes, edges, start, functions):
                 continue
             if "lit" not in expression:
                 source = expression.get("source")
-                allowed = {"raw", "inputs"} if stage == "parse" else SOURCES
+                # raw 只属于解析阶段：人工判断恢复只重跑展示、不重新解析，引用它会拿到空值
+                allowed = {"raw", "inputs"} if stage == "parse" else SOURCES - {"raw"}
                 if stage == "judge":
                     allowed = allowed - {"decision"}
                 if source not in allowed or not isinstance(expression.get("path", ""), str):

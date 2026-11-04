@@ -912,3 +912,20 @@ def test_judge_non_scalar_param_without_path_allowed(judge_param):
 
     assert errors(doc, functions=functions) == []
     compile_doc(doc, "f1", 1, functions=functions)
+
+
+@pytest.mark.parametrize("stage", ["present", "judge"])
+def test_only_parse_can_reference_raw(stage):
+    """人工判断恢复只重跑展示，上下文里没有 raw；允许引用会让恢复路径拿到空值。"""
+    doc = pipeline_doc({"voltage": {"source": "parsed", "path": "voltage"}})
+    binding = node(doc, "n1")["pipeline"][stage]
+    binding["arguments"] = (
+        {"parsed": {"source": "raw"}} if stage == "present"
+        else {"voltage": {"source": "raw", "path": "voltage"}}
+    )
+
+    with pytest.raises(ValidationError) as info:
+        compile_doc(doc, "f1", 1, functions=pipeline_functions())
+
+    text = " ".join(issue["message"] for issue in info.value.issues)
+    assert f"{stage}" in text and "数据来源无效" in text
