@@ -3,7 +3,8 @@ import { reactive } from 'vue'
 import type {
   FunctionPipeline, ManualField, NodeBinding, StageArgument, StageName,
 } from '@/domain/types'
-import type { ProjectFunction } from '@/services/projects'
+import type { ProjectFunction, ProjectFunctionParam } from '@/services/projects'
+import { isScalarParam } from '@/services/paramTypes'
 import BindingEditor from '@/components/panels/BindingEditor.vue'
 
 const props = defineProps<{ value: FunctionPipeline; readonly?: boolean }>()
@@ -48,6 +49,30 @@ function source(stage: StageName, name: string): string {
   if ('lit' in expression) return 'lit'
   if ('omit' in expression) return 'omit'
   return expression.source
+}
+
+// judge 没有「自动」兜底：不显式选来源时保持未配置，避免默认把整个解析结果传进去
+function unset(stage: StageName, name: string): boolean {
+  return stage === 'judge' && !argument(stage, name)
+}
+
+// 显式选了来源却留空路径，等于把整个数据传给参数；判断函数通常不接受对象，只提示不拦截
+function missingPath(stage: StageName, name: string): boolean {
+  if (stage !== 'judge') return false
+  const expression = argument(stage, name)
+  return !!expression && 'source' in expression && !expression.path?.trim()
+}
+
+// 后端编译期会拒绝「judge 标量参数没填字段路径」，前端同步标必填，避免发布时才报错
+function pathRequired(stage: StageName, param: ProjectFunctionParam): boolean {
+  if (stage !== 'judge' || !isScalarParam(param)) return false
+  const expression = argument(stage, param.name)
+  // 未配置的可选参数可省略、后端不要求路径；但 index 0 会被缺省映射，不选来源等于传整段
+  if (!expression) {
+    if (param.required !== false) return true
+    return (descriptions[stage]?.params.indexOf(param) ?? -1) === 0
+  }
+  return 'source' in expression
 }
 
 function setArgument(stage: StageName, name: string, expression?: StageArgument): void {
@@ -120,6 +145,10 @@ function removeField(index: number): void {
     <section v-for="stage in stages" :key="stage.name" class="stage">
       <strong>{{ stage.title }}</strong>
       <p class="hint">{{ stage.hint }}</p>
+      <p v-if="stage.name === 'judge'" class="hint judge-tip">
+        判断函数需要的是「解析结果」里的某个字段（例如 voltage），不是整个解析结果对象。
+        数值、文本等标量参数必须填写字段路径，留空会在发布时被拒绝。
+      </p>
       <BindingEditor
         :binding="value[stage.name]" :readonly="readonly" plain-only
         @update="select(stage.name, $event)" @describe="describe(stage.name, $event)"
@@ -128,13 +157,15 @@ function removeField(index: number): void {
         <div v-for="param in descriptions[stage.name]?.params" :key="param.name" class="argument">
           <label :for="`source-${stage.name}-${param.name}`">
             {{ param.name }} {{ param.required ? '（必填）' : '（可选）' }}
+            <span v-if="pathRequired(stage.name, param)" class="required">需字段路径</span>
           </label>
           <el-select
             :id="`source-${stage.name}-${param.name}`" :disabled="readonly"
-            :model-value="source(stage.name, param.name)"
+            :model-value="unset(stage.name, param.name) ? undefined : source(stage.name, param.name)"
+            :placeholder="stage.name === 'judge' ? '请选择来源并填写字段路径' : '自动连接'"
             @change="changeSource(stage.name, param.name, String($event))"
           >
-            <el-option label="自动连接" value="auto" />
+            <el-option v-if="stage.name !== 'judge'" label="自动连接" value="auto" />
             <el-option v-if="!param.required" label="使用函数默认值" value="omit" />
             <el-option v-for="item in allowed(stage.name)" :key="item.value" v-bind="item" />
           </el-select>
@@ -144,11 +175,21 @@ function removeField(index: number): void {
             @change="changeLiteral(stage.name, param.name, String($event))"
           />
           <el-input
-            v-else-if="!['auto', 'omit'].includes(source(stage.name, param.name))"
+            v-else-if="!unset(stage.name, param.name)
+              && !['auto', 'omit'].includes(source(stage.name, param.name))"
             :disabled="readonly" :model-value="path(stage.name, param.name)"
-            placeholder="字段路径，留空传入整个数据" aria-label="来源字段路径"
+            :placeholder="stage.name === 'judge'
+              ? '字段路径，例如 voltage' : '字段路径，留空传入整个数据'"
+            :aria-required="pathRequired(stage.name, param)"
+            aria-label="来源字段路径"
             @update:model-value="changePath(stage.name, param.name, $event)"
           />
+          <p v-if="!readonly && pathRequired(stage.name, param)" class="required-hint">
+            判断函数只接受具体字段值：请选择来源并填写字段路径，留空会在发布时被拒绝。
+          </p>
+          <p v-else-if="!readonly && missingPath(stage.name, param.name)" class="warning">
+            未填写字段路径，将把整个数据传给该参数；判断函数通常需要具体字段，请补全。
+          </p>
           <p v-if="errors[`${stage.name}:${param.name}`]" class="error" role="alert">
             {{ errors[`${stage.name}:${param.name}`] }}
           </p>
@@ -195,6 +236,10 @@ function removeField(index: number): void {
 .argument, .manual-field { display: grid; gap: 6px; padding-top: 8px; min-width: 0; }
 .manual-field { padding: 10px; background: var(--el-fill-color-light); border-radius: 4px; }
 .hint { margin: 0; font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; }
+.judge-tip { color: var(--el-color-warning-dark-2); }
+.required { color: var(--el-color-danger); font-weight: 600; }
+.required-hint { margin: 0; font-size: 12px; color: var(--el-color-danger); }
+.warning { margin: 0; font-size: 12px; color: var(--el-color-warning); }
 label { font-size: 12px; }
 .error { margin: 0; font-size: 12px; color: var(--el-color-danger); }
 </style>

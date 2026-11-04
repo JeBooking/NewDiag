@@ -21,6 +21,9 @@ import { useLint } from '@/components/canvas/lint'
 import type { DocNode, FlowDoc, FlowMode, LintIssue } from '@/domain/types'
 import { errorText, isApiError } from '@/services/api'
 import { updateFlow } from '@/services/flows'
+import {
+  fetchProjectFunctions, listProjects, type ProjectFunction,
+} from '@/services/projects'
 import { useEditorStore } from '@/stores/editor'
 
 const route = useRoute()
@@ -34,8 +37,50 @@ const canvas = ref<InstanceType<typeof FlowCanvas> | null>(null)
 
 const flowId = computed(() => String(route.params.id))
 
-/** 实时校验：editor.doc 每次变更都重算，不依赖保存 */
-const liveIssues = useLint(() => editor.doc)
+/** 函数签名只用于 lint 的 judge 标量参数检查；涉及工程变化时才重新拉取 */
+const signatures = ref<ReadonlyMap<string, ProjectFunction[]>>(new Map())
+const signatureProjects = computed(() => {
+  const names = new Set<string>()
+  for (const node of editor.doc?.nodes ?? []) {
+    for (const stage of ['acquire', 'parse', 'present', 'judge'] as const) {
+      const project = node.pipeline?.[stage]?.project
+      if (project) names.add(project)
+    }
+  }
+  return [...names].sort().join('|')
+})
+
+let signatureRequest = 0
+async function loadSignatures(key: string): Promise<void> {
+  const request = ++signatureRequest
+  const names = key ? key.split('|') : []
+  if (!names.length) {
+    signatures.value = new Map()
+    return
+  }
+  try {
+    const projects = await listProjects()
+    if (request !== signatureRequest) return
+    const ids = new Map(projects.map((project) => [project.name, project.id]))
+    const result = new Map<string, ProjectFunction[]>()
+    await Promise.all(names.map(async (name) => {
+      const id = ids.get(name)
+      if (!id) return
+      try {
+        result.set(name, await fetchProjectFunctions(id))
+      } catch {
+        // 探针失败由发布校验兜底，lint 不重复报错
+      }
+    }))
+    if (request === signatureRequest) signatures.value = result
+  } catch {
+    if (request === signatureRequest) signatures.value = new Map()
+  }
+}
+watch(signatureProjects, (key) => void loadSignatures(key), { immediate: true })
+
+/** 实时校验：editor.doc 或签名变化都重算，不依赖保存 */
+const liveIssues = useLint(() => editor.doc, () => signatures.value)
 
 /**
  * 编辑期靠本地校验即时反馈，保存/发布失败时后端还会回一份更严格的结果。

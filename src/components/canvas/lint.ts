@@ -2,6 +2,8 @@ import { onScopeDispose, ref, watch, type Ref } from 'vue'
 import { KIND_META, isTerminalKind } from '@/domain/kinds'
 import { canConnect, isSingleSuccessor, needsBranch } from '@/domain/rules'
 import type { DocEdge, DocNode, FlowDoc, InvestigationFields, LintIssue } from '@/domain/types'
+import type { ProjectFunction } from '@/services/projects'
+import { isScalarAnnotation } from '@/services/paramTypes'
 
 const FIELD_LABELS: Array<[keyof InvestigationFields, string]> = [
   ['observation', '观察对象'],
@@ -84,7 +86,44 @@ function reachableFrom(startIds: string[], next: (id: string) => string[]): Set<
   return seen
 }
 
-export function lintDoc(doc: FlowDoc): LintIssue[] {
+/**
+ * judge 的标量参数必须落到具体字段；后端编译期硬拦截，前端在发布前同步报错。
+ * 没有签名（工程未探到 / 列表未加载）时无法判断类型，交给发布校验，不猜。
+ */
+function judgePathIssues(
+  node: DocNode,
+  signatures?: ReadonlyMap<string, ProjectFunction[]>,
+): LintIssue[] {
+  const judge = node.pipeline?.judge
+  if (!judge?.project || !judge.function || !signatures) return []
+  const fn = signatures.get(judge.project)?.find((item) => item.name === judge.function)
+  if (!fn) return []
+  const args = judge.arguments ?? {}
+  // 缺省映射只作用于第一个参数（index 0），与后端 default_argument 一致
+  const firstParam = fn.params[0]
+  const issues: LintIssue[] = []
+  for (const param of fn.params) {
+    if (!isScalarAnnotation(param.annotation)) continue
+    const expression = args[param.name]
+    const emptyPath = !!expression && 'source' in expression && !expression.path?.trim()
+    const autoWhole = !expression && firstParam?.name === param.name
+    if (!emptyPath && !autoWhole) continue
+    issues.push({
+      id: `node:${node.id}:pipeline:judge:${param.name}:path`,
+      level: 'error',
+      nodeId: node.id,
+      message: emptyPath
+        ? `节点「${displayName(node)}」judge 的参数 ${param.name} 需要填写解析结果里的字段路径，不能把整段数据传给标量参数`
+        : `节点「${displayName(node)}」judge 的参数 ${param.name} 未指定字段路径，默认会把整段解析结果传给标量参数`,
+    })
+  }
+  return issues
+}
+
+export function lintDoc(
+  doc: FlowDoc,
+  signatures?: ReadonlyMap<string, ProjectFunction[]>,
+): LintIssue[] {
   const issues: LintIssue[] = []
   const nodes = doc.nodes ?? []
   const edges = doc.edges ?? []
@@ -265,6 +304,7 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
         }
         names.add(field.name)
       }
+      issues.push(...judgePathIssues(node, signatures))
     }
     if (node.binding) {
       if (!node.binding.project?.trim() || !node.binding.function?.trim()) {
@@ -342,12 +382,15 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
  * 防抖反而会让「改完标题、角标要等一下才亮」变成可感知的延迟。
  * doc 为 null（还没加载出来）时给空结果，避免拿空壳文档算出一条「流程为空」。
  */
-export function useLint(getDoc: () => FlowDoc | null): Ref<LintIssue[]> {
+export function useLint(
+  getDoc: () => FlowDoc | null,
+  getSignatures?: () => ReadonlyMap<string, ProjectFunction[]> | undefined,
+): Ref<LintIssue[]> {
   const issues = ref<LintIssue[]>([])
   const stop = watch(
-    getDoc,
-    (doc) => {
-      issues.value = doc ? lintDoc(doc) : []
+    [getDoc, () => getSignatures?.()],
+    ([doc]) => {
+      issues.value = doc ? lintDoc(doc, getSignatures?.()) : []
     },
     { deep: true, immediate: true },
   )
