@@ -406,21 +406,21 @@ watch(
   },
 )
 
-/** 执行中的节点：并行时可能不止一个，运行中优先于待处理 */
+/**
+ * 执行中的节点：并行时可能不止一个。
+ * 待处理的定位已搬到执行页的待办卡片上，这里只管运行中，避免浮标和卡片抢同一件事
+ */
 const activeIds = computed(() => {
   const running: string[] = []
-  const waiting: string[] = []
   for (const [id, value] of Object.entries(props.status)) {
     if (value === 'running') running.push(id)
-    else if (value === 'waiting') waiting.push(id)
   }
-  return running.length > 0 ? running : waiting
+  return running
 })
 
 const activeLabel = computed(() => {
   if (!activeIds.value.length) return ''
-  const prefix = props.status[activeIds.value[0]] === 'running' ? '运行中' : '待处理'
-  return activeIds.value.length > 1 ? `${prefix} ${activeIds.value.length}` : prefix
+  return activeIds.value.length > 1 ? `运行中 ${activeIds.value.length}` : '运行中'
 })
 
 /** 全局校验角标：整张图还剩几处问题，挂在画布左上空白处，和旧项目一样不占节点位置 */
@@ -440,6 +440,11 @@ function locateIssue(issue: LintIssue) {
 function focusActive() {
   const id = activeIds.value[0]
   if (id) centerOn(id, true)
+}
+
+/** 执行页点待办卡片时按 id 定位：节点不在当前画布上就安静返回，不打断调用方 */
+function focusNode(nodeId: string) {
+  centerOn(nodeId, true)
 }
 
 function commit() {
@@ -808,7 +813,7 @@ function resetZoom() {
 }
 
 // 自动布局后坐标整批换掉，需要外部触发重新取景；fitView 只在本组件的 store 上有效
-defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom })
+defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom, focusNode })
 </script>
 
 <template>
