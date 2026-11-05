@@ -23,6 +23,9 @@ SCALAR_PARAM_TYPES = frozenset(
     {"text", "number", "boolean", "datetime", "str", "int", "float", "bool", "date", "time", "decimal"}
 )
 
+# 人工文件字段在平台里是 {"hash": ..., "path": ...}；这些参数类型要整份引用，其余按路径传
+CONTAINER_PARAM_TYPES = frozenset({"dict", "json", "list"})
+
 
 class ValidationError(Exception):
     """doc 校验未通过。issues 与前端 LintIssue 对齐。"""
@@ -777,6 +780,21 @@ def _compile_function_pipeline(node, nodes, edges, start, functions):
                         f"不能把整段 {source} 传给 {param.get('type')} 类型的参数"
                     )
                     continue
+            # 人工上传的文件字段是 {hash, path} 引用。映射只写字段名时按路径传字符串，
+            # 否则函数拿到的是字典；这一步写进不可变 plan，不在运行期猜参数类型。
+            field = None
+            if stage == "parse" and expression.get("source") == "raw":
+                field = _file_field(expression.get("path"), result["manualFields"])
+            if field is not None and not _container_type(param.get("type")):
+                expression = {**expression, "path": f"{field}.path"}
+                issues.append(
+                    _issue(
+                        LEVEL_WARNING,
+                        f"{stage}.{name} 的来源 {field} 是文件字段，已按路径传入（{field}.path）；"
+                        f"需要整份文件引用请把参数类型声明为 dict",
+                        node_id=node["id"],
+                    )
+                )
             arguments[name] = expression
         entry["arguments"] = arguments
     if not pipeline.get("acquire"):
@@ -798,6 +816,34 @@ def _dominates(producer, consumer, nodes, edges, entry):
         visited.add(current)
         pending.extend(outgoing.get(current, []))
     return True
+
+
+def _file_field(path, manual_fields) -> str | None:
+    """path 恰好是人工文件字段名时返回该字段名。
+
+    精确比较即可满足幂等：已写 `字段名.path` 或多段下钻 `字段.hash` 都不等于字段名，不会二次加后缀。
+    """
+    name = str(path or "").strip()
+    if not name:
+        return None
+    for field in manual_fields if isinstance(manual_fields, list) else []:
+        if (isinstance(field, dict) and field.get("type") == "file"
+                and field.get("name") == name):
+            return name
+    return None
+
+
+def _container_type(kind) -> bool:
+    """注解是否要求整份引用：dict / json / list（含 list[...]、dict[...]、Dict/List）。
+
+    认不出来的（any、裸 Optional——探针会把 Optional[dict] 折叠成 Optional）按标量处理，
+    宁可传路径并在发布结果里提示，也不把字典硬塞进未标注参数。
+    """
+    name = str(kind or "").strip().lower().replace("typing.", "")
+    if name.startswith(("optional[", "union[")) and name.endswith("]"):
+        name = name[name.index("[") + 1 : -1]
+    parts = [part.strip() for part in name.replace("|", ",").split(",") if part.strip()]
+    return any(part.split("[", 1)[0].strip() in CONTAINER_PARAM_TYPES for part in parts)
 
 
 def _scalar_type(kind) -> bool:
