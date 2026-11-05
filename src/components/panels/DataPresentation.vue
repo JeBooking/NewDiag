@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, reactive } from 'vue'
+import { fileUrl } from '@/services/files'
 
 const props = defineProps<{ value?: unknown }>()
 
@@ -12,6 +13,20 @@ interface Block {
   rows?: unknown[][]
   values?: number[]
   unit?: string
+  src?: string
+  alt?: string
+  caption?: string
+}
+
+// 按 src 记失败：同一份数据里多张图互不牵连，也避免重复请求坏图
+const failed = reactive(new Set<string>())
+
+function imageBroken(src?: string): boolean {
+  return !src || failed.has(src)
+}
+
+function markBroken(src?: string): void {
+  if (src) failed.add(src)
 }
 
 const blocks = computed<Block[]>(() => {
@@ -70,6 +85,18 @@ function text(value: unknown): string {
         </svg>
         <details><summary>查看曲线数值 {{ block.unit }}</summary>{{ block.values?.join('，') }}</details>
       </template>
+      <figure v-else-if="block.type === 'image'" class="image-block">
+        <img
+          v-if="!imageBroken(block.src)"
+          :src="fileUrl(block.src ?? '', true)"
+          :alt="block.alt || '数据图片'"
+          loading="lazy"
+          class="image"
+          @error="markBroken(block.src)"
+        />
+        <p v-else class="image-missing">图片不可用{{ block.src ? `（${block.src.slice(0, 8)}）` : '' }}</p>
+        <figcaption v-if="block.caption">{{ block.caption }}</figcaption>
+      </figure>
     </section>
   </div>
 </template>
@@ -91,5 +118,14 @@ table { border-collapse: collapse; width: 100%; font-size: 13px; }
 caption { text-align: left; margin: 8px 0; }
 th, td { text-align: left; border-bottom: 1px solid var(--el-border-color-lighter); padding: 8px; }
 svg { display: block; width: 100%; color: var(--el-color-primary); }
+.image-block { margin: 8px 0 0; min-width: 0; }
+.image-block img { display: block; max-width: 100%; height: auto; border-radius: 6px; }
+figcaption {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  overflow-wrap: anywhere;
+}
+.image-missing { font-size: 12px; color: var(--el-text-color-secondary); }
 details { font-size: 12px; overflow-wrap: anywhere; }
 </style>
