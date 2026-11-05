@@ -4,6 +4,7 @@
 启动时准备主要数据，其余资源首次使用时获取、解析并缓存；人工等待释放对象，继续时只恢复数据。
 [诊断实例完整示例](../examples/diagnosis-instance/README.md)提供可直接登记的类与三份可导入流程。
 从代码开发到页面接入的完整说明见 [诊断类开发手册](diagnosis-development-guide.md)。
+启动时上传文件、节点现场填数组／对象及上传证据，见 [现场参数示例](../examples/interactive-inputs/README.md) 与开发手册第 4 节。
 
 ## 诊断实例类（推荐）
 

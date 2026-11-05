@@ -7,6 +7,7 @@ import type {
   FlowMode,
   InvestigationFields,
   FunctionPipeline,
+  ManualField,
   ParamType,
   StartParam,
 } from '@/domain/types'
@@ -18,6 +19,7 @@ import BindingEditor from './BindingEditor.vue'
 import FunctionPipelineEditor from '@/components/panels/FunctionPipelineEditor.vue'
 import ParamValueInput from './ParamValueInput.vue'
 import DiagnosisMethodEditor from '@/components/panels/DiagnosisMethodEditor.vue'
+import { PARAM_TYPES, parameterType as normalizeType } from '@/domain/parameters'
 
 const props = defineProps<{
   node: DocNode
@@ -96,6 +98,12 @@ function patchBinding(value: DocNode['binding']): void {
   emit('update', { binding: value })
 }
 
+function patchRuntimeInputs(value: ManualField[]): void {
+  const params = { ...props.node.params }
+  for (const field of value) delete params[field.name]
+  emit('update', { runtimeInputs: value, params: Object.keys(params).length ? params : undefined })
+}
+
 function patchAttachments(value: DocNode['attachments']): void {
   emit('update', { attachments: value })
 }
@@ -144,31 +152,6 @@ async function confirmDelete(): Promise<void> {
 }
 
 /* ---------- 开始节点：启动参数 ---------- */
-
-const PARAM_TYPES: { value: ParamType; label: string }[] = [
-  { value: 'text', label: '文本' },
-  { value: 'number', label: '数字' },
-  { value: 'boolean', label: '布尔' },
-  { value: 'datetime', label: '时间' },
-]
-
-/** Python 侧类型归一；后端给的就是这四种时会原样通过 */
-function normalizeType(raw?: string): ParamType {
-  const text = (raw ?? '').toLowerCase()
-  if (!text) return 'text'
-  if (text.includes('bool')) return 'boolean'
-  if (text.includes('date') || text.includes('time')) return 'datetime'
-  if (
-    text.includes('int') ||
-    text.includes('float') ||
-    text.includes('number') ||
-    text.includes('double') ||
-    text.includes('decimal')
-  ) {
-    return 'number'
-  }
-  return 'text'
-}
 
 interface FunctionBinding {
   key: string
@@ -265,7 +248,11 @@ const groups = computed<FunctionGroup[]>(() =>
     // 整工程探测失败时后端按工程名记一条 error，函数级按「工程:函数」记
     const entry = probe.value[binding.key] ?? probe.value[binding.project]
     const params = entry?.params ?? []
-    const rows: ParamRow[] = params.map((param) => {
+    const methodNodes = (props.doc?.nodes ?? []).filter((node) => node.method
+      && binding.name === `${props.doc?.diagnosis?.function}.${node.method}`)
+    const rows: ParamRow[] = params.filter((param) => !methodNodes.length
+      || !methodNodes.every((node) => node.runtimeInputs?.some((field) => field.name === param.name)))
+      .map((param) => {
       const global = inputs.value.find(
         (item) => item.scope === 'global' && item.name === param.name,
       )
@@ -448,7 +435,7 @@ function addGlobalInput(): void {
       <div class="section-title">全局参数</div>
       <div class="section-hint">所有函数都能读到；函数行同名参数默认继承这里的值</div>
       <div v-if="!globals.length" class="section-hint muted">
-        还没有全局参数，可从获取函数参数行提升，或为四阶段排查添加诊断输入
+        还没有全局参数，可从函数参数行提升，或直接添加诊断输入
       </div>
       <template v-if="allowsCustomInputs && !readonly">
         <label for="global-input-name" class="label">新增诊断输入</label>
@@ -607,8 +594,9 @@ function addGlobalInput(): void {
       </el-select>
       <DiagnosisMethodEditor
         v-if="node.kind === 'investigation' && doc?.diagnosis"
-        :diagnosis="doc.diagnosis" :value="node.method" :readonly="readonly"
-        @update="emit('update', { method: $event, pipeline: undefined, binding: undefined })"
+        :diagnosis="doc.diagnosis" :value="node.method" :inputs="node.runtimeInputs" :readonly="readonly"
+        @update="emit('update', { method: $event, runtimeInputs: [], pipeline: undefined, binding: undefined })"
+        @update-inputs="patchRuntimeInputs"
       />
       <FunctionPipelineEditor
         v-else-if="node.kind === 'dataPreparation'

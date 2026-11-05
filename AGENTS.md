@@ -6,6 +6,8 @@
 新增 worker/diagnosis_sdk.py、examples/diagnosis-instance，由 lead 集成；旧接入协议保留兼容，无未登记设计偏差。
 2026-11-05：按用户最新要求，v1.12 改为普通 Python 成员及对象整体保存恢复，不再强制 self.data。
 恢复范围及运行资源边界记入 docs/todo.md，本轮先按全部恢复处理。
+2026-11-05：按用户要求，v1.13 补齐启动文件上传、节点现场参数、数组／对象／JSON 输入。
+runtimeInputs、diagnosisMethod.inputs 和 parameters 待办契约由 lead 同步更新到 spec、类型及实现。
 
 ## 0. 沟通风格（重要）
 - **高信息密度（2026-10-30 两次强调）**：像真人对话一样，先想清楚再说，把话浓缩到最少字数。追求**每句话的信息熵**，不是砍掉结论只留干条——是删废话、删铺垫、删重复、删总结式收尾。宁短勿长。

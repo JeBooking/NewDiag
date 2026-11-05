@@ -36,7 +36,7 @@ export interface NodeBinding {
 export interface ManualField {
   name: string
   label?: string
-  type?: 'text' | 'number' | 'boolean' | 'datetime' | 'json' | 'file'
+  type?: ParamType
   required?: boolean
   default?: unknown
   min?: number
@@ -68,7 +68,7 @@ export interface FunctionPipeline {
 }
 
 /** 开始节点参数的输入控件类型，由函数签名推导，作者可覆盖 */
-export type ParamType = 'text' | 'number' | 'boolean' | 'datetime'
+export type ParamType = 'text' | 'number' | 'boolean' | 'datetime' | 'file' | 'array' | 'object' | 'json'
 
 /**
  * 开始节点声明的一个启动参数。
@@ -102,6 +102,7 @@ export interface DocNode {
   binding?: NodeBinding
   pipeline?: FunctionPipeline
   method?: string
+  runtimeInputs?: ManualField[]
   /** 该节点返回结构里的字段名，供下游绑定 */
   outputs?: string[]
   /** 参数名 → 来源；不填则按签名自动匹配 */
@@ -169,7 +170,7 @@ export type EdgeTrail = 'taken' | 'dropped'
 export type ArgExpr =
   | { lit: unknown }
   /** optional=true 表示取不到值时省略该参数，交给函数自身默认值 */
-  | { snapshot: string; optional?: boolean }
+  | { snapshot: string; optional?: boolean; file?: boolean }
   | { run: string; path: string; optional?: boolean }
 
 export interface PlanCall {
@@ -184,7 +185,7 @@ export interface PlanCall {
 export interface PlanStep {
   kind: NodeKind
   call?: PlanCall
-  diagnosisMethod?: { name: string; args: Record<string, ArgExpr> }
+  diagnosisMethod?: { name: string; args: Record<string, ArgExpr>; inputs?: ManualField[] }
   pipeline?: FunctionPipeline & { args: Record<string, ArgExpr> }
   human?: boolean
   text?: string
@@ -261,7 +262,7 @@ export interface ReviewTask {
     attachments?: AttachmentRef[]
     instructions?: string
     nodeKind?: NodeKind
-    type?: 'decision' | 'action' | 'after_success' | 'acquisition' | 'judgment'
+    type?: 'decision' | 'action' | 'after_success' | 'acquisition' | 'judgment' | 'parameters'
     fields?: ManualField[]
     presentation?: unknown
     pipeline?: Record<string, unknown>

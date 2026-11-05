@@ -10,6 +10,7 @@ import json
 
 from . import rules
 from app.worker.function_pipeline import STAGES, SOURCES, default_argument
+from app.worker.input_types import INPUT_TYPES, input_type
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,8 @@ def validate_doc(
 
     for nid, node in nodes_by_id.items():
         kind = node.get("kind")
+        if node.get("runtimeInputs") and not node.get("method"):
+            issues.append(_issue(LEVEL_ERROR, "节点现场参数需要绑定实例方法", node_id=nid))
         if "pipeline" in node and kind not in ("investigation", "dataPreparation"):
             issues.append(_issue(LEVEL_ERROR, "只有排查或数据准备节点支持阶段函数", node_id=nid))
         if kind not in rules.V1_KINDS:
@@ -220,11 +223,8 @@ def compile_doc(
         )
         if node.get("method") and doc.get("diagnosis"):
             binding = doc["diagnosis"]
-            method_binding = {"project": binding["project"],
-                              "function": binding["function"] + "." + node["method"]}
-            args, _ = _resolve_args({**node, "binding": method_binding}, nodes_by_id,
-                                    valid_edges, start, functions)
-            steps[nid]["diagnosisMethod"] = {"name": node["method"], "args": args}
+            method, _ = _compile_method(node, binding, nodes_by_id, valid_edges, start, functions)
+            steps[nid]["diagnosisMethod"] = method
 
     calls = [
         f"{step['call'].get('project')}.{step['call'].get('function')}"
@@ -463,6 +463,8 @@ def _check_start_inputs(nid: str, node: dict, issues: list[dict]) -> None:
         if not name:
             issues.append(_issue(LEVEL_ERROR, "启动参数缺少名称", node_id=nid))
             continue
+        if item.get("type", "text") not in INPUT_TYPES:
+            issues.append(_issue(LEVEL_ERROR, f"启动参数 {name} 的类型不支持", node_id=nid))
         scope = item.get("scope") or "global"
         if not rules.is_start_param_scope(scope):
             issues.append(_issue(LEVEL_ERROR, f"启动参数 {name} 的 scope 不合法：{scope}", node_id=nid))
@@ -643,9 +645,7 @@ def _compile_diagnosis(doc, nodes, edges, start, functions):
             issues.append(_issue(LEVEL_ERROR, "实例方法只支持排查节点，须选择诊断类公开方法且不能混用其他绑定",
                                  node_id=node["id"]))
             continue
-        method_binding = {"project": binding["project"],
-                          "function": binding["function"] + "." + node["method"]}
-        _, found = _resolve_args({**node, "binding": method_binding}, nodes, edges, start, functions)
+        _, found = _compile_method(node, binding, nodes, edges, start, functions)
         issues.extend(found)
     if any(node.get("binding") or node.get("pipeline") or node.get("kind") == "dataPreparation"
            for node in nodes.values()):
@@ -654,6 +654,41 @@ def _compile_diagnosis(doc, nodes, edges, start, functions):
     args, found = _resolve_args(init_node, nodes, edges, start, functions)
     issues.extend(found)
     return {**binding, "args": args, "definition": meta}, issues
+
+
+def _compile_method(node, binding, nodes, edges, start, functions):
+    function = binding["function"] + "." + node["method"]
+    synthetic = {**node, "binding": {"project": binding["project"], "function": function}}
+    params = _function_params(synthetic, functions)
+    if params is None:
+        return {}, [_issue(LEVEL_ERROR, "实例方法参数尚未探测", node_id=node["id"])]
+    declared = node.get("runtimeInputs") or []
+    if not isinstance(declared, list):
+        return {}, [_issue(LEVEL_ERROR, "节点现场参数必须为数组", node_id=node["id"])]
+    fields, issues = {}, []
+    by_name = {param["name"]: param for param in params}
+    for field in declared:
+        if (not isinstance(field, dict) or not isinstance(field.get("name"), str)
+                or field["name"] not in by_name or field["name"] in fields
+                or field.get("type", "text") not in INPUT_TYPES):
+            issues.append(_issue(LEVEL_ERROR, "现场参数名称、类型不合法或重复", node_id=node["id"]))
+            continue
+        name = field["name"]
+        if name in (node.get("params") or {}):
+            issues.append(_issue(LEVEL_ERROR, f"参数 {name} 不能同时绑定固定来源和现场填写", node_id=node["id"]))
+        param = by_name[name]
+        fields[name] = {**field, "required": param.get("required", True),
+                        "type": field.get("type", input_type(param.get("type")))}
+        if not param.get("required", True) and "default" not in field and param.get("default") is not None:
+            fields[name]["default"] = param["default"]
+    args, found = _resolve_args(synthetic, nodes, edges, start, functions,
+                                deferred=set(fields), allow_deferred=True)
+    issues.extend(found)
+    for param in params:
+        name = param["name"]
+        if param.get("required", True) and name not in args and name not in fields:
+            fields[name] = {"name": name, "type": input_type(param.get("type")), "required": True}
+    return {"name": node["method"], "args": args, "inputs": list(fields.values())}, issues
 
 
 def _compile_function_pipeline(node, nodes, edges, start, functions):
@@ -701,7 +736,7 @@ def _compile_function_pipeline(node, nodes, edges, start, functions):
         if field["name"] in names:
             error(f"人工数据字段重名：{field['name']}")
         names.add(field["name"])
-        if field.get("type", "text") not in ("text", "number", "boolean", "datetime", "json", "file"):
+        if field.get("type", "text") not in INPUT_TYPES:
             error(f"不支持的人工字段类型：{field.get('type')}")
     result["manualFields"] = fields
     if data_source is None and not pipeline.get("acquire") and not fields:
@@ -876,6 +911,16 @@ class StartParams:
         node = _find_start_node(doc)
         self.id = str(node.get("id")) if node else None
         self.items = _collect_start_params(doc, node)
+        self._declared = (node.get("inputs") or []) if node else []
+
+    def type_of(self, function, name):
+        for scope in ("function", "global"):
+            for item in self._declared:
+                if (isinstance(item, dict) and item.get("name") == name
+                        and item.get("scope", "global") == scope
+                        and (scope == "global" or item.get("function") == function)):
+                    return item.get("type", "text")
+        return "text"
 
     def local(self, function: str) -> set[str]:
         """只对该函数可见的启动参数名；不泄漏给别的函数。"""
@@ -895,6 +940,7 @@ def _resolve_args(
     edges: list[dict],
     start: StartParams,
     functions: dict | None = None,
+    *, deferred=None, allow_deferred=False,
 ) -> tuple[dict, list[dict]]:
     """解析调用参数：显式 params 优先，其次按启动参数、上游输出、函数默认值兜底。
 
@@ -905,6 +951,7 @@ def _resolve_args(
     function = str(binding.get("function") or "")
     issues: list[dict] = []
     args: dict = {}
+    deferred = deferred or set()
     candidates = _candidate_map(node_id, nodes_by_id, edges, start, function)
     upstream = set(_upstream_ids(node_id, edges))
     params = _function_params(node, functions)
@@ -929,7 +976,7 @@ def _resolve_args(
                 )
         for param in params:
             name = str(param.get("name") or "")
-            if not name or name in args:
+            if not name or name in args or name in deferred:
                 continue
             sources = _best_sources(candidates.get(name, []))
             if len(sources) > 1:
@@ -942,7 +989,7 @@ def _resolve_args(
                 )
                 continue
             if not sources:
-                if param.get("required", True):
+                if param.get("required", True) and not allow_deferred:
                     issues.append(
                         _issue(
                             LEVEL_ERROR,
@@ -963,10 +1010,10 @@ def _resolve_args(
                     node_id=node_id,
                 )
             )
-        return args, issues
+        return _file_arguments(args, start, function), issues
 
     if explicit:
-        return args, issues
+        return _file_arguments(args, start, function), issues
 
     for name in sorted(candidates):
         sources = _best_sources(candidates[name])
@@ -987,7 +1034,13 @@ def _resolve_args(
             node_id=node_id,
         )
     )
-    return args, issues
+    return _file_arguments(args, start, function), issues
+
+
+def _file_arguments(args, start, function):
+    return {name: {**expression, "file": True}
+            if "snapshot" in expression and start.type_of(function, expression["snapshot"]) == "file"
+            else expression for name, expression in args.items()}
 
 
 def _function_params(node: dict, functions: dict | None) -> list[dict] | None:

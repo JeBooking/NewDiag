@@ -82,6 +82,7 @@ const formatTime = (value?: string | null): string =>
   value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
 
 function kindLabel(review: ReviewTask): string {
+  if (review.request.type === 'parameters') return '填写参数'
   if (review.request.type === 'acquisition') return '提供数据'
   if (review.request.type === 'after_success') return '串行决策'
   if (review.kind === 'decision') return '判断'
@@ -107,14 +108,15 @@ async function decide(result: 'yes' | 'no' | 'done' | 'continue', reason?: strin
 
 async function submitData(data: Record<string, unknown>): Promise<void> {
   if (!selected.value) return
+  const parameters = selected.value.request.type === 'parameters'
   busy.value = true
   submitError.value = ''
   try {
     await store.decide(selected.value.id, { result: 'done', data })
-    ElMessage.success('数据已提交')
+    ElMessage.success(parameters ? '参数已提交并执行' : '数据已提交')
     emit('changed')
   } catch (error) {
-    submitError.value = errorText(error, '数据解析失败，请修正后重新提交')
+    submitError.value = errorText(error, parameters ? '执行失败，请修正参数后重新提交' : '数据解析失败，请修正后重新提交')
   } finally {
     busy.value = false
   }
@@ -178,7 +180,7 @@ function onRolledBack(): void {
       <div v-if="selected" class="detail">
         <div class="detail-node">{{ selectedTitle }}</div>
         <DataTask
-          v-if="selected.request.type === 'acquisition'"
+          v-if="selected.request.type === 'acquisition' || selected.request.type === 'parameters'"
           :review="selected" :busy="busy" :error="submitError" @submit="submitData"
         />
         <DecisionTask

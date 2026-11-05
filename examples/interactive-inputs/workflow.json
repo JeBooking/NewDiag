@@ -1,0 +1,46 @@
+{
+  "format": 1,
+  "name": "文件上传与节点现场参数",
+  "mode": "parallel",
+  "diagnosis": {
+    "project": "现场参数示例",
+    "function": "FileDiagnosis",
+    "protocol": "diagnosis/v1",
+    "version": "1.0.0",
+    "config": {}
+  },
+  "nodes": [
+    {
+      "id": "start", "kind": "start", "title": "开始", "detail": "上传初始化报告",
+      "position": {"x": 0, "y": 120},
+      "inputs": [
+        {"name": "report_path", "scope": "global", "type": "file"},
+        {"name": "channels", "scope": "global", "type": "array", "default": ["A", "B"]},
+        {"name": "options", "scope": "global", "type": "object", "default": {"mode": "offline", "filters": []}}
+      ]
+    },
+    {
+      "id": "inspect", "kind": "investigation", "title": "现场补充参数", "detail": "到这里再填写采样值并上传证据",
+      "method": "inspect", "position": {"x": 280, "y": 120},
+      "fields": {"observation": "报告和采样值", "acquisition": "现场填写并上传", "assessment": "核对曲线后人工判断"},
+      "runtimeInputs": [
+        {"name": "samples", "type": "array", "default": [1, 2, 6, 3]},
+        {"name": "thresholds", "type": "object", "default": {"max": 3}},
+        {"name": "evidence_path", "type": "file"}
+      ]
+    },
+    {
+      "id": "confirm", "kind": "investigation", "title": "等待后继续使用参数", "detail": "核对数组和对象成员已保存",
+      "method": "confirm", "position": {"x": 560, "y": 120},
+      "fields": {"observation": "恢复的采样值", "acquisition": "实例成员", "assessment": "比较峰值和阈值"}
+    },
+    {"id": "end", "kind": "escalation", "title": "示例结束", "detail": "演示完成", "position": {"x": 840, "y": 120}}
+  ],
+  "edges": [
+    {"id": "s", "from": "start", "to": "inspect"},
+    {"id": "i-y", "from": "inspect", "to": "confirm", "branch": "yes"},
+    {"id": "i-n", "from": "inspect", "to": "end", "branch": "no"},
+    {"id": "c-y", "from": "confirm", "to": "end", "branch": "yes"},
+    {"id": "c-n", "from": "confirm", "to": "end", "branch": "no"}
+  ]
+}

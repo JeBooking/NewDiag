@@ -200,8 +200,8 @@ class Scheduler:
                 return
 
             step = plan["steps"].get(token.node_id) or {}
-            if request.get("type") in ("acquisition", "judgment"):
-                if request["type"] == "acquisition" and result != "done":
+            if request.get("type") in ("acquisition", "judgment", "parameters"):
+                if request["type"] in ("acquisition", "parameters") and result != "done":
                     raise ValueError("提供数据待办只能提交 done")
                 if request["type"] == "judgment" and result not in ("yes", "no"):
                     raise ValueError("判断待办只能选择是或否")
@@ -211,6 +211,8 @@ class Scheduler:
                 runner = (self._resume_diagnosis if step.get("diagnosisMethod") else
                           self._invoke_functions if step.get("pipeline") else self._invoke_pipeline)
                 configuration = step.get("pipeline") or step.get("call") or {}
+                if step.get("diagnosisMethod"):
+                    configuration = {"binding": plan["diagnosis"], "method": step["diagnosisMethod"]}
                 value, failure = runner(
                     db, instance, token, configuration, request["pipeline"], operation,
                     data=payload.get("data"),
@@ -670,54 +672,83 @@ class Scheduler:
         function = binding["function"] + ("." + method["name"] if method else "")
         args, error = self._eval_args(db, instance, token,
                                      binding["args"] if initialize else method["args"], function)
-        started = now_iso()
-        reference = None if initialize else self._diagnosis_state(db, instance.id, token.generation)
-        state = {"inputs": args, "stages": [], "startedAt": started,
+        state = {"inputs": args, "stages": [], "startedAt": now_iso(),
                  "diagnosisClass": binding["function"], "diagnosisVersion": binding["version"]}
-        value, failure = None, None
-        if error:
-            failure = (ERR_ARGUMENT, error, 1)
-        else:
-            request = {"class": binding["function"], "version": binding["version"],
-                       "config": binding.get("config") or {}, "definition": binding["definition"],
-                       "artifactRoot": str(self._artifact_root(instance.id)),
-                       "fileRoot": str(self._file_root()), "state": reference,
-                       "operation": "initialize" if initialize else "method",
-                       "inputs": args if initialize else {}, "method": method.get("name"),
-                       "arguments": args}
-            value, failure = self._invoke(db, instance, {
-                "project": binding["project"], "function": "__newdiag_diagnosis__",
-            }, request, token)
+        if not initialize:
+            state["diagnosisState"] = self._diagnosis_state(db, instance.id, token.generation)
+        if not error and not initialize and method.get("inputs"):
+            state["manualFields"] = method["inputs"]
+            self._accept_pipeline(db, instance, plan, token, step, {
+                "status": "parameters", "state": state, "fields": method["inputs"],
+            })
+            return
+        value, failure = (None, (ERR_ARGUMENT, error, 1)) if error else self._execute_diagnosis(
+            db, instance, token, binding, method, state, initialize=initialize,
+        )
         if self._is_cancelled(instance.id):
             return
-        if value and value.get("state"):
-            state["diagnosisState"] = value["state"]
-            self._save_diagnosis_state(db, instance, token, value["state"])
-        if value and value.get("error"):
-            failure = (ERR_EXCEPTION, value["error"], 1)
         if failure:
             self._write_run(db, instance, token, status="failed", args=args,
-                            error=f"{failure[0]}: {failure[1]}", started=started,
+                            error=f"{failure[0]}: {failure[1]}", started=state["startedAt"],
                             attempt=failure[2], evidence={"pipeline": persisted_state(state)})
             self._fail_token(db, instance, token)
             return
         if initialize:
             self._write_run(db, instance, token, status="ok", args=args,
-                            output={"initialized": True}, started=started,
+                            output={"initialized": True}, started=state["startedAt"],
                             evidence={"pipeline": persisted_state(state)})
             self._spawn_successors(db, instance, plan, token, step, "default")
             token.status, token.updated_at = "done", now_iso()
             db.flush()
             return
+        self._accept_pipeline(db, instance, plan, token, step, self._diagnosis_response(value, state))
+
+    def _execute_diagnosis(self, db, instance, token, binding, method, state, *, initialize=False):
+        args = state["inputs"]
+        request = {"class": binding["function"], "version": binding["version"],
+                   "config": binding.get("config") or {}, "definition": binding["definition"],
+                   "artifactRoot": str(self._artifact_root(instance.id)),
+                   "fileRoot": str(self._file_root()),
+                   "state": None if initialize else state.get("diagnosisState"),
+                   "operation": "initialize" if initialize else "method",
+                   "inputs": args if initialize else {}, "method": method.get("name"),
+                   "arguments": args}
+        value, failure = self._invoke(db, instance, {
+            "project": binding["project"], "function": "__newdiag_diagnosis__",
+        }, request, token)
+        if self._is_cancelled(instance.id):
+            return None, ("execution/terminated", "用户终止诊断", 1)
+        if value and value.get("state"):
+            state["diagnosisState"] = value["state"]
+            self._save_diagnosis_state(db, instance, token, value["state"])
+        if value and value.get("error"):
+            failure = (ERR_EXCEPTION, value["error"], 1)
+        return value, failure
+
+    def _diagnosis_response(self, value, state):
         result = value["result"]
         state.update({"presentation": result["presentation"], "parsed": result["data"],
                       "decision": {"result": result["result"], "reason": result["reason"]}})
-        self._accept_pipeline(db, instance, plan, token, step, {
-            "status": "judgment" if result["result"] is None else "complete", "state": state,
-        })
+        return {"status": "judgment" if result["result"] is None else "complete", "state": state}
 
     def _resume_diagnosis(self, db, instance, token, configuration, state, operation, **extra):
         state = dict(state)
+        if operation == "parameters":
+            from app.services.parameters import form_values
+
+            method = configuration["method"]
+            supplied = form_values(db, method["inputs"], extra.get("data"))
+            state["inputs"] = {**state["inputs"], **supplied}
+            state["stages"] = [*state.get("stages", []), {"stage": "manualParameters"}]
+            # 等待期间同代其他节点可能已加载资源，沿当前代共享视图继续，不覆盖它们的缓存。
+            state["diagnosisState"] = self._diagnosis_state(db, instance.id, token.generation)
+            value, failure = self._execute_diagnosis(
+                db, instance, token, configuration["binding"], method, state,
+            )
+            if failure:
+                self._close_session(instance.id)
+                return None, failure
+            return self._diagnosis_response(value, state), None
         state["decision"] = extra["decision"]
         state["stages"] = [*state.get("stages", []), {"stage": "manualJudgment"}]
         return {"status": "complete", "state": state}, None
@@ -854,7 +885,7 @@ class Scheduler:
         return self._invoke(db, instance, rpc_call, request, token)
 
     def _accept_pipeline(self, db, instance, plan, token, step, value) -> None:
-        if not isinstance(value, dict) or value.get("status") not in ("acquisition", "judgment", "complete", "prepared"):
+        if not isinstance(value, dict) or value.get("status") not in ("acquisition", "judgment", "parameters", "complete", "prepared"):
             raise ValueError("适配器返回了无效的阶段响应")
         state = value["state"]
         status = value["status"]
@@ -881,10 +912,11 @@ class Scheduler:
                     "title": meta.get("title") or token.node_id,
                     "detail": meta.get("detail") or "", "nodeKind": step["kind"],
                     "type": status, "pipeline": persisted_state(state, include_parsed=True),
-                    "fields": state["manualFields"] if status == "acquisition" else [],
+                    "fields": state["manualFields"] if status in ("acquisition", "parameters") else [],
                     "evidence": state.get("parsed"), "presentation": state.get("presentation"),
                     "attachments": meta.get("attachments") or [],
-                    "instructions": "请提供数据，提交后执行解析和展示" if status == "acquisition"
+                    "instructions": "请填写本节点参数，提交后执行排查" if status == "parameters"
+                                    else "请提供数据，提交后执行解析和展示" if status == "acquisition"
                                     else "请根据展示数据选择是或否，并填写判断依据",
                 }),
             )
@@ -1029,6 +1061,12 @@ class Scheduler:
                 args[name] = value
             else:
                 return {}, f"参数 {name} 的表达式不合法"
+            if expr.get("file"):
+                from app.services.parameters import file_path
+                try:
+                    args[name] = file_path(db, args[name])
+                except ValueError as exc:
+                    return {}, f"参数 {name}：{exc}"
         return args, None
 
     def _lookup_run(self, db, instance, token, node_id: str, path: str) -> tuple[bool, object]:

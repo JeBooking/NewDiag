@@ -17,6 +17,7 @@ from app.api.flows import (
 )
 from app.db import get_db, new_id, now_iso
 from app.models import Release, Revision
+from app.worker.input_types import INPUT_TYPES, input_type
 from app.schemas import ReleaseCreate, ReleaseDetail, ReleaseSummary, make_release_detail, make_release_summary
 
 try:  # 引擎层缺席时仍允许后端启动
@@ -41,7 +42,7 @@ except ImportError as exc:  # pragma: no cover
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["releases"])
 
-PARAM_TYPES = ("text", "number", "boolean", "datetime")
+PARAM_TYPES = INPUT_TYPES
 # 注解只决定输入控件，不追求类型系统完备：认不出的都当文本框
 ANNOTATION_TO_PARAM = {
     "date": "datetime",
@@ -115,7 +116,7 @@ def _annotation_type(annotation) -> str:
         text = text.rsplit("|", 1)[0]
     if text.startswith("none|"):
         text = text.split("|", 1)[1]
-    return ANNOTATION_TO_PARAM.get(text, "text")
+    return ANNOTATION_TO_PARAM.get(text, input_type(text))
 
 
 def freeze_inputs(doc: dict, probed: dict) -> list[dict]:
@@ -140,6 +141,8 @@ def freeze_inputs(doc: dict, probed: dict) -> list[dict]:
             continue
         scope = "function" if spec.get("scope") == "function" else "global"
         function = (str(spec.get("function") or "").strip() or None) if scope == "function" else None
+        if function and _runtime_only(doc, function, name):
+            continue
 
         item = declared.get((scope, function or "", name), {})
         has_declared = "default" in item
@@ -181,6 +184,15 @@ def freeze_inputs(doc: dict, probed: dict) -> list[dict]:
             }
         )
     return frozen
+
+
+def _runtime_only(doc: dict, function: str, name: str) -> bool:
+    diagnosis = doc.get("diagnosis") or {}
+    nodes = [node for node in doc.get("nodes", [])
+             if node.get("method") and function == f"{diagnosis.get('function')}.{node['method']}"]
+    # 同一方法的其他节点仍可能在启动时取参，不能因为一个节点改成现场输入就一起移除。
+    return bool(nodes) and all(any(field.get("name") == name
+                                  for field in node.get("runtimeInputs", [])) for node in nodes)
 
 
 def _declared_inputs(node: dict | None) -> dict[tuple[str, str, str], dict]:

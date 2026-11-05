@@ -154,6 +154,8 @@ const headMeta = computed<string[]>(() => {
 })
 
 function reviewKindText(review: ReviewTask): string {
+  if (review.request.type === 'parameters') return '现场参数'
+  if (review.request.type === 'acquisition') return '提供数据'
   if (review.request.type === 'after_success') return '串行决策'
   return review.kind === 'decision' ? '人工判断' : '人工处置'
 }

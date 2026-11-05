@@ -304,6 +304,7 @@ function removeField(index: number): void {
           <el-option label="文本" value="text" /><el-option label="数字" value="number" />
           <el-option label="是／否" value="boolean" /><el-option label="时间" value="datetime" />
           <el-option label="JSON 数据" value="json" /><el-option label="文件" value="file" />
+          <el-option label="数组" value="array" /><el-option label="对象" value="object" />
         </el-select>
         <el-checkbox
           :model-value="field.required !== false" :disabled="readonly"

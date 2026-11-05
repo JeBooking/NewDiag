@@ -177,7 +177,8 @@ def validate_fields(fields: list[dict], data: dict) -> dict:
     for field in fields:
         name = field["name"]
         value = data.get(name, field.get("default"))
-        if value is None or value == "":
+        if ((value is None or value == "")
+                and not (field.get("type") == "json" and (name in data or "default" in field))):
             if field.get("required", True):
                 raise ValueError(f"{field.get('label', name)}不能为空")
             continue
@@ -188,6 +189,8 @@ def validate_fields(fields: list[dict], data: dict) -> dict:
             "text": isinstance(value, str),
             "datetime": isinstance(value, str),
             "json": True,
+            "array": isinstance(value, list),
+            "object": isinstance(value, dict),
             "file": isinstance(value, dict) and isinstance(value.get("hash"), str),
         }.get(kind, False)
         if not valid:
@@ -220,7 +223,7 @@ def describe_adapter(cls) -> dict:
     for item in cls.inputs:
         if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"]:
             raise ValueError("inputs 每项必须声明非空 name")
-        if item["name"] in input_names or item.get("type", "text") not in ("text", "number", "boolean", "datetime"):
+        if item["name"] in input_names or item.get("type", "text") not in ("text", "number", "boolean", "datetime", "json", "file", "array", "object"):
             raise ValueError("inputs 不允许重复字段或不支持的类型")
         input_names.add(item["name"])
     names = set()
@@ -230,7 +233,7 @@ def describe_adapter(cls) -> dict:
         if not field["name"] or field["name"] in names:
             raise ValueError("manual_fields 字段名不能为空或重复")
         names.add(field["name"])
-        if field.get("type", "text") not in ("text", "number", "boolean", "datetime", "json", "file"):
+        if field.get("type", "text") not in ("text", "number", "boolean", "datetime", "json", "file", "array", "object"):
             raise ValueError("manual_fields 包含不支持的字段类型")
     if cls.acquire is None and not fields:
         raise ValueError("未实现 acquire 时必须声明 manual_fields")

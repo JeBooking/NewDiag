@@ -26,7 +26,7 @@ NodeKind = Literal[
     "deepDiagnosis",
     "jump",
 ]
-ParamType = Literal["text", "number", "boolean", "datetime"]
+ParamType = Literal["text", "number", "boolean", "datetime", "file", "array", "object", "json"]
 Branch = Literal["yes", "no"]
 InstanceStatus = Literal["running", "waiting", "paused", "success", "failed", "escalated", "terminated"]
 TokenStatus = Literal["queued", "running", "waiting", "done", "failed", "abandoned"]

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { ReleaseInput } from '@/domain/types'
+import { PARAM_TYPES, parameterEmpty } from '@/domain/parameters'
 import ParamValueInput from './ParamValueInput.vue'
 
 const props = defineProps<{
@@ -15,6 +16,8 @@ const emit = defineEmits<{ (e: 'update:missing', value: string[]): void }>()
 const FALLBACK_FUNCTION = '未标注函数'
 
 const values = ref<Record<string, unknown>>({})
+const invalid = ref<Record<string, boolean>>({})
+const formVersion = ref(0)
 
 function globalKey(name: string): string {
   return `g:${name}`
@@ -44,17 +47,14 @@ const groups = computed<{ name: string; items: ReleaseInput[] }[]>(() => {
   return [...map.entries()].map(([name, items]) => ({ name, items }))
 })
 
-function isEmpty(value: unknown): boolean {
-  if (value === undefined || value === null) return true
-  return typeof value === 'string' && value.trim() === ''
-}
-
 function setValue(key: string, value: unknown): void {
   values.value = { ...values.value, [key]: value }
 }
 
 /** 发布时的设计默认值先填好，执行者只改需要改的 */
 function seed(): void {
+  formVersion.value += 1
+  invalid.value = {}
   const next: Record<string, unknown> = {}
   for (const item of props.inputs) {
     if (item.default === undefined) continue
@@ -69,11 +69,11 @@ watch(() => props.inputs, seed, { immediate: true, deep: true })
 const missingList = computed<string[]>(() => {
   const result: string[] = []
   for (const item of globalInputs.value) {
-    if (item.required && isEmpty(values.value[globalKey(item.name)])) result.push(item.name)
+    if (invalid.value[keyOf(item)] || (item.required && parameterEmpty(values.value[globalKey(item.name)], item.type))) result.push(item.name)
   }
   for (const group of groups.value) {
     for (const item of group.items) {
-      if (item.required && isEmpty(values.value[functionKey(group.name, item.name)])) {
+      if (invalid.value[keyOf(item)] || (item.required && parameterEmpty(values.value[functionKey(group.name, item.name)], item.type))) {
         result.push(`${group.name}.${item.name}`)
       }
     }
@@ -88,14 +88,14 @@ function build(): Record<string, unknown> {
   const global: Record<string, unknown> = {}
   for (const item of globalInputs.value) {
     const value = values.value[globalKey(item.name)]
-    if (!isEmpty(value)) global[item.name] = value
+    if (!parameterEmpty(value, item.type)) global[item.name] = value
   }
   const scope: Record<string, Record<string, unknown>> = {}
   for (const group of groups.value) {
     const bucket: Record<string, unknown> = {}
     for (const item of group.items) {
       const value = values.value[functionKey(group.name, item.name)]
-      if (!isEmpty(value)) bucket[item.name] = value
+      if (!parameterEmpty(value, item.type)) bucket[item.name] = value
     }
     scope[group.name] = bucket
   }
@@ -103,10 +103,7 @@ function build(): Record<string, unknown> {
 }
 
 function typeLabel(item: ReleaseInput): string {
-  if (item.type === 'number') return '数字'
-  if (item.type === 'boolean') return '布尔'
-  if (item.type === 'datetime') return '时间'
-  return '文本'
+  return PARAM_TYPES.find((option) => option.value === item.type)?.label ?? '文本'
 }
 
 defineExpose({ missing: () => missingList.value, build, seed })
@@ -116,7 +113,7 @@ defineExpose({ missing: () => missingList.value, build, seed })
   <div class="release-inputs">
     <div v-if="globalInputs.length" class="group">
       <div class="group-title">全局参数</div>
-      <div v-for="item in globalInputs" :key="keyOf(item)" class="field">
+      <div v-for="item in globalInputs" :key="`${formVersion}:${keyOf(item)}`" class="field">
         <div class="field-head">
           <span class="field-name">{{ item.name }}</span>
           <span v-if="item.required" class="required">必填</span>
@@ -128,6 +125,7 @@ defineExpose({ missing: () => missingList.value, build, seed })
           :readonly="readonly"
           placeholder="不填则用默认值"
           @update:model-value="setValue(keyOf(item), $event)"
+          @validity="invalid[keyOf(item)] = !$event"
         />
       </div>
     </div>
@@ -137,7 +135,7 @@ defineExpose({ missing: () => missingList.value, build, seed })
         函数局部参数
         <span class="group-fn">{{ group.name }}</span>
       </div>
-      <div v-for="item in group.items" :key="keyOf(item)" class="field">
+      <div v-for="item in group.items" :key="`${formVersion}:${keyOf(item)}`" class="field">
         <div class="field-head">
           <span class="field-name">{{ item.name }}</span>
           <span v-if="item.required" class="required">必填</span>
@@ -149,6 +147,7 @@ defineExpose({ missing: () => missingList.value, build, seed })
           :readonly="readonly"
           placeholder="不填则用默认值"
           @update:model-value="setValue(keyOf(item), $event)"
+          @validity="invalid[keyOf(item)] = !$event"
         />
       </div>
     </div>

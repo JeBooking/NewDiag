@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from app.db import SessionLocal, get_db, new_id, now_iso
 from app.logging_setup import brief
 from app.models import Flow, Instance, Release, Review, Run, Snapshot, Token
+from app.services.parameters import validate_start
 from app.schemas import (
     InstanceCreate,
     InstanceDetail,
@@ -116,17 +117,17 @@ def apply_defaults(inputs: list[dict], context: dict) -> dict:
     scope = context.setdefault("scope", {})
     for item in inputs:
         default = item.get("default")
-        if default is None:
+        if default is None and not (item.get("type") == "json" and not item.get("required", True)):
             continue
         name = str(item.get("name") or "")
         if not name:
             continue
         if item.get("scope") == "function":
             bucket = scope.setdefault(str(item.get("function") or ""), {})
-            if not _blank(bucket.get(name)):
+            if name in bucket and (item.get("type") == "json" or not _blank(bucket[name])):
                 continue
             bucket[name] = default
-        elif _blank(glob.get(name)):
+        elif name not in glob or (item.get("type") != "json" and _blank(glob[name])):
             glob[name] = default
     return context
 
@@ -145,7 +146,8 @@ def missing_inputs(inputs: list[dict], context: dict) -> list[str]:
             values = section.get(key) if isinstance(section, dict) else None
         else:
             values = context.get("global")
-        if not isinstance(values, dict) or _blank(values.get(name)):
+        if (not isinstance(values, dict) or name not in values
+                or (_blank(values[name]) and item.get("type") != "json")):
             missing.append(name)
     return missing
 
@@ -213,6 +215,10 @@ def start_instance(
     if missing:
         # 启动表单是发布时定死的契约，缺参数直接拒绝，不要带着 None 去调业务函数
         raise HTTPException(status_code=400, detail=f"缺少启动参数：{', '.join(missing)}")
+    try:
+        validate_start(db, frozen, context)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     stamp = now_iso()
     instance = Instance(

@@ -125,6 +125,28 @@ def test_sibling_methods_share_resources(runtime, mode):
     assert count(runtime, "创建诊断对象") == 1
 
 
+def test_runtime_parameters_resume_with_siblings_latest_object_and_cache(runtime):
+    source = (runtime.tmp / "diagnosis.py").read_text(encoding="utf-8")
+    source = source.replace('self.checked_nodes.append("waveform")',
+                            'assert self.checked_nodes == ["confirm"]\n'
+                            '        self.checked_nodes.append("waveform")')
+    (runtime.tmp / "diagnosis.py").write_text(source, encoding="utf-8")
+
+    def mutate(doc):
+        next(node for node in doc["nodes"] if node["id"] == "first")["runtimeInputs"] = [
+            {"name": "channel", "type": "text"},
+        ]
+
+    launch(runtime, "workflow-parallel.json", mutate=mutate)
+    review = wait_review(runtime, "first")
+    wait_for(runtime.factory, lambda: bool(runs(runtime.factory, "second")))
+    assert count(runtime, "首次获取波形") == 1
+    runtime.scheduler.submit_review("i1", review.id, {"result": "done", "data": {"channel": "A"}})
+    wait_for(runtime.factory, lambda: status_of(runtime.factory) == "escalated")
+    assert runs(runtime.factory, "first")[0].status == "ok"
+    assert count(runtime, "首次获取波形") == count(runtime, "创建诊断对象") == 1
+
+
 def test_different_requests_have_separate_cache(runtime):
     launch(runtime, "workflow-requests.json")
     wait_for(runtime.factory, lambda: status_of(runtime.factory) == "escalated")
