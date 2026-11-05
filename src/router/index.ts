@@ -23,6 +23,7 @@ const router = createRouter({
       component: () => import('@/views/InstanceDetail.vue'),
     },
     { path: '/projects', name: 'projects', component: () => import('@/views/Projects.vue') },
+    { path: '/trash', name: 'flow-trash', component: () => import('@/views/FlowTrash.vue') },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
   scrollBehavior: () => ({ top: 0 }),
