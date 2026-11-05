@@ -37,6 +37,12 @@ const NODE_WIDTH = 220
 const NODE_HEIGHT = 96
 const EDGE_COLOR = { yes: '#16a34a', no: '#dc2626', none: '#94a3b8', faded: '#cbd5e1' } as const
 
+/**
+ * 选中节点直连的边要压过其他边和节点：默认边与节点都是 0，选中节点被 vue-flow 抬到 1000，
+ * 取 900 既不挡住选中节点自己的卡片（箭头仍收在它下面），又高于其他所有边和未选中节点。
+ */
+const FLOWING_EDGE_Z = 900
+
 /** 老流程（doc 里没有 start）在投影层补的占位开始节点，不回写 doc */
 const START_GHOST_ID = '__start__'
 const START_POSITION = { x: 60, y: 220 }
@@ -291,11 +297,12 @@ function projectAll(preservePositions: boolean) {
     const branch = meta.branch ?? null
     const trail = props.trails[meta.id] ?? null
     const faded = hasRun && !trail
+    const flowing = flowingEdges.has(meta.id)
     const data: EdgeBranchData = {
       branch,
       issueLevel: issue?.level ?? null,
       issueMessage: issue?.message ?? '',
-      flowing: flowingEdges.has(meta.id),
+      flowing,
       trail,
       faded,
     }
@@ -304,6 +311,8 @@ function projectAll(preservePositions: boolean) {
       type: 'branch',
       source: meta.from,
       target: meta.to,
+      // 与 flowing 同一判定：动画和图层提升必须同步增减，取消选中一起回到 0
+      zIndex: flowing ? FLOWING_EDGE_Z : 0,
       sourceHandle: sourceKind && needsBranch(sourceKind) ? (branch === 'no' ? 'no' : 'yes') : undefined,
       targetHandle: 'in',
       deletable: !props.readonly,
