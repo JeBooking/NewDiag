@@ -84,8 +84,12 @@ def instance_doc(name: str, mode: str = "parallel") -> dict:
 
 
 def get_flow_or_404(db: Session, flow_id: str) -> Flow:
+    """取可用流程：回收站里的（含墓碑）一律当作不存在。
+
+    单流程接口全走这里，软删后详情 / 检出 / 发布 / 导出自然全部 404。
+    """
     flow = db.get(Flow, flow_id)
-    if flow is None:
+    if flow is None or flow.deleted_at is not None:
         raise HTTPException(status_code=404, detail="流程不存在")
     return flow
 
@@ -225,7 +229,7 @@ def list_flows(
     db: Session = Depends(get_db),
 ) -> list[FlowSummary]:
     """folderId 传 root 表示未分类，传具体 id 只看该目录（不含子目录），不传看全部。"""
-    statement = select(Flow)
+    statement = select(Flow).where(Flow.deleted_at.is_(None))
     if folder_id:
         if folder_id in UNCATEGORIZED_ALIASES:
             statement = statement.where(Flow.folder_id.is_(None))
@@ -237,17 +241,50 @@ def list_flows(
         statement = statement.where(or_(Flow.name.ilike(pattern), Flow.description.ilike(pattern)))
 
     flows = list(db.scalars(statement.order_by(Flow.updated_at.desc())))
-    items = []
-    for flow in flows:
-        items.append(
-            make_flow_summary(
-                flow,
-                release_count(db, flow.id),
-                last_run_status(db, flow.id),
-                last_published_at(db, flow.id),
-            )
+    return _flow_summaries(db, flows)
+
+
+def _flow_summaries(db: Session, flows: list[Flow]) -> list[FlowSummary]:
+    return [
+        make_flow_summary(
+            flow,
+            release_count(db, flow.id),
+            last_run_status(db, flow.id),
+            last_published_at(db, flow.id),
         )
-    return items
+        for flow in flows
+    ]
+
+
+# 必须注册在 /flows/{flow_id} 之前：先注册的规则先匹配，"trash" 否则会被当成流程 id
+@router.get("/flows/trash", response_model=list[FlowSummary])
+def list_trash(db: Session = Depends(get_db)) -> list[FlowSummary]:
+    """回收站：只列软删未彻底删除的流程，最近删除的在前。"""
+    flows = list(
+        db.scalars(
+            select(Flow)
+            .where(Flow.deleted_at.is_not(None), Flow.purged_at.is_(None))
+            .order_by(Flow.deleted_at.desc())
+        )
+    )
+    return _flow_summaries(db, flows)
+
+
+@router.delete("/flows/trash/{flow_id}", status_code=204)
+def purge_flow(flow_id: str, db: Session = Depends(get_db)) -> None:
+    """彻底删除只做墓碑：flow 行必须留着，否则 revisions / releases / instances 会被级联删掉。"""
+    flow = db.get(Flow, flow_id)
+    if flow is None or flow.deleted_at is None or flow.purged_at is not None:
+        raise HTTPException(status_code=404, detail="回收站里没有该流程")
+    stamp = now_iso()
+    # 名字留个可追溯的标记，历史实例详情要靠 flow.name 回填
+    flow.name = f"已删除流程·{flow.id[:6]}"
+    flow.description = ""
+    flow.folder_id = None
+    flow.purged_at = stamp
+    flow.updated_at = stamp
+    db.commit()
+    logger.info("流程 %s 彻底删除（墓碑）", flow.id)
 
 
 def require_folder(db: Session, folder_id: str | None) -> None:
@@ -566,6 +603,37 @@ async def import_package(file: UploadFile = File(...), db: Session = Depends(get
 @router.get("/flows/{flow_id}", response_model=FlowDetail)
 def read_flow(flow_id: str, db: Session = Depends(get_db)) -> FlowDetail:
     flow = get_flow_or_404(db, flow_id)
+    return flow_detail(db, flow)
+
+
+@router.delete("/flows/{flow_id}", status_code=204)
+def delete_flow(flow_id: str, db: Session = Depends(get_db)) -> None:
+    """删除到回收站：只写 deleted_at，历史实例与发布版本原样保留。
+
+    folder_id 故意不动：回收站要显示流程原来在哪个目录。
+    """
+    flow = get_flow_or_404(db, flow_id)
+    stamp = now_iso()
+    flow.deleted_at = stamp
+    flow.updated_at = stamp
+    # 释放编辑锁，否则恢复后别人再也检不出来
+    flow.editing_by = None
+    flow.editing_revision_id = None
+    flow.editing_since = None
+    db.commit()
+    logger.info("流程 %s 移入回收站", flow.id)
+
+
+@router.post("/flows/{flow_id}/restore", response_model=FlowDetail)
+def restore_flow(flow_id: str, db: Session = Depends(get_db)) -> FlowDetail:
+    flow = db.get(Flow, flow_id)
+    if flow is None or flow.deleted_at is None or flow.purged_at is not None:
+        raise HTTPException(status_code=404, detail="回收站里没有该流程")
+    flow.deleted_at = None
+    flow.updated_at = now_iso()
+    db.commit()
+    db.refresh(flow)
+    logger.info("流程 %s 从回收站恢复", flow.id)
     return flow_detail(db, flow)
 
 

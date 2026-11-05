@@ -70,6 +70,8 @@ class FlowSummary(ApiModel):
     release_count: int = 0
     last_run_status: InstanceStatus | None = None
     last_published_at: str | None = None
+    # 只有回收站列表非空；正常列表恒为 null
+    deleted_at: str | None = None
 
 
 class FlowDetail(FlowSummary):
@@ -369,6 +371,7 @@ def make_flow_summary(
         release_count=release_count,
         last_run_status=last_run_status,  # type: ignore[arg-type]
         last_published_at=last_published_at,
+        deleted_at=flow.deleted_at,
     )
 
 

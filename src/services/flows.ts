@@ -32,6 +32,11 @@ export interface ListFlowsFilter {
   search?: string
 }
 
+/** 回收站条目：字段与列表项一致，多一个删除时间 */
+export interface TrashFlowSummary extends FlowSummary {
+  deletedAt?: string | null
+}
+
 /** 提交成功返回完整流程详情，前端据此刷新流程元信息，无需再请求一次 */
 export interface CommitResponse extends FlowDetail {
   revisionId: string | null
@@ -75,6 +80,24 @@ export function updateFlow(id: string, payload: UpdateFlowPayload): Promise<Flow
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
+}
+
+/** 软删：流程进回收站，历史执行记录与发布版本都不动 */
+export function deleteFlow(id: string): Promise<void> {
+  return request<void>(`/flows/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function listTrashFlows(): Promise<TrashFlowSummary[]> {
+  return request<TrashFlowSummary[]>('/flows/trash')
+}
+
+export function restoreFlow(id: string): Promise<FlowDetail> {
+  return request<FlowDetail>(`/flows/${encodeURIComponent(id)}/restore`, { method: 'POST' })
+}
+
+/** 彻底删除：只清流程本体，历史执行记录仍保留 */
+export function purgeFlow(id: string): Promise<void> {
+  return request<void>(`/flows/trash/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 export function checkoutFlow(id: string): Promise<FlowDetail> {

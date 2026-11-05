@@ -7,6 +7,7 @@ const route = useRoute()
 const active = computed(() => {
   if (route.path.startsWith('/instances')) return 'instances'
   if (route.path.startsWith('/projects')) return 'projects'
+  if (route.path.startsWith('/trash')) return 'trash'
   return 'flows'
 })
 </script>
@@ -21,6 +22,9 @@ const active = computed(() => {
       </router-link>
       <router-link to="/projects" class="nav-item" :class="{ active: active === 'projects' }">
         工程
+      </router-link>
+      <router-link to="/trash" class="nav-item" :class="{ active: active === 'trash' }">
+        回收站
       </router-link>
     </nav>
     <div class="user">本地用户</div>

@@ -10,7 +10,14 @@ import type { FlowDoc, FlowMode, FlowSummary, FolderNode, InstanceStatus } from 
 import { errorText } from '@/services/api'
 import { createFolder, listFolders, removeFolder, updateFolder } from '@/services/folders'
 import { downloadFile } from '@/services/download'
-import { exportFlowUrl, importFlow, importFlowPackage, updateFlow, type ListFlowsFilter } from '@/services/flows'
+import {
+  deleteFlow,
+  exportFlowUrl,
+  importFlow,
+  importFlowPackage,
+  updateFlow,
+  type ListFlowsFilter,
+} from '@/services/flows'
 import { useFlowsStore } from '@/stores/flows'
 
 const router = useRouter()
@@ -359,6 +366,32 @@ function openEdit(row: FlowSummary): void {
   router.push({ name: 'flow-edit', params: { id: row.id } })
 }
 
+/** 软删进回收站：发布版本和执行记录都留着，只是列表里看不到 */
+async function moveToTrash(row: FlowSummary): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `删除流程「${row.name}」？历史执行记录与发布版本会保留，流程会移到回收站。`,
+      '删除流程',
+      {
+        type: 'warning',
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger',
+      },
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteFlow(row.id)
+    // 目录计数也跟着变，顺手刷一次
+    await Promise.all([refreshFolders(), reload()])
+    ElMessage.success('已移到回收站')
+  } catch (error) {
+    ElMessage.error(errorText(error, '删除失败'))
+  }
+}
+
 function openReleases(row: FlowSummary): void {
   router.push({ name: 'flow-releases', params: { id: row.id } })
 }
@@ -511,7 +544,7 @@ function folderNameOf(row: FlowSummary): string | null {
                 <span v-else class="muted">空闲</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="320" align="right">
+            <el-table-column label="操作" width="380" align="right">
               <template #default="{ row }">
                 <div class="row-actions" @click.stop>
                   <el-button link type="primary" @click="openEdit(row)">设计</el-button>
@@ -519,6 +552,7 @@ function folderNameOf(row: FlowSummary): string | null {
                   <el-button link @click="openRun(row)">执行</el-button>
                   <el-button link @click="download(row)">导出</el-button>
                   <el-button link @click="openMove(row)">移动到…</el-button>
+                  <el-button link type="danger" @click="moveToTrash(row)">删除</el-button>
                 </div>
               </template>
             </el-table-column>
