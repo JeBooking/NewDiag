@@ -7,6 +7,7 @@ import type {
   InstanceSummary,
   NodeTrailState,
   NodeVisualStatus,
+  ReleaseDetail,
   ReviewDecision,
   RunRecord,
   Token,
@@ -62,6 +63,8 @@ export const useInstancesStore = defineStore('instances', () => {
   const doc = ref<FlowDoc | null>(null)
   /** 画布 doc 的来源：发布快照优先，在线版本只是兜底 */
   const docSource = ref<'release' | 'flow' | null>(null)
+  /** 发布版本的完整详情，开发者抽屉要读它的 plan；取不到时保持 null */
+  const release = ref<ReleaseDetail | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
 
@@ -209,8 +212,9 @@ export const useInstancesStore = defineStore('instances', () => {
     if (doc.value && docReleaseId === current.releaseId) return
     docReleaseId = current.releaseId
     try {
-      const release = await getRelease(current.releaseId)
-      const snapshot = usableDoc(release.doc)
+      const detail = await getRelease(current.releaseId)
+      release.value = detail
+      const snapshot = usableDoc(detail.doc)
       if (snapshot) {
         doc.value = snapshot
         docSource.value = 'release'
@@ -265,6 +269,7 @@ export const useInstancesStore = defineStore('instances', () => {
     detail.value = null
     doc.value = null
     docSource.value = null
+    release.value = null
     docReleaseId = null
     try {
       detail.value = await getInstance(id)
@@ -297,6 +302,7 @@ export const useInstancesStore = defineStore('instances', () => {
     detail.value = null
     doc.value = null
     docSource.value = null
+    release.value = null
     docReleaseId = null
     error.value = null
   }
@@ -308,6 +314,7 @@ export const useInstancesStore = defineStore('instances', () => {
     detail,
     doc,
     docSource,
+    release,
     loading,
     error,
     pendingReviews,

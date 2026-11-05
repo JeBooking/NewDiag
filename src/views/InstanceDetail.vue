@@ -6,11 +6,14 @@ import AppHeader from '@/components/layout/AppHeader.vue'
 import FlowCanvas from '@/components/canvas/FlowCanvas.vue'
 import PathList from '@/components/history/PathList.vue'
 import ExecutionTrace from '@/components/history/ExecutionTrace.vue'
+import PipelineStages from '@/components/history/PipelineStages.vue'
 import RunDetailCard from '@/components/history/RunDetailCard.vue'
 import RunTimeline from '@/components/history/RunTimeline.vue'
+import PlanSteps from '@/components/panels/PlanSteps.vue'
 import TaskPanel from '@/components/tasks/TaskPanel.vue'
-import type { InstanceStatus, ReviewTask, RunRecord } from '@/domain/types'
+import type { InstanceStatus, ReviewTask, RunRecord, TokenStatus } from '@/domain/types'
 import { errorText } from '@/services/api'
+import { readPipelineStages } from '@/services/evidence'
 import { useInstancesStore } from '@/stores/instances'
 
 const route = useRoute()
@@ -25,6 +28,8 @@ const refreshing = ref(false)
 const terminating = ref(false)
 /** 卡片里正在看执行详情的节点；同一时刻只允许一个 */
 const inspectNodeId = ref<string | null>(null)
+/** 开发者抽屉默认收起，只在需要看计划/阶段时打开 */
+const devVisible = ref(false)
 /** 只用于把待办卡片的点击传导到画布，画布自身上报的选中不需要回打 */
 const canvasRef = ref<InstanceType<typeof FlowCanvas> | null>(null)
 
@@ -50,6 +55,15 @@ const STATUS_TYPE: Record<InstanceStatus, 'primary' | 'warning' | 'info' | 'succ
 
 const formatTime = (value?: string | null): string =>
   value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
+
+const TOKEN_TEXT: Record<TokenStatus, string> = {
+  queued: '排队',
+  running: '执行中',
+  waiting: '等待处理',
+  done: '完成',
+  failed: '失败',
+  abandoned: '已作废',
+}
 
 const detail = computed(() => store.detail)
 const canTerminate = computed(() =>
@@ -152,6 +166,39 @@ const inspectReviews = computed(() =>
   inspectNodeId.value ? (reviewsByNode.value[inspectNodeId.value] ?? []) : [],
 )
 
+const nodeMap = computed(() => {
+  const map = new Map<string, string>()
+  for (const node of store.doc?.nodes ?? []) map.set(node.id, node.title)
+  return map
+})
+
+function nodeTitle(nodeId: string): string {
+  return nodeMap.value.get(nodeId) || nodeId
+}
+
+/** 发布计划只读自实例对应版本；取不到版本详情时保持空态，不拿在线版本顶替 */
+const plan = computed(() => store.release?.plan ?? null)
+
+/** 新代在前，同代按访问时间倒序，最近发生了什么一眼可见 */
+const tokens = computed(() =>
+  (detail.value?.tokens ?? []).slice().sort(
+    (a, b) => b.generation - a.generation
+      || (b.visitedAt ?? '').localeCompare(a.visitedAt ?? ''),
+  ),
+)
+
+const selectedNode = computed(() =>
+  selectedNodeId.value
+    ? (store.doc?.nodes.find((node) => node.id === selectedNodeId.value) ?? null)
+    : null,
+)
+
+const selectedRun = computed(() =>
+  selectedNodeId.value ? (runsByNode.value[selectedNodeId.value]?.[0] ?? null) : null,
+)
+
+const selectedStages = computed(() => readPipelineStages(selectedRun.value?.evidence))
+
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
   try {
@@ -224,6 +271,7 @@ function onInspect(nodeId: string): void {
         <span v-if="detail.snapshot" class="meta">
           快照 {{ formatTime(detail.snapshot.capturedAt) }}
         </span>
+        <el-button size="small" text @click="devVisible = true">开发者</el-button>
         <el-button size="small" :loading="refreshing" @click="reload">刷新</el-button>
         <el-button
           v-if="canTerminate"
@@ -317,6 +365,60 @@ function onInspect(nodeId: string): void {
         </el-tab-pane>
       </el-tabs>
     </div>
+
+    <el-drawer v-model="devVisible" title="开发者" size="480px">
+      <div class="dev">
+        <section class="dev-section">
+          <div class="dev-head">
+            <span class="dev-title">执行计划</span>
+            <span v-if="detail?.releaseNo" class="dev-sub">v{{ detail.releaseNo }}</span>
+          </div>
+          <PlanSteps v-if="plan" :plan="plan" :doc="store.doc" />
+          <p v-else class="dev-empty">该发布版本没有可查看的计划</p>
+        </section>
+
+        <section class="dev-section">
+          <div class="dev-head">
+            <span class="dev-title">当前 tokens</span>
+            <span class="dev-sub">{{ tokens.length }}</span>
+          </div>
+          <div v-if="tokens.length" class="tokens">
+            <div v-for="token in tokens" :key="token.id" class="token">
+              <span class="token-dot" :class="token.status" />
+              <span class="token-node">{{ nodeTitle(token.nodeId) }}</span>
+              <span class="token-meta">第 {{ token.generation }} 代</span>
+              <span class="token-meta">{{ TOKEN_TEXT[token.status] }}</span>
+              <span v-if="token.branch" class="token-meta">
+                {{ token.branch === 'yes' ? '是' : '否' }} 分支
+              </span>
+              <span class="token-id">{{ token.nodeId }}</span>
+            </div>
+          </div>
+          <p v-else class="dev-empty">还没有 token，执行尚未开始</p>
+        </section>
+
+        <section class="dev-section">
+          <div class="dev-head">
+            <span class="dev-title">选中节点阶段</span>
+            <span v-if="selectedRun" class="dev-sub">
+              第 {{ selectedRun.generation }} 代 · 尝试 {{ selectedRun.attempt }} ·
+              {{ formatTime(selectedRun.startedAt) }}
+            </span>
+          </div>
+          <template v-if="selectedNode">
+            <div class="dev-head">
+              <span class="dev-sub">{{ selectedNode.title || selectedNode.id }}</span>
+            </div>
+            <PipelineStages v-if="selectedStages.length" :stages="selectedStages" />
+            <p v-else-if="!selectedRun" class="dev-empty">该节点还没有执行记录</p>
+            <p v-else class="dev-empty">
+              该节点最近一次执行没有阶段明细，可能是旧版本记录或单函数绑定
+            </p>
+          </template>
+          <p v-else class="dev-empty">在画布上选中一个节点，查看它最近一次执行的阶段</p>
+        </section>
+      </div>
+    </el-drawer>
 
     <el-empty
       v-if="!detail && !store.loading"
@@ -452,5 +554,109 @@ function onInspect(nodeId: string): void {
 
 .missing {
   flex: 1;
+}
+
+.dev {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.dev-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dev-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dev-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.dev-sub {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.dev-empty {
+  margin: 0;
+  padding: 10px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.tokens {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.token {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+.token + .token {
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.token-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--el-text-color-placeholder);
+}
+
+.token-dot.running {
+  background: var(--el-color-primary);
+}
+
+.token-dot.waiting,
+.token-dot.queued {
+  background: var(--el-color-warning);
+}
+
+.token-dot.done {
+  background: var(--el-color-success);
+}
+
+.token-dot.failed {
+  background: var(--el-color-danger);
+}
+
+.token-node {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--el-text-color-primary);
+}
+
+.token-meta {
+  flex: none;
+  color: var(--el-text-color-secondary);
+}
+
+.token-id {
+  flex: none;
+  font-family: var(--el-font-family-mono, monospace);
+  color: var(--el-text-color-placeholder);
 }
 </style>

@@ -4,6 +4,8 @@ import { KIND_META } from '@/domain/kinds'
 import type { DocNode, ReviewDecision, ReviewStatus, ReviewTask, RunRecord, RunStatus } from '@/domain/types'
 import AttachmentList from '@/components/panels/AttachmentList.vue'
 import DataPresentation from '@/components/panels/DataPresentation.vue'
+import PipelineStages from '@/components/history/PipelineStages.vue'
+import { readPipelineStages } from '@/services/evidence'
 
 const props = defineProps<{
   node: DocNode
@@ -92,6 +94,9 @@ const presentation = computed(() => {
   return evidence && typeof evidence === 'object' && 'presentation' in evidence
     ? evidence.presentation : currentReview.value?.request.presentation
 })
+
+/** 单函数绑定、人工节点、旧记录都没有阶段痕迹，空数组时整块不渲染 */
+const stages = computed(() => readPipelineStages(currentRun.value?.evidence))
 
 watch(
   () => [props.runs, props.reviews],
@@ -263,6 +268,11 @@ function pretty(value: unknown): string {
       <div v-if="verdict" class="block">
         <div class="label">判定</div>
         <div class="verdict">{{ verdict }}</div>
+      </div>
+
+      <div v-if="stages.length" class="block">
+        <div class="label">执行阶段</div>
+        <PipelineStages :stages="stages" />
       </div>
     </div>
 
