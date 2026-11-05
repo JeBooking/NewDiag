@@ -60,6 +60,29 @@ def empty_doc(name: str, mode: str = "parallel") -> dict:
     return {"format": 1, "name": name, "mode": mode, "nodes": [], "edges": []}
 
 
+def instance_doc(name: str, mode: str = "parallel") -> dict:
+    """新建流程用的诊断实例模板：骨架齐全、没有业务内容。
+
+    工程 / 类 / 版本留空，由用户在「流程属性 → 诊断实例」里选中；
+    直接抄示例里的业务类名会生成指向不存在工程的假绑定，发布必然失败。
+    config 为空对象：初始化参数由选中的诊断类带出，模板不预设业务参数。
+    """
+    return {
+        "format": 1,
+        "name": name,
+        "mode": mode,
+        "diagnosis": {
+            "project": "",
+            "function": "",
+            "protocol": "diagnosis/v1",
+            "version": "",
+            "config": {},
+        },
+        "nodes": [],
+        "edges": [],
+    }
+
+
 def get_flow_or_404(db: Session, flow_id: str) -> Flow:
     flow = db.get(Flow, flow_id)
     if flow is None:
@@ -236,7 +259,8 @@ def require_folder(db: Session, folder_id: str | None) -> None:
 def create_flow(payload: FlowCreate, db: Session = Depends(get_db)) -> FlowDetail:
     require_folder(db, payload.folder_id)
     stamp = now_iso()
-    doc = empty_doc(payload.name, payload.mode)
+    # 新建即实例模板；导入 / 复制走各自的文档，不经过这里
+    doc = instance_doc(payload.name, payload.mode)
     flow = Flow(
         id=new_id(),
         name=payload.name,
