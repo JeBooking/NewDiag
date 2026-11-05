@@ -835,15 +835,24 @@ def test_param_list_keeps_trust_flag_without_changing_hash():
 # ---------------------------------------------------------------- 四阶段函数管线
 
 
-def pipeline_doc(judge_arguments: dict) -> dict:
-    """取数 → 解析 → 判断 → 展示；judge 的参数映射由用例决定。"""
+def pipeline_doc(
+    judge_arguments: dict,
+    *,
+    parse_arguments: dict | None = None,
+    manual_fields: list[dict] | None = None,
+) -> dict:
+    """取数 → 解析 → 判断 → 展示；judge/parse 的参数映射与人工字段由用例决定。"""
     doc = base_doc()
     n1 = node(doc, "n1")
     n1.pop("binding", None)
     n1.pop("outputs", None)
     n1["pipeline"] = {
         "acquire": {"project": "cooling", "function": "read_voltage"},
-        "parse": {"project": "cooling", "function": "parse_voltage"},
+        "parse": {
+            "project": "cooling",
+            "function": "parse_voltage",
+            "arguments": parse_arguments or {},
+        },
         "judge": {
             "project": "cooling",
             "function": "judge_voltage",
@@ -851,20 +860,25 @@ def pipeline_doc(judge_arguments: dict) -> dict:
         },
         "present": {"project": "cooling", "function": "present_voltage"},
     }
+    if manual_fields is not None:
+        n1["pipeline"]["manualFields"] = manual_fields
     return doc
 
 
-def pipeline_functions(judge_param: dict | None = None) -> dict:
+def pipeline_functions(
+    judge_param: dict | None = None, parse_param: dict | None = None
+) -> dict:
     param = judge_param or {
         "name": "voltage", "type": "float", "required": True, "default": None
+    }
+    parsed = parse_param or {
+        "name": "raw", "type": "any", "required": True, "default": None
     }
     return {
         "cooling:read_voltage": [
             {"name": "voltage", "type": "number", "required": True, "default": None}
         ],
-        "cooling:parse_voltage": [
-            {"name": "raw", "type": "any", "required": True, "default": None}
-        ],
+        "cooling:parse_voltage": [parsed],
         "cooling:judge_voltage": [param],
         "cooling:present_voltage": [
             {"name": "parsed", "type": "any", "required": True, "default": None},
@@ -929,3 +943,76 @@ def test_only_parse_can_reference_raw(stage):
 
     text = " ".join(issue["message"] for issue in info.value.issues)
     assert f"{stage}" in text and "数据来源无效" in text
+
+
+# ---------------------------------------------------------------- 文件字段路径归一化
+
+
+def file_parse_doc(
+    path: str, field_type: str = "file", param_type: str = "str"
+) -> tuple[dict, dict]:
+    """人工上传 report 字段，parse 阶段把它映射给 report 参数。"""
+    doc = pipeline_doc(
+        {"voltage": {"source": "parsed", "path": "voltage"}},
+        parse_arguments={"report": {"source": "raw", "path": path}},
+        manual_fields=[{"name": "report", "type": field_type}],
+    )
+    functions = pipeline_functions(
+        parse_param={"name": "report", "type": param_type, "required": True, "default": None}
+    )
+    return doc, functions
+
+
+def path_warnings(doc: dict, functions: dict) -> list[dict]:
+    return [
+        issue
+        for issue in validate_doc(doc, functions)
+        if issue["level"] == "warning" and "已按路径传入" in issue["message"]
+    ]
+
+
+def test_file_field_parse_param_rewritten_to_path_with_warning():
+    """函数要 str 时传 {hash, path} 字典必炸，编译期直接改写成字段路径。"""
+    doc, functions = file_parse_doc("report")
+
+    assert errors(doc, functions=functions) == []
+    warnings = path_warnings(doc, functions)
+    assert len(warnings) == 1
+    assert "report" in warnings[0]["message"]
+
+    plan = compile_doc(doc, "f1", 1, functions=functions)
+    assert plan["steps"]["n1"]["pipeline"]["parse"]["arguments"]["report"]["path"] == "report.path"
+
+
+def test_file_field_dict_param_keeps_whole_reference():
+    """声明为 dict 的参数要的就是整份文件引用，不能改写。"""
+    doc, functions = file_parse_doc("report", param_type="dict")
+
+    assert errors(doc, functions=functions) == []
+    assert path_warnings(doc, functions) == []
+
+    plan = compile_doc(doc, "f1", 1, functions=functions)
+    assert plan["steps"]["n1"]["pipeline"]["parse"]["arguments"]["report"]["path"] == "report"
+
+
+@pytest.mark.parametrize("path", ["report.path", "report.hash"])
+def test_file_field_explicit_suffix_unchanged(path):
+    """已手写下钻路径的不再二次加后缀，避免 report.path.path。"""
+    doc, functions = file_parse_doc(path)
+
+    assert errors(doc, functions=functions) == []
+    assert path_warnings(doc, functions) == []
+
+    plan = compile_doc(doc, "f1", 1, functions=functions)
+    assert plan["steps"]["n1"]["pipeline"]["parse"]["arguments"]["report"]["path"] == path
+
+
+def test_non_file_field_path_unchanged():
+    """text 字段不是文件引用，行为与改动前一致。"""
+    doc, functions = file_parse_doc("report", field_type="text")
+
+    assert errors(doc, functions=functions) == []
+    assert path_warnings(doc, functions) == []
+
+    plan = compile_doc(doc, "f1", 1, functions=functions)
+    assert plan["steps"]["n1"]["pipeline"]["parse"]["arguments"]["report"]["path"] == "report"
