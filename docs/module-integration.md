@@ -7,15 +7,17 @@
 
 ## 诊断实例类（推荐）
 
-业务类继承 `diagnosis_sdk.Diagnosis`，声明 version；__init__(**config) 仅建立轻量环境，
-initialize 接收本次启动参数，在实例首次启动时获取、解析主要数据并写入 self.data。
-各排查方法读取 self.data；按需资源方法使用 `@resource(version='1')` 包住获取、解析，
-首次调用才执行，之后相同有效参数直接复用 self.cache。无需准备节点或每个节点的四阶段配置。
+业务类继承 `diagnosis_sdk.Diagnosis`，声明 version；initialize 接收本次启动参数，首次启动准备主要数据。
+按普通 Python 写法使用 `self.report = report`、`self.device_id = device_id`，成员名自定，无需固定容器或声明清单。
+各节点直接读取、更新普通成员；对象全部成员随快照保存，人工等待后整体恢复，不重跑 __init__ 或 initialize。
+按需资源方法用 `@resource(version='1')` 包住获取、解析，首次调用才执行，相同有效参数复用缓存。
+缓存由对象外的平台上下文管理，不占用业务的 self.data、self.cache 或 self.inputs 名称。
+离开平台独立调用资源方法时按普通方法执行，不要求平台上下文。无需准备节点或每节点四阶段配置。
 
-持久化采用受管理数据容器，不自动保存任意 self 成员。self.data 使用字典键访问，读取提供隔离副本，
-field(name, path) 支持产物按字段读取；self.cache 由资源装饰器管理，不手工生成键。
-参数、资源与结果必须可 JSON 表达；连接等运行资源由业务代码重新创建，close 负责释放。
-首次启动与恢复分别执行：恢复只构造轻量对象并装回数据引用，不调用 initialize、不重复业务解析。
+普通成员和资源结果使用实例隔离的 Python 对象快照，保留可序列化的自定义类型、元组、集合等，
+不要求业务状态先转换成 JSON。对外 presentation 和节点返回的 data 仍沿用 JSON／图片展示协议。
+旧 self.data 容器保留兼容读取，新接入不必使用。恢复范围、连接和句柄等资源的处理先按全部恢复假定，
+后续边界记在 [TODO](todo.md)，本轮不要求业务方筛选成员；不能保存的对象明确报错，不静默省略。
 
 节点方法返回 presentation（沿用 blocks 描述）、可选 result、reason、data。
 result 为 bool 或 yes/no 时自动判断，reason 必填；空值或省略时生成现有人工判断待办。

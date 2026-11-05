@@ -103,7 +103,8 @@ def test_eager_lazy_manual_release_and_restore(runtime):
     runtime.scheduler.submit_review("i1", review.id, {"result": "yes", "reason": "确认波形"})
     wait_for(runtime.factory, lambda: status_of(runtime.factory) == "escalated")
     assert count(runtime, "启动获取报告") == count(runtime, "首次获取波形") == 1
-    assert count(runtime, "创建诊断对象") == 3
+    assert count(runtime, "创建诊断对象") == 1
+    assert count(runtime, "等待恢复后保留的成员 checked_nodes=['voltage', 'waveform', 'review']") == 1
     assert runs(runtime.factory, "confirm")[0].status == "ok"
     wait_for(runtime.factory, lambda: count(runtime, "释放诊断对象") == 3)
     assert count(runtime, "释放诊断对象") == 3
@@ -160,7 +161,7 @@ def test_missing_saved_data_is_error_without_reacquisition(runtime):
         reference = json.loads(saved.reference_json)
         root = runtime.scheduler._artifact_root("i1")
         manifest = artifacts.load(root, reference)
-    (root / manifest["data"]["report"]["$artifact"] / "data.json").write_text("bad", encoding="utf-8")
+    (root / manifest["object"]["$artifact"] / "object.pkl").write_bytes(b"bad")
     # 后续节点明确读取报告，以确认恢复不会绕过损坏的数据重新初始化。
     with runtime.factory() as session:
         release = session.get(models.Release, "rel1")
@@ -182,6 +183,41 @@ def test_invalid_method_and_mixed_protocol_rejected(runtime):
         mutate(invalid)
         with pytest.raises(ValidationError):
             compile_doc(invalid, "f1", 2, functions=probed)
+
+
+def test_python_members_and_object_graph_survive_waiting(runtime):
+    path = runtime.tmp / "diagnosis.py"
+    source = path.read_text(encoding="utf-8")
+    source = "from types import SimpleNamespace\n" + source
+    source = source.replace("        self.report = selected", """        self.report = selected
+        self.payload = SimpleNamespace(values=(1, 2), flags={'a', 'b'}, raw=b'raw-data')
+        self.alias = self.payload
+        self.self_reference = self
+        self._private_member = {'count': 0}
+        self.data = {'business': 'data'}
+        self.cache = {'business': 'cache'}
+        self.inputs = {'business': 'inputs'}""")
+    source = source.replace('        self.checked_nodes.append("waveform")', """        self._private_member['count'] += 1
+        self.checked_nodes.append("waveform")""")
+    source = source.replace('        self.checked_nodes.append("confirm")', """        assert self.payload is self.alias
+        assert self.self_reference is self
+        assert self.payload.values == (1, 2)
+        assert self.payload.flags == {'a', 'b'}
+        assert self.payload.raw == b'raw-data'
+        assert self._private_member['count'] == 1
+        assert self.data == {'business': 'data'}
+        assert self.cache == {'business': 'cache'}
+        assert self.inputs == {'business': 'inputs'}
+        self.checked_nodes.append("confirm")""")
+    path.write_text(source, encoding="utf-8")
+    launch(runtime)
+    action = wait_review(runtime, "action")
+    runtime.scheduler.submit_review("i1", action.id, {"result": "done"})
+    review = wait_review(runtime, "review")
+    runtime.scheduler.submit_review("i1", review.id, {"result": "yes", "reason": "确认对象恢复"})
+    wait_for(runtime.factory, lambda: status_of(runtime.factory) == "escalated")
+    assert runs(runtime.factory, "confirm")[0].status == "ok"
+    assert count(runtime, "启动获取报告") == count(runtime, "首次获取波形") == 1
 
 
 def test_cache_normalizes_defaults_keeps_empty_and_does_not_cache_failures(tmp_path):

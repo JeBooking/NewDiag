@@ -23,10 +23,18 @@ else:
 
 logger = logging.getLogger(__name__)
 PROTOCOL = "diagnosis/v1"
+_CONTEXTS = {}
+
+
+def _context(obj):
+    context = _CONTEXTS.get(id(obj))
+    if context is None:
+        raise RuntimeError("诊断对象尚未由平台绑定运行上下文")
+    return context
 
 
 class Diagnosis:
-    """构造器只建立轻量运行环境；initialize 仅在诊断首次启动时执行。"""
+    """普通业务成员随对象保存；initialize 仅在诊断首次启动时执行。"""
 
     version = "1.0.0"
 
@@ -36,13 +44,23 @@ class Diagnosis:
     def close(self):
         pass
 
+    def __getattr__(self, name):
+        # 兼容旧容器接口；放在对象外，避免框架锁及加载中的 Future 混入业务状态。
+        context = _CONTEXTS.get(id(self))
+        if context is not None and name in ("inputs", "data", "cache"):
+            return context[name]
+        raise AttributeError(f"{type(self).__name__} 没有成员 {name!r}")
+
 
 def resource(*, version="1"):
     """加载方法包住获取与解析，同一有效请求只在首次访问时执行。"""
     def decorate(loader):
         @wraps(loader)
         def cached(self, *args, **kwargs):
-            return self.cache.get(loader, version, args, kwargs)
+            context = _CONTEXTS.get(id(self))
+            if context is None:
+                return loader(self, *args, **kwargs)
+            return context["cache"].get(loader, version, args, kwargs)
         cached.resource_version = version
         return cached
     return decorate
@@ -149,7 +167,10 @@ class ResourceCache:
         with self._lock:
             if key in self.references:
                 if key not in self._values:
-                    self._values[key] = artifacts.load(self.root, self.references[key])
+                    saved = self.references[key]
+                    self._values[key] = (artifacts.load_python(self.root, saved["value"])
+                                         if saved.get("format") == "python-pickle/v1"
+                                         else artifacts.load(self.root, saved))
                 logger.info("诊断资源缓存命中 resource=%s key=%s", loader.__name__, key)
                 return copy.deepcopy(self._values[key])
             pending = self._pending.get(key)
@@ -160,8 +181,8 @@ class ResourceCache:
             return copy.deepcopy(pending.result())
         try:
             logger.info("诊断资源首次加载 resource=%s key=%s", loader.__name__, key)
-            value = json_value(loader(self.owner, *args, **kwargs))
-            reference = artifacts.save(self.root, value)
+            value = loader(self.owner, *args, **kwargs)
+            reference = {"format": "python-pickle/v1", "value": artifacts.save_python(self.root, value)}
             with self._lock:
                 self.references[key] = reference
                 self._values[key] = value
@@ -204,6 +225,7 @@ class DiagnosisRuntime:
             try:
                 self.obj.close()
             finally:
+                _CONTEXTS.pop(id(self.obj), None)
                 self.obj = None
                 self.reference = None
 
@@ -227,12 +249,20 @@ class DiagnosisRuntime:
                 raise ValueError("诊断数据版本与当前业务类不一致")
             if reference is None and request["operation"] != "initialize":
                 raise ValueError("当前执行路径缺少诊断初始化数据，禁止重新采集代替恢复")
-            obj = cls(**(request.get("config") or {}))
             inputs = saved["inputs"] if saved else request.get("inputs") or {}
-            obj.inputs = copy.deepcopy(inputs)
-            obj.data = SharedData(root, saved["data"] if saved else None)
-            obj.cache = ResourceCache(obj, root, {**identity, "inputs": inputs},
-                                      saved["resources"] if saved else None)
+            if saved and saved.get("object"):
+                obj = artifacts.load_python(root, saved["object"])
+                if not isinstance(obj, cls):
+                    raise ValueError("对象快照不是当前诊断业务类")
+                logger.info("诊断对象由快照恢复 class=%s", request["class"])
+            else:
+                obj = cls(**(request.get("config") or {}))
+            _CONTEXTS[id(obj)] = {
+                "inputs": copy.deepcopy(inputs),
+                "data": SharedData(root, saved["data"] if saved else None),
+                "cache": ResourceCache(obj, root, {**identity, "inputs": inputs},
+                                       saved["resources"] if saved else None),
+            }
             self.obj, self.identity = obj, identity
             self.reference = reference
         obj = self.obj
@@ -242,11 +272,11 @@ class DiagnosisRuntime:
             if request["operation"] == "initialize":
                 if reference is not None:
                     raise ValueError("不能在已有诊断数据上重复初始化")
-                obj.data.writable = True
+                _context(obj)["data"].writable = True
                 try:
-                    obj.initialize(**obj.inputs)
+                    obj.initialize(**_context(obj)["inputs"])
                 finally:
-                    obj.data.writable = False
+                    _context(obj)["data"].writable = False
             else:
                 name = request["method"]
                 if name not in {item["name"] for item in meta["methods"]}:
@@ -258,8 +288,10 @@ class DiagnosisRuntime:
             error = traceback.format_exc()
         # 判断失败也保留已成功加载的资源，失败资源从未进入缓存。
         self.reference = artifacts.save(root, {
-            "identity": identity, "inputs": obj.cache.identity["inputs"],
-            "data": obj.data.references, "resources": obj.cache.references,
+            "identity": identity, "inputs": _context(obj)["inputs"],
+            "object": artifacts.save_python(root, obj),
+            "data": _context(obj)["data"].references,
+            "resources": _context(obj)["cache"].references,
         })
         logger.info("诊断对象%s class=%s state=%s durationMs=%s",
                     "初始化" if request["operation"] == "initialize" else "执行方法",

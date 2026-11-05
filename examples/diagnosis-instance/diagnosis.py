@@ -13,7 +13,7 @@ BASE = Path(__file__).resolve().parent
 
 
 class MotorDiagnosis(Diagnosis):
-    version = "1.0.0"
+    version = "1.1.0"
 
     def __init__(self, voltage_limit: float = 210, waveform_limit: float = 5):
         self.voltage_limit = voltage_limit
@@ -21,6 +21,9 @@ class MotorDiagnosis(Diagnosis):
         logger.info("创建诊断对象 pid=%s；此处不获取、不解析业务数据", os.getpid())
 
     def initialize(self, device_id: str, time_point: str):
+        self.device_id = device_id
+        self.time_point = time_point
+        self.checked_nodes = []
         logger.info("启动获取报告 device=%s time=%s", device_id, time_point)
         raw = (BASE / "measurements.json").read_text(encoding="utf-8")
         logger.info("启动解析报告")
@@ -29,7 +32,7 @@ class MotorDiagnosis(Diagnosis):
                          if row["device_id"] == device_id and row["time_point"] == time_point), None)
         if selected is None:
             raise ValueError("设备在指定时间没有报告")
-        self.data["report"] = selected
+        self.report = selected
 
     @resource(version="1")
     def waveform(self, device_id: str, time_point: str, channel: str = "A", scale: float = 1):
@@ -46,7 +49,8 @@ class MotorDiagnosis(Diagnosis):
                 "device_id": device_id, "time_point": time_point, "channel": channel}
 
     def check_voltage(self):
-        report = self.data["report"]
+        self.checked_nodes.append("voltage")
+        report = self.report
         value = report["voltage"]
         return {"presentation": {"blocks": [{"type": "metrics", "items": [
             {"label": "母线电压", "value": value, "unit": "V"},
@@ -55,18 +59,22 @@ class MotorDiagnosis(Diagnosis):
             "reason": f"启动报告电压 {value}V，与阈值 {self.voltage_limit}V 比较"}
 
     def check_waveform(self, channel: str = "A", scale: float = 1):
-        value = self.waveform(self.inputs["device_id"], self.inputs["time_point"], channel, scale)
+        self.checked_nodes.append("waveform")
+        value = self.waveform(self.device_id, self.time_point, channel, scale)
         return self._waveform_result(value)
 
     def review_waveform(self):
-        value = self.waveform(device_id=self.inputs["device_id"], time_point=self.inputs["time_point"])
+        self.checked_nodes.append("review")
+        value = self.waveform(device_id=self.device_id, time_point=self.time_point)
         result = self._waveform_result(value)
         result.pop("result")
         result.pop("reason")
         return result
 
     def confirm_waveform(self):
-        value = self.waveform(self.inputs["device_id"], self.inputs["time_point"])
+        logger.info("等待恢复后保留的成员 checked_nodes=%s", self.checked_nodes)
+        self.checked_nodes.append("confirm")
+        value = self.waveform(self.device_id, self.time_point)
         return self._waveform_result(value)
 
     def _waveform_result(self, value):

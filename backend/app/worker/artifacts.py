@@ -1,10 +1,12 @@
-"""不可变 JSON 产物及字段偏移索引，避免共享大结果反复经过会话协议。"""
+"""不可变 JSON 产物、字段索引及 Python 对象快照，避免大结果反复经过会话协议。"""
 
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
+import pickle
 import re
 import sqlite3
 import uuid
@@ -97,3 +99,47 @@ def load(root, reference):
         raise ValueError("共享数据内容缺失或损坏，请重新执行数据准备节点") from exc
     logger.info("共享数据产物读取 id=%s path=%s bytes=%s", reference["$artifact"], reference["path"], row[1])
     return value
+
+
+def save_python(root, value):
+    root = Path(root).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    identifier = uuid.uuid4().hex
+    pending = root / (identifier + ".part")
+    pending.mkdir()
+    with (pending / "object.pkl").open("wb") as target:
+        pickle.dump(value, target, protocol=pickle.HIGHEST_PROTOCOL)
+    digest = _python_digest(pending / "object.pkl")
+    (pending / "object.json").write_text(json.dumps({
+        "format": "python-pickle/v1", "sha256": digest,
+    }), encoding="utf-8")
+    os.replace(pending, root / identifier)
+    logger.info("Python 对象快照写入 id=%s", identifier)
+    return {"$artifact": identifier, "path": []}
+
+
+def load_python(root, reference):
+    directory = _directory(root, reference)
+    if reference["path"]:
+        raise ValueError("Python 对象快照不支持 JSON 字段路径")
+    try:
+        metadata = json.loads((directory / "object.json").read_text(encoding="utf-8"))
+        target = directory / "object.pkl"
+        if (metadata.get("format") != "python-pickle/v1"
+                or metadata.get("sha256") != _python_digest(target)):
+            raise ValueError("对象快照校验不一致")
+        # 只恢复本实例业务进程生成的产物，不把上传附件当作 Python 快照读取。
+        with target.open("rb") as source:
+            value = pickle.load(source)
+    except Exception as exc:
+        raise ValueError(f"Python 对象快照缺失、损坏或无法恢复：{exc}") from exc
+    logger.info("Python 对象快照恢复 id=%s", reference["$artifact"])
+    return value
+
+
+def _python_digest(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

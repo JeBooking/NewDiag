@@ -6,7 +6,7 @@
     "project": "诊断实例示例",
     "function": "MotorDiagnosis",
     "protocol": "diagnosis/v1",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "config": {
       "voltage_limit": 210,
       "waveform_limit": 5

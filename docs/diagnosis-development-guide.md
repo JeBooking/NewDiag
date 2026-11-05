@@ -1,6 +1,6 @@
 # NewDiag 诊断类开发手册
 
-适用协议：`diagnosis/v1`，对应规格 v1.11。面向编写、接入业务诊断代码的开发者。
+适用协议：`diagnosis/v1`，对应规格 v1.12。面向编写、接入业务诊断代码的开发者。
 本文描述当前已实现的接口；设计契约以 [spec.md](spec.md) 为准。
 
 开发路径：先运行现成 example，再替换数据接口与判断逻辑，最后在画布上编排方法。
@@ -23,7 +23,7 @@
 
 ```mermaid
 flowchart TD
-    A[启动诊断] --> B[构造轻量对象]
+    A[启动诊断] --> B[首次构造业务对象]
     B --> C[initialize 获取、解析主要数据]
     C --> D[按图调用排查方法]
     D --> E{需要某个按需资源}
@@ -99,88 +99,103 @@ from diagnosis_sdk import Diagnosis, resource
 __all__ = ['MotorDiagnosis']
 ```
 
-下面这份精简实现可以配合示例的三份 workflow 使用。将它保存为业务工程的 `diagnosis.py`，
+下面的完整实现可以配合示例的三份 workflow 使用。将它保存为业务工程的 `diagnosis.py`，
 同目录放置示例的 [measurements.json](../examples/diagnosis-instance/measurements.json)
 和 [waveforms.json](../examples/diagnosis-instance/waveforms.json)。带详细日志的版本见 [原始示例代码](../examples/diagnosis-instance/diagnosis.py)。
 
 ```python
+"""完整诊断对象：启动准备报告，后续方法首次需要波形时加载并缓存。"""
+
 import json
+import logging
+import os
 from pathlib import Path
 
 from diagnosis_sdk import Diagnosis, resource
 
-__all__ = ['MotorDiagnosis']
+__all__ = ["MotorDiagnosis"]
+logger = logging.getLogger(__name__)
 BASE = Path(__file__).resolve().parent
 
 
 class MotorDiagnosis(Diagnosis):
-    version = '1.0.0'
+    version = "1.1.0"
 
     def __init__(self, voltage_limit: float = 210, waveform_limit: float = 5):
         self.voltage_limit = voltage_limit
         self.waveform_limit = waveform_limit
+        logger.info("创建诊断对象 pid=%s；此处不获取、不解析业务数据", os.getpid())
 
     def initialize(self, device_id: str, time_point: str):
-        raw = (BASE / 'measurements.json').read_text(encoding='utf-8')
+        self.device_id = device_id
+        self.time_point = time_point
+        self.checked_nodes = []
+        logger.info("启动获取报告 device=%s time=%s", device_id, time_point)
+        raw = (BASE / "measurements.json").read_text(encoding="utf-8")
+        logger.info("启动解析报告")
         records = json.loads(raw)
-        report = next((item for item in records
-                       if item['device_id'] == device_id
-                       and item['time_point'] == time_point), None)
-        if report is None:
-            raise ValueError('指定设备和时间没有报告')
-        self.data['report'] = report
+        selected = next((row for row in records
+                         if row["device_id"] == device_id and row["time_point"] == time_point), None)
+        if selected is None:
+            raise ValueError("设备在指定时间没有报告")
+        self.report = selected
 
-    @resource(version='1')
-    def waveform(self, device_id: str, time_point: str, channel: str = 'A', scale: float = 1):
-        raw = (BASE / 'waveforms.json').read_text(encoding='utf-8')
+    @resource(version="1")
+    def waveform(self, device_id: str, time_point: str, channel: str = "A", scale: float = 1):
+        logger.info("首次获取波形 device=%s time=%s channel=%s scale=%s",
+                    device_id, time_point, channel, scale)
+        raw = (BASE / "waveforms.json").read_text(encoding="utf-8")
+        logger.info("首次解析波形")
         records = json.loads(raw)
-        record = next((item for item in records
-                       if item['device_id'] == device_id
-                       and item['time_point'] == time_point
-                       and item['channel'] == channel), None)
-        if record is None:
+        selected = next((row for row in records if row["device_id"] == device_id
+                         and row["time_point"] == time_point and row["channel"] == channel), None)
+        if selected is None:
             return None
-        return {'samples': [value * scale for value in record['samples']]}
+        return {"samples": [value * scale for value in selected["samples"]],
+                "device_id": device_id, "time_point": time_point, "channel": channel}
 
     def check_voltage(self):
-        voltage = self.data.field('report', 'voltage')
-        return {
-            'presentation': {'blocks': [
-                {'type': 'metrics', 'items': [
-                    {'label': '电压', 'value': voltage, 'unit': 'V'},
-                ]},
-            ]},
-            'result': voltage < self.voltage_limit,
-            'reason': f'电压 {voltage}V，与阈值 {self.voltage_limit}V 比较',
-        }
+        self.checked_nodes.append("voltage")
+        report = self.report
+        value = report["voltage"]
+        return {"presentation": {"blocks": [{"type": "metrics", "items": [
+            {"label": "母线电压", "value": value, "unit": "V"},
+            {"label": "阈值", "value": self.voltage_limit, "unit": "V"},
+        ]}]}, "result": value < self.voltage_limit,
+            "reason": f"启动报告电压 {value}V，与阈值 {self.voltage_limit}V 比较"}
 
-    def check_waveform(self, channel: str = 'A', scale: float = 1):
-        value = self.waveform(
-            self.inputs['device_id'], self.inputs['time_point'], channel, scale,
-        )
-        return self._describe_waveform(value)
+    def check_waveform(self, channel: str = "A", scale: float = 1):
+        self.checked_nodes.append("waveform")
+        value = self.waveform(self.device_id, self.time_point, channel, scale)
+        return self._waveform_result(value)
 
     def review_waveform(self):
-        result = self.check_waveform()
-        result.pop('result')
-        result.pop('reason')
+        self.checked_nodes.append("review")
+        value = self.waveform(device_id=self.device_id, time_point=self.time_point)
+        result = self._waveform_result(value)
+        result.pop("result")
+        result.pop("reason")
         return result
 
     def confirm_waveform(self):
-        return self.check_waveform()
+        logger.info("等待恢复后保留的成员 checked_nodes=%s", self.checked_nodes)
+        self.checked_nodes.append("confirm")
+        value = self.waveform(self.device_id, self.time_point)
+        return self._waveform_result(value)
 
-    def _describe_waveform(self, value):
-        if value is None or not value['samples']:
-            raise ValueError('缺少有效波形，不能据此判断正常或异常')
-        peak = max(value['samples'])
-        return {
-            'presentation': {'blocks': [
-                {'type': 'line', 'values': value['samples']},
-                {'type': 'metrics', 'items': [{'label': '峰值', 'value': peak}]},
-            ]},
-            'result': peak > self.waveform_limit,
-            'reason': f'峰值 {peak}，阈值 {self.waveform_limit}',
-        }
+    def _waveform_result(self, value):
+        if value is None:
+            raise ValueError("指定设备、时间、通道没有波形，不能当作正常判断")
+        peak = max(value["samples"])
+        return {"presentation": {"blocks": [
+            {"type": "text", "text": f"设备 {value['device_id']}，时间 {value['time_point']}，通道 {value['channel']}"},
+            {"type": "line", "values": value["samples"]},
+            {"type": "metrics", "items": [{"label": "峰值", "value": peak}]},
+        ]}, "result": peak > self.waveform_limit,
+            "reason": f"波形峰值 {peak}，阈值 {self.waveform_limit}"}
+
+    def close(self):
+        logger.info("释放诊断对象 pid=%s", os.getpid())
 ```
 
 替换成真实业务接口时，主要改两处：`initialize` 中的主要数据获取、解析，以及 `@resource` 方法内的按需获取、解析。
@@ -204,25 +219,30 @@ class MotorDiagnosis(Diagnosis):
 公开接口必须同步、参数显式命名并支持关键字传参；不支持 `async def`、`*args`、`**kwargs` 或位置专用参数。
 默认值必须能用 JSON 表达。`version` 和资源的 `version` 都必须是非空字符串。
 
-### 3.2 构造器与启动初始化要分开
+### 3.2 首次创建与等待恢复
 
-`__init__` 会在首次启动和人工等待后的恢复时执行。这里只保存配置或建立轻量环境，不获取报告、不解析文件。
-`initialize` 负责本次诊断的主要数据准备，正常人工恢复不会再次调用它。
+正常开发使用 `self.report`、`self.device_id`、`self.checked_nodes` 等成员，名称和读写方式由业务代码决定。
+不需要声明持久化成员，也不需要把已有成员改成 `self.data[...]`。
 
-平台在构造器返回后才注入 `self.inputs`、`self.data`、`self.cache`，因此构造器里不能访问这些成员。
-也不要直接用 `MotorDiagnosis().initialize(...)` 模拟平台执行：直接构造没有平台注入的数据容器。
-调试接入应通过已登记工程和流程启动，让平台完成注入与恢复。
+首次启动按 `__init__` → `initialize` 执行。人工等待前保存整个业务对象，继续时由 Python 对象快照还原，
+不重跑 `__init__` 和 `initialize`，也不重新获取、解析已有数据。
+因此普通成员在节点中发生的更新也会保存，构造配置恢复时不会重新覆盖这些成员。
+
+可以直接构造业务类、调用 initialize 和普通方法进行独立开发；没有平台上下文时，
+`@resource` 方法按普通方法执行。实例范围缓存、持久快照和完整流程调度由平台运行时提供。
 
 ## 4. 参数分别放在哪里
 
 | 参数类型 | 例子 | 配置位置 | 代码读取方式 |
 |---|---|---|---|
 | 流程构造配置 | 阈值、服务地址、算法选项 | 流程属性中的初始化配置 JSON | `__init__` 显式参数 |
-| 本次诊断输入 | 设备、查询时刻 | 开始节点声明，启动时填写 | `initialize` 参数、`self.inputs` |
+| 本次诊断输入 | 设备、查询时刻 | 开始节点声明，启动时填写 | `initialize` 参数，通常保存到自定成员 |
 | 节点专用参数 | 某节点的通道、倍率 | 开始节点的方法参数，或 doc 中节点 `params` | 节点方法显式参数 |
 | 资源请求参数 | 设备、文件哈希、时间范围、解析选项 | 业务代码调用资源方法时传入 | `@resource` 方法显式参数 |
 
-`self.inputs` 保存传给初始化方法的启动参数，按只读使用。未作为初始化实参传入的其他节点参数，不应假定一定出现在这里。
+推荐在 initialize 中正常保存参数，例如 `self.device_id = device_id`，后续方法直接读取成员。
+`self.inputs` 作为旧接入的便捷入口保留；业务自己定义同名成员时不会被平台覆盖。
+业务参数可以统一声明在 initialize 中，并不必须使用构造配置；当前页面保留构造配置以兼容已有类。
 类型注解用于接口发现和表单控件，不代替业务参数校验，也不会自动把字符串解析成 Python `datetime` 等对象。
 
 方法参数沿用发布期绑定优先级：节点显式 `params`、方法局部启动参数、全局启动参数、唯一的上游同名输出、Python 默认值。
@@ -246,39 +266,35 @@ class MotorDiagnosis(Diagnosis):
 固定常量绑定可参考 [workflow-requests.json](../examples/diagnosis-instance/workflow-requests.json)。
 当前实例方法面板提供方法选择和参数提示；完整的节点级 `params` 来源编辑通过流程 JSON 配置，不能假定已有四阶段参数编辑器。
 
-## 5. 共享数据、缓存与普通 self 成员
+## 5. 普通成员与按需缓存
 
-### 5.1 启动共享数据：self.data
+### 5.1 共享数据就是普通 Python 成员
 
-在 `initialize` 中写入：
-
-```python
-self.data['report'] = report
-```
-
-节点里读取全部内容或某个字段：
+在 initialize 中正常赋值：
 
 ```python
-report = self.data['report']
-voltage = self.data.field('report', 'voltage')
-first_voltage = self.data.field('report', 'rows.0.voltage')
+self.device_id = device_id
+self.report = report
+self.checked_nodes = []
 ```
 
-字段路径使用点分字典键与数组下标。`field` 按产物索引读取对应字段，不需要先加载整份报告。
-取完整报告仍会加载并复制完整报告；它不是零成本访问。已有内存值会复用，读取提供隔离副本。
-
-只有 `initialize` 可以写 `self.data`。后续排查计算出的新结果，通过节点返回值的 `data` 提供。
-修改读取副本不会影响其他节点：
+节点中按原有代码方式读取、修改：
 
 ```python
-report = self.data['report']
-report['voltage'] = 0
-# 这里只改了当前局部副本，共享报告不会变。
+voltage = self.report['voltage']
+self.checked_nodes.append('check_voltage')
 ```
+
+这些成员默认都保存、恢复，包括构造器成员、私有成员和节点后续新增或修改的成员。
+不要求固定命名为 self.data，也不要求列出哪些成员应持久化。
+成员之间的共享引用和循环引用随同一个 Python 对象图保存。
+
+普通成员保持 Python 自身的共享、赋值和原地修改语义；如果节点需要一份独立副本，由业务代码显式复制。
+平台不会把普通 self 成员改造成只读容器，也不会在恢复时用构造器重新覆盖它们。
 
 ### 5.2 按需缓存：@resource
 
-正常调用资源方法即可，不需要手动读写 `self.cache`：
+带装饰器的方法包住获取和解析，正常调用即可：
 
 ```python
 first = self.waveform('motor-01', '2026-11-05T08:00:00+08:00')
@@ -289,9 +305,12 @@ again = self.waveform(
 
 上述有效参数相同，复用同一份结果。显式传参、关键字顺序和省略默认参数会按方法签名归一。
 不同设备、时刻、通道、倍率分别缓存。缓存范围是本次诊断，不跨诊断实例共享。
+平台缓存存放在对象外，不占用业务的 self.cache、self.data 或 self.inputs 名称。
+资源结果支持 Python 对象快照，不要求先转换成 JSON；缓存读取仍返回隔离副本。
 
 缓存键包含诊断类身份、版本、构造配置、初始化输入、资源方法名、资源版本及全部绑定后的资源参数。
-业务方仍须把会改变结果的输入明确写进资源方法参数：
+启动输入、构造配置和缓存请求键仍使用 JSON 可表达的值；这不限制业务成员及资源返回值的 Python 类型。
+业务方须把会改变结果的输入明确写进资源方法参数：
 
 | 数据来源 | 应明确传入的内容 |
 |---|---|
@@ -300,7 +319,7 @@ again = self.waveform(
 | 查询接口 | 实际查询条件、数据范围 |
 | 解析算法 | 通道、倍率、过滤条件等解析参数 |
 
-不要让资源只根据藏在可变全局变量或外部窗口中的值改变输出，这些变化无法自动进入缓存键。
+不要让资源只根据未传入参数的可变 self 成员、全局变量或窗口中的值改变输出，这些变化无法自动进入缓存键。
 查询“当前时间”时，由调用方先确定实际查询时刻，再作为参数传入；画布执行位置不代表业务查询时刻。
 
 ### 5.3 空结果、异常与并发
@@ -309,28 +328,21 @@ again = self.waveform(
 - 读取失败、解析失败要抛异常，不要返回 `None` 冒充成功，否则它会成为成功的空缓存。
 - 同一资源键的并发请求合并加载，等待者共享该次结果；失败不成为成功缓存。
 - 节点在资源加载成功后判断失败，已成功加载的资源仍会保存，后续重执行可以复用。
-- 当前同一实例的画布“并行”节点由调度器逐个调用；不要把并行分支理解为已承诺多个节点方法同时运行。
+- 当前同一实例的画布“并行”节点由调度器逐个调用；不要把并行分支理解为多个节点方法同时运行。
 
 业务异常不会自动重试整个节点；“失败不缓存”只表示后续再次请求仍可加载。
 平台对超时或进程崩溃重试一次，业务接口必须只读、可重复调用，不能把取数和修改设备状态放在一起。
 
-### 5.4 哪些 self 成员会恢复
+### 5.4 全量恢复与后续 TODO
 
-| 成员 | 等待后如何处理 |
-|---|---|
-| `self.data` 中的 JSON 业务数据 | 平台恢复对应的不可变产物引用，读取时按需解码 |
-| `@resource` 的成功缓存 | 平台恢复请求键与产物引用，不再调用资源加载方法 |
-| `self.inputs` | 平台恢复初始化实参 |
-| 构造配置，如 `self.voltage_limit` | 由构造器根据已发布配置重新赋值 |
-| 任意普通成员，如 `self.report` | 不自动保存；需要跨等待使用的数据改放 `self.data` 或资源返回值 |
-| 连接、客户端、文件句柄、锁等 | 由业务代码重新创建，不能把活对象存入共享数据 |
+当前按“业务对象全部需要恢复”实现，使用实例隔离的 Python pickle 快照保存对象图，
+支持普通字典、自定义类、元组、集合、字节串等可序列化 Python 状态，不使用 repr 冒充数据。
+恢复范围、连接／文件句柄／锁等运行资源的排除或重建，以及大对象快照成本，记入 [TODO](todo.md)，本轮不作筛选设计。
+无法序列化的对象会明确报错，不会静默跳过成员。
 
-可保存的值是 JSON 对象、数组、字符串、有限数字、布尔值和空值。
-自定义类、DataFrame、日期对象等需在业务边界显式转换成这些数据；平台不使用 `repr` 冒充可恢复结果。
-新协议没有自动保存整个 `__dict__` 的功能，也没有可随意恢复任意 Python 对象的通用钩子。
-
-如果业务类根本没有连接、文件句柄等运行资源，就不需要为恢复额外创建这些东西；`close` 可以不实现。
-确实需要连接时，在构造器或第一次使用时建立，在 `close` 中释放。重新建立客户端不等于重新采集业务数据。
+旧 self.data 容器和已有 JSON 产物保留兼容读取，已有业务可以继续使用；新接入不必采用它。
+Python 快照只从平台本实例保存的产物恢复，不把上传附件当作 Python 快照加载。
+对外的 presentation 和节点返回 data 仍遵循展示／JSON 协议，不能把任意 Python 对象直接发给页面。
 
 ## 6. 排查方法返回什么
 
@@ -411,7 +423,7 @@ return {
 ```python
 {
     'type': 'image',
-    'src': self.data.field('report', 'screenshot_hash'),
+    'src': self.report['screenshot_hash'],
     'alt': '母线电压波形截图',
     'caption': '本次诊断使用的波形截图',
 }
@@ -473,7 +485,7 @@ def present(parsed):
     "project": "诊断实例示例",
     "function": "MotorDiagnosis",
     "protocol": "diagnosis/v1",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "config": {"voltage_limit": 210, "waveform_limit": 5}
   }
 }
@@ -494,12 +506,12 @@ def present(parsed):
 | 时机 | 执行内容 |
 |---|---|
 | 首次启动 | `__init__` → 平台注入容器 → `initialize` |
-| 连续自动排查 | 复用存活对象及内存数据，逐节点保存数据版本 |
+| 连续自动排查 | 复用存活对象及内存成员，逐节点保存对象和缓存版本 |
 | 人工等待 | 保存数据与缓存版本，关闭会话、释放对象 |
-| 继续后的业务调用 | `__init__` → 平台恢复容器与输入 → 调用后续方法 |
+| 继续后的业务调用 | 从快照还原 Python 对象及缓存 → 调用后续方法 |
 
-恢复时不调用 `initialize`，已有缓存不会再执行业务获取或解析。
-从 JSON 产物解码、重建业务表达对象仍有开销，不应把“无需重新采集解析”理解为没有任何恢复成本。
+恢复时不调用 `__init__` 或 `initialize`，已有缓存不会再执行业务获取或解析。
+Python 对象快照的序列化和反序列化仍有开销，不应把“无需重新采集解析”理解为没有任何恢复成本。
 
 ### 8.2 回退绑定具体到访的数据
 
@@ -540,7 +552,8 @@ $env:NEWDIAG_LOG_LEVEL = 'DEBUG'
 
 默认平台日志在 `backend/logs/app.log`。实例 ID 可串联会话启动、调用、关闭与节点结果。
 SDK 会记录「诊断资源首次加载」「诊断资源缓存命中」；完整 example 另外记录初始化和对象 pid。
-判断是否重复采集，应看资源加载日志，不是只数构造器调用次数——等待后再次构造是正常行为。
+判断是否重复采集，看资源加载日志和「诊断对象由快照恢复」日志。
+新的全量对象快照恢复不会再次执行构造器，示例的 checked_nodes 日志可核对普通成员是否保留。
 
 | 现象 | 优先检查 |
 |---|---|
@@ -548,9 +561,9 @@ SDK 会记录「诊断资源首次加载」「诊断资源缓存命中」；完�
 | 工程找不到诊断类 | 模块名、工程路径、`__all__`、是否继承 `Diagnosis`、工厂是否留空 |
 | 辅助函数出现在节点方法列表 | 是否忘记用 `_` 前缀，或忘记给资源方法加装饰器 |
 | 发布提示必填参数缺少来源 | 开始节点声明、作用域、节点 `params`，以及 Python 默认值 |
-| `self.data` 在构造器里不存在 | 容器在构造器返回后注入；把数据准备移到 `initialize` |
-| 等待后 `self.report` 丢失 | 普通成员不持久化；业务数据应放 `self.data` 或资源返回值 |
-| 排查时写共享数据报错 | `self.data` 仅初始化可写；派生结果从节点返回 |
+| 对象快照保存失败 | 查看具体成员类型的序列化错误；当前不自动排除成员，后续边界见 TODO |
+| 等待后普通成员不符 | 核对所选到访的数据版本、对象快照和业务自身的序列化钩子，不能重新采集替代恢复 |
+| 旧 self.data 在排查阶段写入报错 | 旧容器仍按兼容规则处理；新接入使用普通 self.report 等成员 |
 | 资源反复获取 | 有效参数是否变化；是否发生超时／崩溃；是否回到尚未加载的历史版本 |
 | 缺数据却一直命中缓存 | 是否把失败转换成正常 `None`；需要失败时应抛异常 |
 | 版本或接口与发布计划不符 | 是否覆盖了正在运行实例依赖的类、方法或资源定义 |
@@ -572,12 +585,12 @@ SDK 会记录「诊断资源首次加载」「诊断资源缓存命中」；完�
 
 ### 10.2 从已有业务类迁移
 
-1. 将原构造器中的采集、解析移到 `initialize`，构造器仅保留配置和轻量环境。
-2. 将需要跨节点、跨人工等待的数据放入 `self.data`；不要继续只赋值给任意普通成员。
+1. 将本次诊断的启动参数和主要数据准备放在 initialize；已有构造器只在首次创建时执行，恢复不重跑它。
+2. 保留现成的 self.report 等普通成员，节点继续按原有属性读写方式使用它们；默认全部恢复。
 3. 将后续才需要的数据加载提取为资源方法，补齐请求参数并添加 `@resource`。
 4. 将各排查逻辑整理成公开方法，内部辅助逻辑使用 `_` 方法。
 5. 将桌面展示替换为 `presentation.blocks`，将自动判断返回为 `result` 和 `reason`。
-6. 将连接等运行资源的释放集中到 `close`；如旧业务类强制依赖窗口，先拆开或延迟创建无关依赖。
+6. 暂按对象整体恢复接入，运行资源的保存、排除和重建边界留待 TODO；保存失败时根据具体错误定位，不静默省略成员。
 7. 在新流程中选择诊断类并编排方法；保留旧流程继续使用原协议，不原地改变其契约。
 
 ### 10.3 数据运维
@@ -597,7 +610,7 @@ SDK 会记录「诊断资源首次加载」「诊断资源缓存命中」；完�
 | [compiler.py](../backend/app/services/compiler.py) | doc 校验、类绑定、方法参数编译 |
 | [signatures.py](../backend/app/services/signatures.py) | 发布／运行的接口指纹 |
 | [scheduler.py](../backend/app/services/scheduler.py) | 初始化、调用方法、待办、数据视图和回退 |
-| [artifacts.py](../backend/app/worker/artifacts.py) | 不可变 JSON 产物及字段偏移读取 |
+| [artifacts.py](../backend/app/worker/artifacts.py) | 不可变 JSON 产物、字段读取及 Python 对象快照 |
 | [models.py](../backend/app/models.py) | `diagnosis_states` 引用记录，`seq` 确定保存顺序 |
 | [FlowPanel.vue](../src/components/panels/FlowPanel.vue) | 流程诊断类配置 |
 | [DiagnosisMethodEditor.vue](../src/components/panels/DiagnosisMethodEditor.vue) | 排查实例方法选择 |
