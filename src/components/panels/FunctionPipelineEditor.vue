@@ -263,7 +263,9 @@ function removeField(index: number): void {
               && !['auto', 'omit'].includes(source(stage.name, param.name))"
             :disabled="readonly" :model-value="path(stage.name, param.name)"
             :placeholder="stage.name === 'judge'
-              ? '字段路径，例如 voltage' : '字段路径，留空传入整个数据'"
+              ? '字段路径，例如 voltage；文件可写 字段名.path'
+              : '字段路径，留空传入整个数据；文件可写 字段名.path'"
+            title="选到文件字段会自动按路径传入，也可以显式写 字段名.path"
             :aria-required="pathRequired(stage.name, param)"
             aria-label="来源字段路径"
             @update:model-value="changePath(stage.name, param.name, $event)"
