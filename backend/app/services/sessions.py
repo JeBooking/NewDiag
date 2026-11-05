@@ -75,6 +75,7 @@ class SessionManager:
         args: dict,
         timeout: float = DEFAULT_TIMEOUT,
     ):
+        """返回 (value, files)；files 是本次调用新落盘的附件清单，可能为空。"""
         handle = self.ensure(instance_id, project)
         with handle.lock:
             handle.seq += 1
@@ -140,7 +141,8 @@ class SessionManager:
                         function,
                         (time.perf_counter() - started) * 1000,
                     )
-                    return message.get("value")
+                    # files 是本次调用新落盘的附件清单；旧子进程不带这个字段
+                    return message.get("value"), message.get("files") or []
                 logger.warning(
                     "实例 %s 调用 %s 抛错：%s",
                     instance_id,

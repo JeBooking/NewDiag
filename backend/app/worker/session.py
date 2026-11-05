@@ -6,6 +6,8 @@ config: {"path": ..., "module": ..., "factory": ...}
 协议（stdin/stdout，每行一个 JSON）：
 请求 {"id": "1", "function": "judge", "args": {...}}
 响应 {"id": "1", "ok": true, "value": ...} / {"id": "1", "ok": false, "error": "..."}
+响应可带 "files": [{hash, name, media_type, size}]，列出本次调用新落盘的图片，供父进程登记；
+没有新文件时省略该字段，旧客户端忽略即可。
 关闭 {"id": "0", "op": "shutdown"}
 """
 
@@ -68,6 +70,7 @@ def main() -> int:
             args = request.get("args") or {}
             if not isinstance(args, dict):
                 raise ValueError("args 必须是对象")
+            node_sdk.configure_files(args.get("fileRoot"))
             with redirect_stdout(sys.stderr):
                 if function_name == "__newdiag_diagnosis__":
                     value = diagnosis.execute(target, args)
@@ -100,7 +103,12 @@ def main() -> int:
                 else:
                     func = _resolve_callable(target, function_name)
                     value = _json_safe(func(**args))
-            _write({"id": request_id, "ok": True, "value": value})
+            response = {"id": request_id, "ok": True, "value": value}
+            files = node_sdk.take_files()
+            if files:
+                # 只有真的生成了文件才带这个字段，普通调用的响应体与旧版本逐字节一致
+                response["files"] = files
+            _write(response)
         except BaseException:  # noqa: BLE001 - 业务异常不能带崩子进程
             _write({"id": request_id, "ok": False, "error": traceback.format_exc()})
     return 0

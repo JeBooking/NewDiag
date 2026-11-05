@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import re
 import threading
 import time
 from functools import wraps
@@ -16,12 +17,13 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app import db as db_module
 from app import models
 from app.db import SessionLocal, new_id, now_iso
 from app.logging_setup import brief
-from app.services import signatures
+from app.services import signatures, storage
 from app.services.sessions import SessionCrashed, SessionError, SessionManager, SessionTimeout
 from app.worker.function_pipeline import PipelineFailure, execute_pipeline, persisted_state
 from app.worker import artifacts
@@ -43,6 +45,11 @@ ERR_EXCEPTION = "execution/exception"
 
 YES_VALUES = {"yes", "y", "true", "是"}
 NO_VALUES = {"no", "n", "false", "否"}
+
+# 业务生成的图片只登记位图：文件名由摘要加白名单扩展名组成，其它一律不认。
+GENERATED_FILE_RE = re.compile(r"^[0-9a-f]{64}\.(?:png|jpe?g|webp|gif)$")
+GENERATED_MEDIA = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                   "webp": "image/webp", "gif": "image/gif"}
 
 
 def _serialized(method):
@@ -673,7 +680,8 @@ class Scheduler:
         else:
             request = {"class": binding["function"], "version": binding["version"],
                        "config": binding.get("config") or {}, "definition": binding["definition"],
-                       "artifactRoot": str(self._artifact_root(instance.id)), "state": reference,
+                       "artifactRoot": str(self._artifact_root(instance.id)),
+                       "fileRoot": str(self._file_root()), "state": reference,
                        "operation": "initialize" if initialize else "method",
                        "inputs": args if initialize else {}, "method": method.get("name"),
                        "arguments": args}
@@ -752,7 +760,7 @@ class Scheduler:
         def invoke(binding, args):
             shared = pipeline.get("preparation") or pipeline.get("dataSource")
             request = {"function": binding["function"], "signature": binding["signature"],
-                       "arguments": args}
+                       "arguments": args, "fileRoot": str(self._file_root())}
             if shared:
                 request["artifactRoot"] = str(self._artifact_root(instance.id))
                 request["artifactArguments"] = {
@@ -780,6 +788,10 @@ class Scheduler:
     def _artifact_root(self, instance_id):
         # 按实例分目录，业务返回的标识不能访问另一实例的数据。
         return db_module.data_dir() / "artifacts" / hashlib.sha256(instance_id.encode()).hexdigest()
+
+    def _file_root(self):
+        # 与 storage.files_dir() 同一口径；目录由 worker 自己按需创建
+        return db_module.data_dir() / "files"
 
     def _resolve_manual_data(self, db, state, data):
         if not isinstance(data, dict):
@@ -821,7 +833,7 @@ class Scheduler:
         request = {
             "adapter": call["function"], "version": call["version"],
             "config": call.get("config") or {}, "state": state,
-            "operation": operation, **extra,
+            "operation": operation, "fileRoot": str(self._file_root()), **extra,
         }
         # 文件路径由存储层解析，不能把客户端提供的路径交给业务模块打开。
         if operation == "acquisition" and isinstance(request.get("data"), dict):
@@ -923,9 +935,12 @@ class Scheduler:
                 brief(args),
             )
             try:
-                value = self._sessions.call(
+                response = self._sessions.call(
                     instance.id, project, function, args, timeout=self._timeout
                 )
+                # SessionManager 返回 (value, files)；会话替身只返回值，按空清单处理
+                value, files = response if isinstance(response, tuple) else (response, [])
+                self._register_files(db, files)
                 return value, None
             except SessionTimeout as exc:
                 if attempts >= 2:
@@ -942,6 +957,44 @@ class Scheduler:
             except Exception as exc:  # noqa: BLE001 - 业务工程千奇百怪，统一记执行错误
                 return None, (ERR_EXCEPTION, str(exc), attempts)
         return None, (ERR_TIMEOUT, "调用超时", attempts)
+
+    def _register_files(self, db, files) -> None:
+        """把会话新落盘的图片登记成附件记录；登记失败只影响能否下载，不影响展示。"""
+        if not files:
+            return
+        for item in files:
+            try:
+                digest = item.get("hash") if isinstance(item, dict) else None
+                name = item.get("name") if isinstance(item, dict) else None
+                if not isinstance(digest, str) or not storage.is_digest(digest):
+                    logger.warning("忽略非法附件摘要：%r", digest)
+                    continue
+                if not isinstance(name, str) or not GENERATED_FILE_RE.fullmatch(name) \
+                        or name[:64] != digest:
+                    # 文件名会进下载响应头，只认「摘要 + 白名单扩展名」，别的一律不登记
+                    logger.warning("忽略非法附件文件名：%r（摘要 %s）", name, digest)
+                    continue
+                path = storage.resolve(digest)
+                if path is None:
+                    logger.warning("附件记录指向的文件不存在：%s", digest)
+                    continue
+                if db.get(models.FileBlob, digest) is not None:
+                    continue
+                size = item.get("size")
+                try:
+                    with db.begin_nested():
+                        db.add(models.FileBlob(
+                            hash=digest,
+                            filename=name,
+                            media_type=GENERATED_MEDIA[name.rsplit(".", 1)[1].lower()],
+                            size=size if isinstance(size, int) and size >= 0 else path.stat().st_size,
+                            path=str(path),
+                        ))
+                except IntegrityError:
+                    # 并发写同一张图：另一个会话先登记了，已有记录就够用
+                    logger.info("附件记录已被并发写入，复用原记录：%s", digest)
+            except Exception:  # noqa: BLE001 - 登记失败不能让展示跟着失败
+                logger.exception("登记会话生成的附件失败：%r", item)
 
     def _eval_args(
         self, db, instance, token, specs: dict, function: str = ""
