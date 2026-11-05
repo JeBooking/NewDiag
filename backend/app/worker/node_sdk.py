@@ -5,12 +5,15 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
 PROTOCOL = "investigation/v1"
+# 与 services/storage.py 的 _HASH_RE 保持一致；worker 只依赖标准库，不能跨包导入。
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class Node(ABC):
@@ -168,8 +171,8 @@ def presentation(value) -> dict:
     if not isinstance(value, dict) or not isinstance(value.get("blocks"), list):
         raise ValueError("present 必须返回 {blocks: [...]} 展示描述")
     for block in value["blocks"]:
-        if not isinstance(block, dict) or block.get("type") not in ("text", "metrics", "table", "line"):
-            raise ValueError("展示块仅支持 text、metrics、table、line")
+        if not isinstance(block, dict) or block.get("type") not in ("text", "metrics", "table", "line", "image"):
+            raise ValueError("展示块仅支持 text、metrics、table、line、image")
         kind = block["type"]
         if kind == "text" and not isinstance(block.get("text"), str):
             raise ValueError("text 展示块需要 text 字符串")
@@ -191,6 +194,16 @@ def presentation(value) -> dict:
             or any(not isinstance(x, (int, float)) or isinstance(x, bool) for x in block["values"])
         ):
             raise ValueError("line 展示块需要非空数字数组 values")
+        if kind == "image":
+            src = block.get("src")
+            if not isinstance(src, str) or not _DIGEST_RE.fullmatch(src):
+                raise ValueError(
+                    "image 展示块的 src 必须是附件摘要：64 位小写十六进制 sha256 字符串；"
+                    "不接受文件路径或 URL，请先上传图片再填返回的摘要"
+                )
+            for field in ("alt", "caption"):
+                if field in block and not isinstance(block[field], str):
+                    raise ValueError(f"image 展示块的 {field} 必须是字符串（可省略）")
     return json_value(value)
 
 
