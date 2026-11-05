@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+    { path: '/figure', name: 'figure-viewer', component: () => import('@/views/FigureViewer.vue') },
     { path: '/', name: 'flows', component: () => import('@/views/FlowList.vue') },
     {
       path: '/flows/:id/edit',

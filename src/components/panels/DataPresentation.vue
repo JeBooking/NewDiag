@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, reactive } from 'vue'
+import { ElMessage } from 'element-plus'
 import { fileUrl } from '@/services/files'
+import { imageFigureUrl, linePoints as points, openFigure } from '@/services/figures'
 
 const props = defineProps<{ value?: unknown }>()
 
@@ -38,13 +40,15 @@ const blocks = computed<Block[]>(() => {
     : []
 })
 
-function points(values: number[] = []): string {
-  const min = values.reduce((value, item) => Math.min(value, item), Infinity)
-  const max = values.reduce((value, item) => Math.max(value, item), -Infinity)
-  return values.map((value, index) =>
-    [10 + index * 380 / Math.max(values.length - 1, 1),
-      110 - (value - min) * 100 / (max - min || 1)].join(','),
-  ).join(' ')
+function enlarge(block: Block): void {
+  try {
+    if (block.type === 'line') openFigure({ type: 'line', values: block.values ?? [],
+      title: block.title, unit: block.unit })
+    else if (block.src && !imageBroken(block.src)) openFigure({ type: 'image', src: block.src,
+      title: block.title, alt: block.alt, caption: block.caption })
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '图形窗口打开失败，请重试')
+  }
 }
 
 function text(value: unknown): string {
@@ -77,23 +81,31 @@ function text(value: unknown): string {
         </table>
       </div>
       <template v-else-if="block.type === 'line'">
-        <svg viewBox="0 0 400 120" role="img" :aria-label="block.title || '数据曲线'">
-          <polyline
-            :points="points(block.values)" fill="none" stroke="currentColor" stroke-width="2"
-          />
-          <circle v-if="block.values?.length === 1" cx="10" cy="110" r="3" fill="currentColor" />
-        </svg>
+        <button type="button" class="figure-trigger" :aria-label="`${block.title || '数据曲线'}，在独立窗口放大查看`"
+          @click="enlarge(block)">
+          <svg viewBox="0 0 400 120" role="img" :aria-label="block.title || '数据曲线'">
+            <polyline
+              :points="points(block.values)" fill="none" stroke="currentColor" stroke-width="2"
+            />
+            <circle v-if="block.values?.length === 1" cx="10" cy="110" r="3" fill="currentColor" />
+          </svg>
+          <span class="enlarge-hint">点击在独立窗口放大查看</span>
+        </button>
         <details><summary>查看曲线数值 {{ block.unit }}</summary>{{ block.values?.join('，') }}</details>
       </template>
       <figure v-else-if="block.type === 'image'" class="image-block">
-        <img
-          v-if="!imageBroken(block.src)"
-          :src="fileUrl(block.src ?? '', true)"
-          :alt="block.alt || '数据图片'"
-          loading="lazy"
-          class="image"
-          @error="markBroken(block.src)"
-        />
+        <a v-if="!imageBroken(block.src)" :href="imageFigureUrl(block.src ?? '')" target="_blank"
+          rel="noopener" class="figure-trigger"
+          :aria-label="`${block.alt || block.title || '数据图片'}，在独立窗口放大查看`" @click.prevent="enlarge(block)">
+          <img
+            :src="fileUrl(block.src ?? '', true)"
+            :alt="block.alt || '数据图片'"
+            loading="lazy"
+            class="image"
+            @error="markBroken(block.src)"
+          />
+          <span class="enlarge-hint">点击在独立窗口放大查看</span>
+        </a>
         <p v-else class="image-missing">图片不可用{{ block.src ? `（${block.src.slice(0, 8)}）` : '' }}</p>
         <figcaption v-if="block.caption">{{ block.caption }}</figcaption>
       </figure>
@@ -127,5 +139,10 @@ figcaption {
   overflow-wrap: anywhere;
 }
 .image-missing { font-size: 12px; color: var(--el-text-color-secondary); }
+.figure-trigger { display: block; width: 100%; padding: 0; border: 0; background: transparent;
+  color: inherit; text-align: left; text-decoration: none; cursor: zoom-in; font: inherit; border-radius: 6px; }
+.figure-trigger:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 4px; }
+.figure-trigger:hover .enlarge-hint { color: var(--el-color-primary); }
+.enlarge-hint { display: block; padding: 6px 0; font-size: 12px; color: var(--el-text-color-secondary); }
 details { font-size: 12px; overflow-wrap: anywhere; }
 </style>
