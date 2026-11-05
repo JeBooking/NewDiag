@@ -664,7 +664,9 @@ plan.call 仍包含原有 args 表达式。config 为构造参数，args 为本�
 - 人工恢复只执行尚未完成阶段；人工判断不会重复采集、解析。非法数据或调用失败保留原待办，允许修正后提交。
 - 旧待办类型和提交格式继续有效。人工采集的 file 字段由平台验证哈希并解析存储路径，不接受客户端指定本地路径。
 
-request.presentation 使用 `{blocks:[...]}`，块类型支持 text、metrics、table、line；详见接入手册。
+request.presentation 使用 `{blocks:[...]}`，块类型支持 text、metrics、table、line、image；详见接入手册。
+image 块的 `src` 只接受 64 位小写十六进制摘要（平台附件的内容哈希），不接受文件路径或 http(s) 地址；
+`alt`／`caption` 出现时必须是字符串。摘要经既有附件接口取图，运行记录里只保存摘要本身。
 人工判断前和最终运行记录均渲染展示描述，不执行外部 HTML／JavaScript，不嵌入桌面窗口。
 
 自动阶段可在适配器内部传递原有对象；持久化原始数据与解析结果必须可 JSON 表达，复杂对象通过
