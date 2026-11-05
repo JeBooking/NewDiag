@@ -417,10 +417,44 @@ return {
 }
 ```
 
-将此块放入 `presentation.blocks`。`src` 必须是 64 位小写十六进制 SHA-256 摘要，不能带 `sha256:` 前缀；
+将此块放入 `presentation.blocks`。`src` 填附件摘要时必须是 64 位小写十六进制 SHA-256 摘要，不能带 `sha256:` 前缀；
 `alt`、`caption` 可省略，出现时必须是字符串。不接受本地路径、外部 URL 或 base64 内联图片。
 建议上传 PNG、JPEG、WebP 等平台支持在线预览的图片格式；SVG 不在内联白名单中。
 业务进程只校验块格式，图片文件缺失或加载失败时，页面显示「图片不可用」。
+
+#### 函数自己生成图片（matplotlib / PIL）
+
+现场画出来的图不用先上传，直接把 `bytes` 放进 `src`，平台负责落盘并换成摘要：
+
+```python
+import io
+import matplotlib
+matplotlib.use('Agg')          # 无窗口环境必须用 Agg，交互后端会起 GUI
+import matplotlib.pyplot as plt
+
+
+def present(parsed):
+    figure, axes = plt.subplots(figsize=(6, 3))
+    axes.plot(parsed['samples'])
+    buffer = io.BytesIO()
+    figure.savefig(buffer, format='png')
+    plt.close(figure)          # 不关会一路累积，长流程里很快吃满内存
+    return {'blocks': [
+        {'type': 'image', 'src': buffer.getvalue(), 'caption': '电压波形'},
+    ]}
+```
+
+诊断类方法里同样适用：把这个块放进 `presentation['blocks']` 即可。
+
+- `src` 只能是 `bytes`；`bytearray`、`memoryview` 会直接报错，先 `bytes(...)` 转一下。
+- 类型**按文件头判定**，不看扩展名：只支持 PNG / JPEG / WebP / GIF。**SVG 一律拒绝**——它在 `<img src>` 里能执行脚本，改名成 `.png` 也过不了文件头检查；识别不出的一律拒绝。
+- 单张上限 **10 MB**，超出直接报错；画图时控制分辨率和 DPI，别把整屏截图原样塞进来。
+- 同一份字节重复生成只落一份（内容寻址去重），运行记录里只保存那个 64 字符摘要。
+- 哈希可以是平台既有附件的摘要，也可以是这里现场生成的；两者在展示上没有区别。
+
+注意：`bytes` 的转换挂在返回值序列化的必经之路上，所以**除下面提到的旧式普通函数外，任何阶段的返回值里出现 `bytes` 都会被换成摘要字符串**，不只 `image.src`。例如 `parse` 返回 `{'chart': png}`，下游拿到的是 `{'chart': '<64位摘要>'}`。这是有意为之，但也意味着别指望把二进制透传给下游函数。
+
+已知限制：旧式普通函数（没有 `protocol`、也没有四阶段 `pipeline`，走 `_run_call` 那条路）拿不到文件目录，在里面直接调 `save_file` 会报「fileRoot 缺失」；需要生成图片的节点请用四阶段配置或诊断类方法。
 
 ## 7. 在画布中配置自己的流程
 
