@@ -37,6 +37,10 @@ class Flow(Base):
     editing_since: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[str] = mapped_column(String(32), nullable=False, default=now_iso)
     updated_at: Mapped[str] = mapped_column(String(32), nullable=False, default=now_iso)
+    # 回收站：非空表示已软删（列表 / 详情 / 启动一律排除），老库由 db._migrate 补列
+    deleted_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 彻底删除留墓碑：行不能真删，否则 revisions / releases / instances 会被级联带走
+    purged_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class Revision(Base):

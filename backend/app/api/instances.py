@@ -189,7 +189,8 @@ def start_instance(
     flow_id: str, payload: InstanceCreate, db: Session = Depends(get_db)
 ) -> InstanceSummary:
     flow = db.get(Flow, flow_id)
-    if flow is None:
+    # 回收站里的流程不能再起新实例；历史实例的详情 / 列表回填仍要能看到它，那两处不加过滤
+    if flow is None or flow.deleted_at is not None:
         raise HTTPException(status_code=404, detail="流程不存在")
 
     if payload.release_id:

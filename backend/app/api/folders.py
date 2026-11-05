@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.db import get_db, new_id, now_iso
@@ -54,7 +54,7 @@ def _flow_counts(db: Session) -> dict[str, int]:
     """目录 → 流程数（含子目录合计）：列表页只显示一层树时，父目录的数字才说得通。"""
     rows = db.execute(
         select(Flow.folder_id, func.count(Flow.id))
-        .where(Flow.folder_id.is_not(None))
+        .where(Flow.folder_id.is_not(None), Flow.deleted_at.is_(None))
         .group_by(Flow.folder_id)
     ).all()
     totals = {str(folder_id): int(count) for folder_id, count in rows}
@@ -142,7 +142,15 @@ def patch_folder(folder_id: str, payload: FolderPatch, db: Session = Depends(get
     folder.parent_id = parent_id
     db.commit()
     db.refresh(folder)
-    return make_folder(folder, db.scalar(select(func.count(Flow.id)).where(Flow.folder_id == folder.id)) or 0)
+    return make_folder(
+        folder,
+        db.scalar(
+            select(func.count(Flow.id)).where(
+                Flow.folder_id == folder.id, Flow.deleted_at.is_(None)
+            )
+        )
+        or 0,
+    )
 
 
 @router.delete("/folders/{folder_id}", status_code=204)
@@ -151,9 +159,13 @@ def delete_folder(folder_id: str, db: Session = Depends(get_db)) -> None:
     # 只有空目录能删：级联删流程等于删掉别人的工作，不该由一次点击决定
     if db.scalar(select(func.count(Folder.id)).where(Folder.parent_id == folder.id)):
         raise HTTPException(status_code=409, detail="目录下还有子目录，先移走或删除子目录")
-    if db.scalar(select(func.count(Flow.id)).where(Flow.folder_id == folder.id)):
+    if db.scalar(
+        select(func.count(Flow.id)).where(Flow.folder_id == folder.id, Flow.deleted_at.is_(None))
+    ):
         raise HTTPException(status_code=409, detail="目录下还有流程，先移走再删除")
 
+    # 回收站里的流程不挡删除，但它们的 folder_id 还指着这个目录，必须先清空，否则留下悬空引用
+    db.execute(update(Flow).where(Flow.folder_id == folder.id).values(folder_id=None))
     db.delete(folder)
     db.commit()
     return None

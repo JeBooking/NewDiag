@@ -88,7 +88,11 @@ def _migrate() -> None:
     """
     expected = {
         "tokens": {"visited_at": "VARCHAR(32)"},
-        "flows": {"folder_id": "VARCHAR(32)"},
+        "flows": {
+            "folder_id": "VARCHAR(32)",
+            "deleted_at": "VARCHAR(32)",
+            "purged_at": "VARCHAR(32)",
+        },
         "releases": {"inputs_json": "TEXT NOT NULL DEFAULT '[]'"},
     }
     with engine.begin() as conn:
