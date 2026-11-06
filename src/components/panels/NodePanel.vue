@@ -7,6 +7,7 @@ import type {
   FlowMode,
   InvestigationFields,
   FunctionPipeline,
+  LibraryRecipe,
   ParamType,
   StartParam,
 } from '@/domain/types'
@@ -18,6 +19,7 @@ import BindingEditor from './BindingEditor.vue'
 import FunctionPipelineEditor from '@/components/panels/FunctionPipelineEditor.vue'
 import ParamValueInput from './ParamValueInput.vue'
 import DiagnosisMethodEditor from '@/components/panels/DiagnosisMethodEditor.vue'
+import LibraryRecipeEditor from '@/components/panels/LibraryRecipeEditor.vue'
 
 const props = defineProps<{
   node: DocNode
@@ -46,22 +48,43 @@ const outputs = computed(() => props.node.outputs ?? [])
 const outputDraft = ref('')
 
 const isStart = computed(() => props.node.kind === 'start')
-const allowsCustomInputs = computed(() => !!props.doc?.diagnosis || props.doc?.nodes.some((node) => node.pipeline))
+const allowsCustomInputs = computed(
+  () =>
+    !!props.doc?.diagnosis ||
+    props.doc?.nodes.some((node) => node.pipeline || node.recipe),
+)
 const inputName = ref('')
 const inputType = ref<ParamType>('text')
 const inputError = ref('')
-const connectionMode = computed(() => props.node.pipeline ? 'functions' : 'legacy')
+const connectionMode = computed(() =>
+  props.node.recipe ? 'recipe' : props.node.pipeline ? 'functions' : 'legacy',
+)
 const pipelineValue = computed<FunctionPipeline>(() => ({
   ...props.node.pipeline, manualFields: props.node.pipeline?.manualFields ?? [],
 }))
 
+const EMPTY_RECIPE: LibraryRecipe = {
+  protocol: 'library/v1',
+  project: '',
+  steps: [{ call: '', show: 'auto' }],
+}
+
 function changeConnectionMode(value: unknown): void {
-  if (value === 'functions') emit('update', { pipeline: { manualFields: [] }, binding: undefined })
-  else emit('update', { pipeline: undefined })
+  if (value === 'functions') {
+    emit('update', { pipeline: { manualFields: [] }, binding: undefined, recipe: undefined })
+  } else if (value === 'recipe') {
+    emit('update', { recipe: { ...EMPTY_RECIPE }, binding: undefined, pipeline: undefined })
+  } else {
+    emit('update', { pipeline: undefined, recipe: undefined })
+  }
 }
 
 function patchPipeline(value: FunctionPipeline): void {
-  emit('update', { pipeline: value, binding: undefined })
+  emit('update', { pipeline: value, binding: undefined, recipe: undefined })
+}
+
+function patchRecipe(value: LibraryRecipe): void {
+  emit('update', { recipe: value, binding: undefined, pipeline: undefined })
 }
 
 /** 只有同组内多于一条出边时才需要排序；不同分支之间互不影响 */
@@ -71,9 +94,13 @@ const orderGroups = computed(() =>
 
 const codeHint = computed(() => {
   if (props.doc?.diagnosis) return '调用本次诊断对象的方法，共享初始化数据与按需缓存'
+  if (props.node.kind === 'capability') {
+    return '按配方调用现成库，执行完沿默认出线继续；本身不产生是/否结论'
+  }
   // 能不能绑代码由 KIND_META 声明，别再按类型名判断，否则新增可编程类型时这里会拦错
   if (!KIND_META[props.node.kind].codeCapable) return '该类型由人工完成，不执行代码'
   if (props.node.kind === 'dataPreparation') return '获取、解析一次，供下游排查共享数据'
+  if (props.node.recipe) return '按配方调用现成库；判定指向 yes/no 字段时自动判断，留空转人工'
   if (props.node.pipeline?.dataSource) return '复用数据准备结果，只执行展示与判断'
   if (props.node.pipeline) return '平台依次调用四个阶段，无需编写适配器类'
   if (props.node.binding?.protocol === 'investigation/v1') return '四阶段排查：缺省采集或判断由人工完成'
@@ -596,12 +623,13 @@ function addGlobalInput(): void {
         />
       </template>
 
-      <div class="section-title">参数绑定</div>
+      <div class="section-title">执行方式</div>
       <div class="section-hint">{{ codeHint }}</div>
       <el-select
         v-if="node.kind === 'investigation' && !doc?.diagnosis" :model-value="connectionMode" :disabled="readonly"
         aria-label="排查接入方式" @change="changeConnectionMode"
       >
+        <el-option label="能力配方（调用现成库）" value="recipe" />
         <el-option label="分别选择四阶段函数" value="functions" />
         <el-option label="原有函数或适配器类" value="legacy" />
       </el-select>
@@ -609,6 +637,17 @@ function addGlobalInput(): void {
         v-if="node.kind === 'investigation' && doc?.diagnosis"
         :diagnosis="doc.diagnosis" :value="node.method" :readonly="readonly"
         @update="emit('update', { method: $event, pipeline: undefined, binding: undefined })"
+      />
+      <LibraryRecipeEditor
+        v-else-if="node.recipe || node.kind === 'capability'"
+        :key="node.id"
+        :value="node.recipe ?? EMPTY_RECIPE"
+        :readonly="readonly"
+        :flow-id="flowId"
+        :doc="doc"
+        :node-id="node.id"
+        :allow-decision="node.kind === 'investigation'"
+        @update="patchRecipe"
       />
       <FunctionPipelineEditor
         v-else-if="node.kind === 'dataPreparation'

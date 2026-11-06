@@ -1,0 +1,379 @@
+{
+  "format": 1,
+  "name": "机组振动诊断（三库装配）",
+  "mode": "parallel",
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始",
+      "detail": "",
+      "inputs": [
+        {
+          "name": "device",
+          "scope": "global",
+          "type": "text",
+          "default": "D001"
+        },
+        {
+          "name": "activity",
+          "scope": "global",
+          "type": "text",
+          "default": "满载"
+        },
+        {
+          "name": "start_time",
+          "scope": "global",
+          "type": "text",
+          "default": "2026-11-05 08:00"
+        },
+        {
+          "name": "end_time",
+          "scope": "global",
+          "type": "text",
+          "default": "2026-11-05 10:00"
+        },
+        {
+          "name": "metric",
+          "scope": "global",
+          "type": "text",
+          "default": "vibration"
+        },
+        {
+          "name": "peak_limit",
+          "scope": "global",
+          "type": "number",
+          "default": 12
+        }
+      ],
+      "position": {
+        "x": 0,
+        "y": 200
+      }
+    },
+    {
+      "id": "n1",
+      "kind": "capability",
+      "title": "取数",
+      "detail": "调用数据服务按设备与工况取一段数据，落成一个 JSON 文件，后续两个库都读它。",
+      "recipe": {
+        "protocol": "library/v1",
+        "project": "取数服务",
+        "steps": [
+          {
+            "call": "fetch",
+            "args": {
+              "device_id": {
+                "$snapshot": "device"
+              },
+              "activity": {
+                "$snapshot": "activity"
+              },
+              "start_time": {
+                "$snapshot": "start_time"
+              },
+              "end_time": {
+                "$snapshot": "end_time"
+              },
+              "filename": {
+                "$file": "data.json"
+              }
+            },
+            "as": "data_file",
+            "show": "text",
+            "label": "本次数据文件"
+          }
+        ],
+        "out": {
+          "data_file": {
+            "from": "data_file"
+          }
+        }
+      },
+      "position": {
+        "x": 240,
+        "y": 200
+      }
+    },
+    {
+      "id": "n2",
+      "kind": "capability",
+      "title": "装配并绘图",
+      "detail": "读取同一份数据，装配成数据集，取指定指标画图；图表由平台按返回值落成附件。",
+      "recipe": {
+        "protocol": "library/v1",
+        "project": "绘图引擎",
+        "steps": [
+          {
+            "call": "Dataset.load",
+            "args": {
+              "path": {
+                "$run": "n1",
+                "path": "output.data_file"
+              }
+            },
+            "as": "dataset",
+            "show": "none"
+          },
+          {
+            "on": "dataset",
+            "call": "plot_series",
+            "args": {
+              "device": {
+                "$snapshot": "device"
+              },
+              "activity": {
+                "$snapshot": "activity"
+              },
+              "metric": {
+                "$snapshot": "metric"
+              }
+            },
+            "as": "series",
+            "show": "line",
+            "label": "指标曲线"
+          },
+          {
+            "call": "plot_window.save_plot",
+            "args": {
+              "data": {
+                "$var": "series"
+              },
+              "path": {
+                "$file": "curve.png"
+              },
+              "title": {
+                "$var": "series",
+                "path": "label"
+              },
+              "xlabel": "采样点",
+              "ylabel": {
+                "$var": "series",
+                "path": "unit"
+              }
+            },
+            "as": "image",
+            "show": "image",
+            "label": "matplotlib 出图"
+          }
+        ],
+        "out": {
+          "image": {
+            "from": "image"
+          },
+          "series_label": {
+            "from": "series",
+            "path": "label"
+          },
+          "points": {
+            "from": "series",
+            "path": "y"
+          }
+        }
+      },
+      "position": {
+        "x": 480,
+        "y": 200
+      }
+    },
+    {
+      "id": "n3",
+      "kind": "investigation",
+      "title": "振动是否超限",
+      "detail": "用判断工程的规则对同一份数据做峰值、均值、趋势三条判断，结论是 yes/no。",
+      "fields": {
+        "observation": "振动速度有效值",
+        "acquisition": "读取取数节点落盘的数据文件",
+        "assessment": "任一规则触发即判为超限；阈值可在开始节点修改"
+      },
+      "recipe": {
+        "protocol": "library/v1",
+        "project": "判断引擎",
+        "steps": [
+          {
+            "call": "JudgeEngine",
+            "args": {
+              "thresholds": {
+                "peak": {
+                  "$snapshot": "peak_limit",
+                  "cast": "number"
+                },
+                "mean": 40,
+                "trend": 0.05
+              }
+            },
+            "as": "engine",
+            "show": "none"
+          },
+          {
+            "on": "engine",
+            "call": "judge_file",
+            "args": {
+              "path": {
+                "$run": "n1",
+                "path": "output.data_file"
+              },
+              "metric": {
+                "$snapshot": "metric"
+              }
+            },
+            "as": "verdicts",
+            "show": "table",
+            "label": "规则判定明细"
+          },
+          {
+            "on": "engine",
+            "call": "summary",
+            "args": {
+              "verdicts": {
+                "$var": "verdicts"
+              }
+            },
+            "as": "summary",
+            "show": "none"
+          }
+        ],
+        "out": {
+          "overall": {
+            "from": "summary",
+            "path": "overall"
+          },
+          "reasons": {
+            "from": "summary",
+            "path": "reasons"
+          }
+        },
+        "result": {
+          "from": "summary",
+          "path": "overall"
+        },
+        "reason": {
+          "template": "判定 {summary.overall}；触发依据：{summary.reasons.0}"
+        },
+        "evidence": "n2"
+      },
+      "position": {
+        "x": 720,
+        "y": 200
+      }
+    },
+    {
+      "id": "c1",
+      "kind": "conclusion",
+      "title": "振动超限",
+      "detail": "至少一条规则判定异常，按轴承劣化方向处置。",
+      "position": {
+        "x": 960,
+        "y": 100
+      }
+    },
+    {
+      "id": "r1",
+      "kind": "remediation",
+      "title": "停机检查轴承",
+      "detail": "停机后检查轴承间隙与润滑状态，记录实测值；处理后重新取数复测。",
+      "position": {
+        "x": 1200,
+        "y": 100
+      }
+    },
+    {
+      "id": "p1",
+      "kind": "problemSolved",
+      "title": "问题解决",
+      "detail": "复测通过，本次诊断结束。",
+      "position": {
+        "x": 1440,
+        "y": 100
+      }
+    },
+    {
+      "id": "c2",
+      "kind": "conclusion",
+      "title": "指标在阈值内",
+      "detail": "三条规则均未触发，本次不构成振动故障。",
+      "position": {
+        "x": 960,
+        "y": 320
+      }
+    },
+    {
+      "id": "r2",
+      "kind": "remediation",
+      "title": "记录并归档",
+      "detail": "把曲线和判定依据归档到设备台账，安排下次例行监测。",
+      "position": {
+        "x": 1200,
+        "y": 320
+      }
+    },
+    {
+      "id": "p2",
+      "kind": "problemSolved",
+      "title": "问题解决",
+      "detail": "无异常，本次诊断结束。",
+      "position": {
+        "x": 1440,
+        "y": 320
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "start",
+      "to": "n1",
+      "order": 1
+    },
+    {
+      "id": "e2",
+      "from": "n1",
+      "to": "n2",
+      "order": 1
+    },
+    {
+      "id": "e3",
+      "from": "n2",
+      "to": "n3",
+      "order": 1
+    },
+    {
+      "id": "e4",
+      "from": "n3",
+      "to": "c1",
+      "branch": "yes",
+      "order": 1
+    },
+    {
+      "id": "e5",
+      "from": "n3",
+      "to": "c2",
+      "branch": "no",
+      "order": 1
+    },
+    {
+      "id": "e6",
+      "from": "c1",
+      "to": "r1",
+      "order": 1
+    },
+    {
+      "id": "e7",
+      "from": "r1",
+      "to": "p1",
+      "order": 1
+    },
+    {
+      "id": "e8",
+      "from": "c2",
+      "to": "r2",
+      "order": 1
+    },
+    {
+      "id": "e9",
+      "from": "r2",
+      "to": "p2",
+      "order": 1
+    }
+  ]
+}

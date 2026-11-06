@@ -23,13 +23,14 @@ import traceback
 from contextlib import redirect_stdout
 
 if __package__:
-    from . import artifacts, node_sdk, diagnosis_sdk
+    from . import artifacts, node_sdk, diagnosis_sdk, library_sdk
     sys.modules.setdefault("node_sdk", node_sdk)
     sys.modules.setdefault("diagnosis_sdk", diagnosis_sdk)
 else:
     import artifacts
     import node_sdk
     import diagnosis_sdk
+    import library_sdk
 
 execute_adapter = node_sdk.execute_adapter
 is_adapter = node_sdk.is_adapter
@@ -79,6 +80,8 @@ def main() -> int:
                     if not is_adapter(cls):
                         raise TypeError("目标不是 InvestigationNode 适配器类")
                     value = json_value(execute_adapter(cls, args))
+                elif function_name == "__newdiag_library__":
+                    value = library_sdk.execute(target, args)
                 elif function_name == "__newdiag_function__":
                     if __package__:
                         from .probe import _describe

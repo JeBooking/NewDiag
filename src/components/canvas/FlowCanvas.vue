@@ -551,7 +551,9 @@ function defaultTitle(kind: NodeKind) {
 function addNode(kind: NodeKind, position: { x: number; y: number }) {
   if (props.readonly) return
   const node: DocNode = { id: nextId('n'), kind, title: defaultTitle(kind), detail: '', position }
-  if (kind === 'dataPreparation' || (kind === 'investigation' && !props.doc.diagnosis)) {
+  if (kind === 'capability') {
+    node.recipe = { protocol: 'library/v1', project: '', steps: [{ call: '', show: 'auto' }] }
+  } else if (kind === 'dataPreparation' || (kind === 'investigation' && !props.doc.diagnosis)) {
     node.pipeline = { manualFields: [] }
   }
   nodeMeta.set(node.id, node)

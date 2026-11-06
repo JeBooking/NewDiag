@@ -14,6 +14,11 @@
 其余资源首次访问时加载并缓存，人工等待后恢复已有数据。
 [完整实例示例](examples/diagnosis-instance/README.md)包含三份可导入流程；旧函数、四阶段及数据准备节点保持兼容。
 
+**已经有现成的库，不想写新代码？** 用 [能力配方](docs/library-recipe.md)：画布上放「能力步骤」节点，
+按顺序点名调用库函数，节点内对象直接传、节点之间只传 JSON，返回值自动变成图/表/曲线。
+[三库装配示例](examples/library-flow/README.md)把 MockDataService、PlotEngine、JudgeEngine
+三个工程零改动接成一条振动诊断流程。
+
 ## 快速开始
 
 ### 用源码跑
@@ -70,7 +75,7 @@ backend/.venv/Scripts/python scripts/build_bundle.py
 
 ### 3. 设计与发布
 
-画布上拖节点、连线。节点类型：开始、排查、排查动作、结论、处置措施、问题解决、上升。
+画布上拖节点、连线。节点类型：开始、数据准备、能力步骤、排查、排查动作、结论、处置措施、问题解决、上升。
 
 - 开始节点是唯一入口，不能删除；它声明的启动参数由下游绑定函数的签名派生
 - 排查节点绑定了 Python 函数就自动判断，没绑定就是人工判断
@@ -167,7 +172,7 @@ pnpm dev:lan          # 访问 http://<那台机器的内网IP>:5173
 ```bash
 pnpm type-check                                  # 前端类型
 pnpm build                                       # 类型 + 打包
-backend/.venv/Scripts/python -m pytest backend/tests -q   # 后端 96 个用例
+backend/.venv/Scripts/python -m pytest backend/tests -q   # 后端 149 个用例
 ```
 
 三套端到端脚本（需要后端已启动，且先跑过 `demo_seed.py` 登记工程）：
@@ -176,6 +181,7 @@ backend/.venv/Scripts/python -m pytest backend/tests -q   # 后端 96 个用例
 backend/.venv/Scripts/python scripts/demo_seed.py       # 直线：排查 → 结论 → 处置 → 问题解决
 backend/.venv/Scripts/python scripts/demo_branching.py  # 分支 + 回退 + 上升
 backend/.venv/Scripts/python scripts/demo_serial.py     # 串行队列 + 成功后暂停 + 继续
+backend/.venv/Scripts/python scripts/demo_library.py    # 能力配方：三个现成库零改动装配
 ```
 
 示例业务工程在 `examples/cooling`，登记时路径填它的**绝对路径**，模块填 `cooling.diagnosis`。

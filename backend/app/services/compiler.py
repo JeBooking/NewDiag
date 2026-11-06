@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import json
+import re
 
 from . import rules
 from app.worker.function_pipeline import STAGES, SOURCES, default_argument
@@ -17,6 +18,13 @@ LEVEL_ERROR = "error"
 LEVEL_WARNING = "warning"
 
 SNAPSHOT_SOURCE = "$snapshot"
+
+LIBRARY_PROTOCOL = "library/v1"
+LIBRARY_SHOWS = ("auto", "text", "table", "line", "image", "none")
+LIBRARY_CASTS = ("text", "number", "boolean", "json")
+LIBRARY_EXPRESSIONS = ("$snapshot", "$run", "$var", "$prev", "$file", "$value")
+_LIBRARY_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_LIBRARY_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 # 探针给出注解名（float/int/str/bool），平台类型为 number/text/boolean/datetime，两套都认
 SCALAR_PARAM_TYPES = frozenset(
@@ -75,6 +83,8 @@ def validate_doc(
         kind = node.get("kind")
         if "pipeline" in node and kind not in ("investigation", "dataPreparation"):
             issues.append(_issue(LEVEL_ERROR, "只有排查或数据准备节点支持阶段函数", node_id=nid))
+        if node.get("recipe") and kind not in ("investigation", "capability"):
+            issues.append(_issue(LEVEL_ERROR, "只有排查或能力步骤节点支持能力配方", node_id=nid))
         if kind not in rules.V1_KINDS:
             issues.append(_issue(LEVEL_ERROR, f"v1 不支持的节点类型：{kind}", node_id=nid))
 
@@ -115,6 +125,9 @@ class StartNode(NodeDefinition):
 class InvestigationNode(NodeDefinition):
     def compile(self, node, nodes, edges, start, functions):
         step = super().compile(node, nodes, edges, start, functions)
+        if node.get("recipe"):
+            step["recipe"], _ = _compile_recipe(node, nodes, edges, start, functions)
+            return step
         if node.get("method"):
             return step
         if "pipeline" in node:
@@ -139,6 +152,15 @@ class DataPreparationNode(NodeDefinition):
     def compile(self, node, nodes, edges, start, functions):
         step = super().compile(node, nodes, edges, start, functions)
         step["pipeline"], _ = _compile_function_pipeline(node, nodes, edges, start, functions)
+        return step
+
+
+class CapabilityNode(NodeDefinition):
+    """能力步骤：执行配方后沿默认出线继续，本身不产生是/否结论。"""
+
+    def compile(self, node, nodes, edges, start, functions):
+        step = super().compile(node, nodes, edges, start, functions)
+        step["recipe"], _ = _compile_recipe(node, nodes, edges, start, functions)
         return step
 
 
@@ -181,6 +203,7 @@ class EscalationNode(TerminalNode):
 NODE_DEFINITIONS = {
     "start": StartNode(), "investigation": InvestigationNode(),
     "dataPreparation": DataPreparationNode(),
+    "capability": CapabilityNode(),
     "investigationAction": InvestigationActionNode(), "remediation": RemediationNode(),
     "jump": JumpNode(), "conclusion": ConclusionNode(),
     "problemSolved": ProblemSolvedNode(), "escalation": EscalationNode(),
@@ -236,6 +259,10 @@ def compile_doc(
         calls.extend(
             f"{pipeline[stage]['project']}.{pipeline[stage]['function']}"
             for stage in STAGES if pipeline.get(stage)
+        )
+        recipe = step.get("recipe") or {}
+        calls.extend(
+            f"{recipe.get('project')}.{item.get('call')}" for item in recipe.get("steps") or []
         )
     logger.info(
         "编译 flow=%s release=%s：%d 个节点，%d 个调用，%d 个人工节点，函数 %s",
@@ -321,6 +348,7 @@ def _check_node_fields(nodes_by_id: dict[str, dict], issues: list[dict]) -> None
             if not _text(node.get(key)):
                 issues.append(_issue(LEVEL_ERROR, f"{_kind_label(kind)}缺少{label}", node_id=nid))
 
+        _check_recipe_fields(nid, node, issues)
         if kind == "investigation":
             fields = node.get("fields")
             fields = fields if isinstance(fields, dict) else {}
@@ -338,6 +366,18 @@ def _check_node_fields(nodes_by_id: dict[str, dict], issues: list[dict]) -> None
                         issues.append(_issue(LEVEL_ERROR, "排查节点绑定的函数为空", node_id=nid))
                     if binding.get("protocol") not in (None, "investigation/v1"):
                         issues.append(_issue(LEVEL_ERROR, "不支持的节点适配协议", node_id=nid))
+
+
+def _check_recipe_fields(nid: str, node: dict, issues: list[dict]) -> None:
+    """能力配方与其它接入方式互斥；同一个节点只能有一种执行描述。"""
+    if not node.get("recipe"):
+        return
+    if node.get("binding"):
+        issues.append(_issue(LEVEL_ERROR, "能力配方与函数绑定不能同时配置", node_id=nid))
+    if node.get("pipeline"):
+        issues.append(_issue(LEVEL_ERROR, "能力配方与四阶段函数不能同时配置", node_id=nid))
+    if node.get("method"):
+        issues.append(_issue(LEVEL_ERROR, "能力配方与诊断类实例方法不能同时配置", node_id=nid))
 
 
 def _check_out_edges(
@@ -573,13 +613,23 @@ def _check_bindings(
     for nid, node in nodes_by_id.items():
         if node.get("method"):
             continue
-        if node.get("kind") not in ("investigation", "dataPreparation"):
+        if node.get("kind") == "capability" and not node.get("recipe"):
+            issues.append(_issue(LEVEL_ERROR, "能力步骤必须配置能力配方", node_id=nid))
+            continue
+        if node.get("kind") not in ("investigation", "dataPreparation", "capability"):
             continue
         if node.get("kind") == "dataPreparation" and "pipeline" not in node:
             issues.append(_issue(LEVEL_ERROR, "数据准备节点必须配置获取与解析阶段", node_id=nid))
             continue
         if "pipeline" in node:
             _, found = _compile_function_pipeline(node, nodes_by_id, edges, start, functions)
+            for issue in found:
+                if not strict_binding and issue["level"] == LEVEL_ERROR:
+                    issue = {**issue, "level": LEVEL_WARNING}
+                issues.append(issue)
+            continue
+        if node.get("recipe"):
+            _, found = _compile_recipe(node, nodes_by_id, edges, start, functions)
             for issue in found:
                 if not strict_binding and issue["level"] == LEVEL_ERROR:
                     issue = {**issue, "level": LEVEL_WARNING}
@@ -647,13 +697,259 @@ def _compile_diagnosis(doc, nodes, edges, start, functions):
                           "function": binding["function"] + "." + node["method"]}
         _, found = _resolve_args({**node, "binding": method_binding}, nodes, edges, start, functions)
         issues.extend(found)
-    if any(node.get("binding") or node.get("pipeline") or node.get("kind") == "dataPreparation"
+    if any(node.get("binding") or node.get("pipeline") or node.get("recipe")
+           or node.get("kind") == "dataPreparation"
            for node in nodes.values()):
         issues.append(_issue(LEVEL_ERROR, "诊断类流程的自动排查统一调用实例方法；旧接入方式请用于未配置诊断类的流程"))
     init_node = {"id": start.id, "binding": binding}
     args, found = _resolve_args(init_node, nodes, edges, start, functions)
     issues.extend(found)
     return {**binding, "args": args, "definition": meta}, issues
+
+
+def _compile_recipe(node, nodes, edges, start, functions):
+    """能力配方：一个节点内按顺序调用现成库，节点之间只传 JSON。
+
+    编译期只做能确定的事：工程/调用是否存在、参数名是否在签名里、引用的对象是否已经产生。
+    对象方法的参数不在发布期猜（对象来自运行期），由运行期按真实签名试绑并给出可读错误。
+    """
+    issues: list[dict] = []
+    node_id = str(node.get("id") or "")
+    recipe = node.get("recipe")
+    upstream = set(_upstream_ids(node_id, edges))
+    declared_inputs = start.global_names()
+
+    def error(message: str) -> None:
+        issues.append(_issue(LEVEL_ERROR, message, node_id=node_id))
+
+    def warning(message: str) -> None:
+        issues.append(_issue(LEVEL_WARNING, message, node_id=node_id))
+
+    if not isinstance(recipe, dict):
+        error("能力配方必须是对象")
+        return {}, issues
+    if recipe.get("protocol") not in (None, LIBRARY_PROTOCOL):
+        error(f"能力配方的协议必须是 {LIBRARY_PROTOCOL}")
+    project = _text(recipe.get("project"))
+    if not project:
+        error("能力配方必须选择工程")
+    steps = recipe.get("steps")
+    if not isinstance(steps, list) or not steps:
+        error("能力配方至少需要一个调用步骤")
+        return {}, issues
+
+    known: set[str] = set()
+    compiled_steps: list[dict] = []
+    for index, step in enumerate(steps):
+        where = f"第 {index + 1} 步"
+        if not isinstance(step, dict):
+            error(f"{where}格式不正确")
+            continue
+        call = _text(step.get("call"))
+        if not call:
+            error(f"{where}缺少调用名")
+            continue
+        on = _text(step.get("on"))
+        if on and on not in known:
+            error(f"{where}引用的对象 {on} 还不存在（只能引用前面步骤保存的对象）")
+        if not on:
+            _check_recipe_signature(project, call, step.get("args"), functions, issues, node_id)
+        args, found = _compile_recipe_args(
+            step.get("args"), known, upstream, declared_inputs, node_id, f"{where}的参数",
+        )
+        issues.extend(found)
+        show = step.get("show")
+        if show is not None and show not in LIBRARY_SHOWS:
+            error(f"{where}的展示方式只能是 {'/'.join(LIBRARY_SHOWS)}")
+        label = step.get("label")
+        if label is not None and not isinstance(label, str):
+            error(f"{where}的展示标题必须是字符串")
+        slot = step.get("as")
+        if slot is not None:
+            slot = _text(slot)
+            if not _LIBRARY_NAME.fullmatch(slot):
+                error(f"{where}的保存名 {slot!r} 不合法：需为英文字母、数字、下划线")
+            elif slot in known:
+                error(f"{where}的保存名 {slot} 与前面的步骤重复")
+            else:
+                known.add(slot)
+        entry = {"index": index + 1, "call": call, "args": args}
+        if on:
+            entry["on"] = on
+        if slot:
+            entry["as"] = slot
+        if show:
+            entry["show"] = show
+        if label:
+            entry["label"] = label
+        compiled_steps.append(entry)
+
+    compiled: dict = {"protocol": LIBRARY_PROTOCOL, "project": project, "steps": compiled_steps}
+
+    out = recipe.get("out")
+    if out is not None:
+        compiled["out"] = {}
+        if not isinstance(out, dict):
+            error("输出映射必须是对象")
+        else:
+            for name, source in out.items():
+                field = _text(name)
+                if not _LIBRARY_NAME.fullmatch(field):
+                    error(f"输出名 {name!r} 不合法：需为英文字母、数字、下划线")
+                    continue
+                if not isinstance(source, dict) or not source.get("from"):
+                    error(f"输出 {field} 必须写成 {{from: 步骤保存名, path?: 字段}}")
+                    continue
+                origin = _text(source.get("from"))
+                if origin not in known:
+                    error(f"输出 {field} 引用的对象 {origin} 不存在")
+                    continue
+                compiled["out"][field] = {"from": origin, "path": str(source.get("path") or "")}
+
+    result = recipe.get("result")
+    if result is not None:
+        if not isinstance(result, dict) or not result.get("from"):
+            error("判定来源必须写成 {from: 步骤保存名, path?: 字段}")
+        else:
+            origin = _text(result.get("from"))
+            if origin not in known:
+                error(f"判定来源引用的对象 {origin} 不存在")
+            else:
+                compiled["result"] = {"from": origin, "path": str(result.get("path") or "")}
+        if not _recipe_reason(recipe.get("reason")):
+            error("自动判定的节点必须填写依据（reason），说明凭什么判为是/否")
+
+    reason = recipe.get("reason")
+    if reason is not None:
+        if isinstance(reason, dict) and "from" in reason:
+            if _text(reason.get("from")) not in known:
+                error("依据来源引用的对象不存在")
+        elif isinstance(reason, str):
+            if not reason.strip():
+                warning("依据是空字符串")
+        elif isinstance(reason, dict) and isinstance(reason.get("template"), str):
+            pass
+        else:
+            error("依据必须是字符串、{template} 或 {from}")
+        compiled["reason"] = reason
+
+    evidence = recipe.get("evidence")
+    if evidence is not None:
+        source = _text(evidence)
+        if not source:
+            error("evidence 必须是上游节点 id")
+        elif source == node_id:
+            error("evidence 不能指向自己")
+        elif source not in upstream:
+            error(f"evidence 指向的节点 {source} 不存在或不在上游")
+        else:
+            compiled["evidence"] = source
+    return compiled, issues
+
+
+def _check_recipe_signature(project, call, args, functions, issues, node_id) -> None:
+    """按探测到的签名校验参数名；没有签名（未探测）时放行，交给运行期试绑。"""
+    if not functions:
+        return
+    params = functions.get(f"{project}:{call}")
+    if not isinstance(params, list):
+        detail = params.get("error", "接口尚未探测") if isinstance(params, dict) else "接口尚未探测"
+        issues.append(_issue(LEVEL_ERROR, f"调用 {call} 不可用：{detail}", node_id=node_id))
+        return
+    known = {str(item.get("name")) for item in params}
+    configured = args if isinstance(args, dict) else {}
+    unknown = sorted(str(name) for name in configured if str(name) not in known)
+    if unknown:
+        issues.append(_issue(
+            LEVEL_ERROR,
+            f"调用 {call} 没有参数 {', '.join(unknown)}（可用：{', '.join(sorted(known)) or '无'}）",
+            node_id=node_id,
+        ))
+    missing = [
+        str(item.get("name")) for item in params
+        if item.get("required", True) and str(item.get("name")) not in configured
+    ]
+    if missing:
+        issues.append(_issue(
+            LEVEL_ERROR, f"调用 {call} 缺少必填参数 {', '.join(missing)}", node_id=node_id,
+        ))
+
+
+def _compile_recipe_args(spec, known, upstream, declared_inputs, node_id, where):
+    """递归校验参数表达式；原样保留 $ 表达式交给运行期求值。"""
+    issues: list[dict] = []
+    if spec is None:
+        return {}, issues
+    if not isinstance(spec, dict):
+        issues.append(_issue(LEVEL_ERROR, f"{where}必须是对象", node_id=node_id))
+        return {}, issues
+
+    def walk(value, path):
+        if isinstance(value, list):
+            return [walk(item, path) for item in value]
+        if not isinstance(value, dict):
+            return value
+        keys = list(value)
+        if keys and str(keys[0]).startswith("$"):
+            kind = keys[0]
+            if kind not in LIBRARY_EXPRESSIONS:
+                issues.append(_issue(LEVEL_ERROR, f"{path} 使用了未知表达式 {kind}", node_id=node_id))
+                return value
+            origin = value.get(kind)
+            if kind == "$snapshot":
+                name = _text(origin)
+                if not name:
+                    issues.append(_issue(LEVEL_ERROR, f"{path} 的启动参数名为空", node_id=node_id))
+                elif name not in declared_inputs:
+                    issues.append(_issue(
+                        LEVEL_WARNING,
+                        f"{path} 引用的启动参数 {name} 没有在开始节点声明，运行时取不到值",
+                        node_id=node_id,
+                    ))
+                cast = value.get("cast")
+                if cast is not None and cast not in LIBRARY_CASTS:
+                    issues.append(_issue(
+                        LEVEL_ERROR, f"{path} 的类型转换只能是 {'/'.join(LIBRARY_CASTS)}", node_id=node_id,
+                    ))
+            elif kind == "$run":
+                origin_id = _text(origin)
+                if origin_id not in upstream:
+                    issues.append(_issue(
+                        LEVEL_ERROR, f"{path} 的来源节点 {origin_id} 不存在或不在上游", node_id=node_id,
+                    ))
+                if not _text(value.get("path")):
+                    issues.append(_issue(LEVEL_ERROR, f"{path} 必须写出字段路径", node_id=node_id))
+            elif kind == "$var":
+                name = _text(origin)
+                if name not in known:
+                    issues.append(_issue(
+                        LEVEL_ERROR, f"{path} 引用的对象 {name} 还不存在", node_id=node_id,
+                    ))
+            elif kind == "$prev":
+                if not known:
+                    issues.append(_issue(LEVEL_ERROR, f"{path} 之前还没有任何步骤结果", node_id=node_id))
+            elif kind == "$file":
+                name = _text(origin)
+                if not name or not _LIBRARY_FILE.fullmatch(name):
+                    issues.append(_issue(
+                        LEVEL_ERROR,
+                        f"{path} 的文件名 {name!r} 不合法：只允许字母、数字、点、下划线和短横线",
+                        node_id=node_id,
+                    ))
+            return value
+        return {key: walk(item, f"{path}.{key}") for key, item in value.items()}
+
+    return walk(spec, where), issues
+
+
+def _recipe_reason(spec) -> bool:
+    if spec is None:
+        return False
+    if isinstance(spec, str):
+        return bool(spec.strip())
+    if isinstance(spec, dict):
+        return bool(spec.get("from")) or isinstance(spec.get("template"), str)
+    return False
 
 
 def _compile_function_pipeline(node, nodes, edges, start, functions):
@@ -1108,10 +1404,18 @@ def _declared_outputs(node: dict) -> list[str]:
     """节点可选的 outputs 声明；v1 的 types.ts 未定义，缺省视为空。"""
     raw = node.get("outputs")
     if isinstance(raw, dict):
-        return [str(k) for k in raw]
-    if isinstance(raw, list):
-        return [str(v) for v in raw if isinstance(v, str)]
-    return []
+        fields = [str(k) for k in raw]
+    elif isinstance(raw, list):
+        fields = [str(v) for v in raw if isinstance(v, str)]
+    else:
+        fields = []
+    recipe = node.get("recipe")
+    if isinstance(recipe, dict) and isinstance(recipe.get("out"), dict):
+        # 配方的 out 就是它对外的字段，作者不必再手工抄一遍 outputs
+        for name in recipe["out"]:
+            if str(name) not in fields:
+                fields.append(str(name))
+    return fields
 
 
 def _find_start_node(doc: dict) -> dict | None:

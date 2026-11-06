@@ -6,10 +6,20 @@ import { KIND_META } from './kinds'
  * 开始节点是唯一入口，只出不进；出边只到排查节点。
  */
 export const CONNECTION_RULES: Record<NodeKind, NodeKind[]> = {
-  start: ['investigation', 'dataPreparation'],
+  start: ['investigation', 'dataPreparation', 'capability'],
   dataPreparation: ['dataPreparation', 'investigation'],
-  investigation: ['dataPreparation', 'investigation', 'investigationAction', 'conclusion', 'escalation', 'jump'],
-  investigationAction: ['investigation', 'dataPreparation'],
+  // 能力步骤只沿默认出线推进，本身不做是/否判断
+  capability: ['capability', 'investigation'],
+  investigation: [
+    'dataPreparation',
+    'capability',
+    'investigation',
+    'investigationAction',
+    'conclusion',
+    'escalation',
+    'jump',
+  ],
+  investigationAction: ['investigation', 'dataPreparation', 'capability'],
   conclusion: ['remediation', 'escalation', 'jump'],
   remediation: ['remediation', 'problemSolved', 'escalation', 'jump'],
   problemSolved: [],
@@ -19,6 +29,7 @@ export const CONNECTION_RULES: Record<NodeKind, NodeKind[]> = {
   // 仍只允许一条出线，放开的是「能连什么类型」，不是「能连几条」。
   jump: [
     'dataPreparation',
+    'capability',
     'investigation',
     'investigationAction',
     'conclusion',

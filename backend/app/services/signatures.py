@@ -24,27 +24,38 @@ PROBE_TIMEOUT = 30.0
 
 
 def probe_doc(doc: dict) -> dict:
-    """扫描 doc 里的 binding，按工程去重后探测函数签名。
+    """扫描 doc 里的绑定，按工程去重后探测函数签名。
 
     返回 {工程:函数: [{"name","type","required","default"}...]}；
     单个工程探测失败时该工程记 {"error": "..."}，函数不存在时该函数记 {"error": "..."}。
+    能力配方（library/v1）按调用名点名探测，解析规则与运行期一致。
     """
     result: dict[str, object] = {}
-    cache: dict[str, tuple[list[dict] | None, str]] = {}
+    cache: dict[tuple[str, tuple[str, ...]], tuple[list[dict] | None, str]] = {}
+    bindings = list(_document_bindings(doc))
+    names: dict[str, set[str]] = {}
+    for binding in bindings:
+        if binding.get("_recipe"):
+            project = str(binding.get("project") or "")
+            function = str(binding.get("function") or "")
+            if project and function:
+                names.setdefault(project, set()).add(function)
     started = time.perf_counter()
-    for binding in _document_bindings(doc):
+    for binding in bindings:
         project_name = str(binding.get("project") or "")
         function_name = str(binding.get("function") or "")
         if not project_name or not function_name:
             continue
 
-        if project_name not in cache:
+        requested = tuple(sorted(names.get(project_name, ()))) if binding.get("_recipe") else ()
+        cache_key = (project_name, requested)
+        if cache_key not in cache:
             project = _load_project(project_name)
             if project is None:
-                cache[project_name] = (None, "工程未登记")
+                cache[cache_key] = (None, "工程未登记")
             else:
-                cache[project_name] = _probe_project(project)
-        functions, error = cache[project_name]
+                cache[cache_key] = _probe_project(project, requested)
+        functions, error = cache[cache_key]
         if functions is None:
             result.setdefault(project_name, {"error": error or "探测失败"})
             continue
@@ -103,6 +114,14 @@ def _document_bindings(doc):
     for node in doc.get("nodes") or []:
         if not isinstance(node, dict):
             continue
+        recipe = node.get("recipe")
+        if isinstance(recipe, dict):
+            project = recipe.get("project")
+            for step in recipe.get("steps") or []:
+                # 带 on 的步骤是在运行期对象上调用，发布期没有实例可解析
+                if isinstance(step, dict) and step.get("call") and not step.get("on"):
+                    yield {"project": project, "function": step["call"], "_recipe": True}
+            continue
         if isinstance(node.get("pipeline"), dict):
             for stage in ("acquire", "parse", "present", "judge"):
                 binding = node["pipeline"].get(stage)
@@ -152,28 +171,39 @@ def collect_signatures(
     取不到的项目记空字符串，不抛异常——发布/启动不应被工程环境问题整死。
     """
     result: dict[str, str] = {}
-    projects: dict[str, object] = {}
-    for key in _plan_keys(plan):
+    if probed is not None:
+        for key in _plan_keys(plan):
+            if cancelled is not None and cancelled():
+                break
+            entry = probed.get(key)
+            function_name = _split_key(key)[1]
+            result[key] = _hash_params(function_name, entry) if isinstance(entry, list) else ""
+        return result
+
+    keys = _plan_keys(plan)
+    # 能力配方的调用名要在子进程里点名解析，先按工程归拢再各探一次；
+    # __definition__ 是探针合成的元信息条目，不是真实属性，不能拿去点名解析。
+    names: dict[str, set[str]] = {}
+    for key in keys:
+        project_name, function_name = _split_key(key)
+        if function_name.endswith("__definition__"):
+            continue
+        names.setdefault(project_name, set()).add(function_name)
+
+    projects: dict[str, list[dict] | None] = {}
+    for key in keys:
         if cancelled is not None and cancelled():
             break
         project_name, function_name = _split_key(key)
-
-        if probed is not None:
-            entry = probed.get(key)
-            if isinstance(entry, list):
-                result[key] = _hash_params(function_name, entry)
-            else:
-                result[key] = ""
-            continue
-
         if project_name not in projects:
-            projects[project_name] = _load_project(project_name)
-        project = projects[project_name]
-        if project is None:
-            result[key] = ""
-            continue
-        functions, _ = _probe_project(project)
-        if functions is None:
+            project = _load_project(project_name)
+            if project is None:
+                projects[project_name] = None
+            else:
+                functions, _ = _probe_project(project, tuple(sorted(names[project_name])))
+                projects[project_name] = functions
+        functions = projects[project_name]
+        if not functions:
             result[key] = ""
             continue
         result[key] = _hash_function(functions, function_name)
@@ -258,7 +288,9 @@ def _hash_function(discovered: list[dict], function_name: str) -> str:
     matched = [f for f in discovered if str(f.get("name")) == function_name]
     if not matched:
         return ""
-    return _hash_params(function_name, _param_list(matched[0]))
+    # 名字重复时以能解析出参数表的条目为准：点名叫失败的那条只是探测附注
+    usable = [f for f in matched if not f.get("error")] or matched
+    return _hash_params(function_name, _param_list(usable[0]))
 
 
 def _format_default(value) -> str:
@@ -283,6 +315,14 @@ def _plan_keys(plan: dict) -> list[str]:
         calls = [step.get("call")]
         pipeline = step.get("pipeline") or {}
         calls.extend(pipeline.get(stage) for stage in ("acquire", "parse", "present", "judge"))
+        recipe = step.get("recipe") or {}
+        for item in recipe.get("steps") or []:
+            if (item or {}).get("on"):
+                continue  # 对象方法没有静态签名，不参与指纹
+            call = {"project": recipe.get("project"), "function": (item or {}).get("call")}
+            key = f"{call['project'] or ''}:{call['function'] or ''}"
+            if key not in keys:
+                keys.append(key)
         for call in calls:
             if not call:
                 continue
@@ -326,13 +366,15 @@ def _load_project(name: str):
                 pass
 
 
-def _probe_project(project) -> tuple[list[dict] | None, str]:
+def _probe_project(project, names: tuple[str, ...] = ()) -> tuple[list[dict] | None, str]:
     """起子进程探测一个工程，返回 (函数表, 错误描述)。"""
     config = {
         "path": getattr(project, "path", "") or "",
         "module": getattr(project, "module", "") or "",
         "factory": getattr(project, "factory", "") or "",
     }
+    if names:
+        config["names"] = list(names)
     if not config["module"]:
         return None, "工程没有登记模块名"
     python = getattr(project, "python", None) or sys.executable

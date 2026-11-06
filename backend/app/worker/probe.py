@@ -15,12 +15,13 @@ import sys
 import traceback
 
 if __package__:
-    from . import node_sdk, diagnosis_sdk
+    from . import node_sdk, diagnosis_sdk, library_sdk
     sys.modules.setdefault("node_sdk", node_sdk)
     sys.modules.setdefault("diagnosis_sdk", diagnosis_sdk)
 else:
     import node_sdk
     import diagnosis_sdk
+    import library_sdk
 
 describe_adapter = node_sdk.describe_adapter
 is_adapter = node_sdk.is_adapter
@@ -67,9 +68,22 @@ def _discover(config: dict) -> list[dict]:
         raise ValueError("module 为空")
     module = importlib.import_module(module_name)
 
+    functions = _listed_functions(module, factory_name)
+    # 能力配方直接点名调用（Dataset.load / plot_window.save_plot），这些名字不在模块的
+    # 默认导出里，按名字单独解析，解析规则与运行期完全一致。
+    known = {str(item.get("name")) for item in functions}
+    for name in config.get("names") or []:
+        name = str(name or "")
+        if not name or name in known:
+            continue
+        known.add(name)
+        functions.append(_describe_named(module, name))
+    return functions
+
+
+def _listed_functions(module, factory_name: str) -> list[dict]:
     if not factory_name:
         return _module_functions(module)
-
     target = _resolve(module, factory_name)
     if inspect.isclass(target):
         return _class_functions(target)
@@ -80,6 +94,16 @@ def _discover(config: dict) -> list[dict]:
             return _class_functions(api_class)
         return [_describe(factory_name, target)]
     raise TypeError(f"factory 不是可调用对象：{factory_name}")
+
+
+def _describe_named(module, name: str) -> dict:
+    try:
+        obj = library_sdk.resolve(module, name)
+    except Exception as exc:  # noqa: BLE001 - 探测只负责报告
+        return {"name": name, "params": [], "error": str(exc)}
+    if not callable(obj):
+        return {"name": name, "params": [], "error": f"{name} 不是可调用对象"}
+    return _describe(name, obj)
 
 
 def _module_functions(module) -> list[dict]:

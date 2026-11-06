@@ -1,4 +1,4 @@
-# 诊断流程平台 · 设计说明（v1.12）
+# 诊断流程平台 · 设计说明（v1.13）
 
 本文件是重写项目的唯一设计依据。所有条目来自 2026-10-31 的需求讨论，标注「待定」的部分表示尚未拍板，实现时不得自行假设。
 
@@ -258,6 +258,7 @@ SQLite（WAL）。时间统一 ISO8601 UTC。除 `files` 用内容哈希作主�
 |---|---|---|---|---|
 | start | 开始 | —（唯一入口） | 否 | 多条，全 default |
 | dataPreparation | 数据准备 | 矩形 | 获取、解析 | 多条，全 default |
+| capability | 能力步骤 | 矩形 | 按能力配方调用现成库 | 多条，全 default |
 | investigation | 排查 | 菱形 | 有绑定则自动，无绑定则人工判断 | 是 / 否两组 |
 | investigationAction | 排查动作 | 正梯形 | 否，人工 | 完成后接排查 |
 | conclusion | 结论 | 矩形 | 否，展示设计时文本后继续 | 恰好一条，接处置或上升 |
@@ -278,19 +279,21 @@ v1 不实现：`deepDiagnosis`（深度诊断）。枚举保留，属性面板�
 
 ```json
 {
-  "start": ["investigation", "generic"],
+  "start": ["investigation", "capability", "generic"],
+  "capability": ["capability", "investigation"],
   "generic": ["remediation", "problemSolved", "escalation", "generic"],
-  "investigation": ["investigation", "investigationAction", "conclusion", "escalation", "jump"],
-  "investigationAction": ["investigation"],
+  "investigation": ["capability", "investigation", "investigationAction", "conclusion", "escalation", "jump"],
+  "investigationAction": ["capability", "investigation"],
   "conclusion": ["remediation", "escalation", "jump"],
   "remediation": ["remediation", "problemSolved", "escalation", "jump"],
-  "jump": ["investigation", "investigationAction", "conclusion", "remediation", "problemSolved", "escalation", "deepDiagnosis", "jump"],
+  "jump": ["capability", "investigation", "investigationAction", "conclusion", "remediation", "problemSolved", "escalation", "deepDiagnosis", "jump"],
   "problemSolved": [],
   "escalation": []
 }
 ```
 
 `generic` 仅用于开始事件等非诊断元素的边界判定。开始节点的出边不区分是/否，一律 `default`，可以同时连多个排查节点。
+能力步骤（capability）只有一个默认出口，本身不产生是/否结论；它不参与排查字段校验。
 
 ### 校验规则（发布必过）
 
@@ -542,6 +545,61 @@ retry 虽然重跑方法但沿用该次已获得的资源；branch 沿用该次�
 产物缺失、损坏或类版本不符时报错，不偷偷重新采集。备份包含 backend/data，不新增资源自动回收，
 不扩大平台重启自动续跑能力。不增加 API 路径；工程探测响应增加 methods、resources 描述。
 使用步骤见 [模块接入手册](module-integration.md) 和 [实例示例](../examples/diagnosis-instance/README.md)。
+
+### 能力配方（library/v1，v1.13）
+
+让已经能跑的库不改代码接进来：一个节点声明一个工程和若干调用步骤，步骤在同一个业务进程内
+按序执行，中间对象（数据集、绘图对象、判断引擎）留在进程里，不序列化、不跨节点。
+节点之间只传 JSON，沿用已有的上游输出绑定。
+
+doc 节点新增可选 `recipe`，与 `binding` / `pipeline` / `method` 互斥，只能出现在
+`investigation`（可判定）与 `capability`（不判定）上：
+
+```json
+{
+  "protocol": "library/v1",
+  "project": "绘图引擎",
+  "steps": [
+    {"call": "Dataset.load",
+     "args": {"path": {"$run": "n1", "path": "output.data_file"}},
+     "as": "dataset", "show": "none"},
+    {"on": "dataset", "call": "plot_series",
+     "args": {"metric": {"$snapshot": "metric"}}, "as": "series"},
+    {"call": "plot_window.save_plot",
+     "args": {"data": {"$var": "series"}, "path": {"$file": "curve.png"}},
+     "as": "image", "show": "image"}
+  ],
+  "out": {"image": {"from": "image"}},
+  "result": {"from": "summary", "path": "overall"},
+  "reason": {"template": "判定 {summary.overall}；依据：{summary.reasons.0}"},
+  "evidence": "n2"
+}
+```
+
+- `project`：一个节点只属于一个工程；切换工程意味着换会话进程，因此对象不跨工程
+- `steps[].call`：点分名。解析顺序为「根对象属性 → 前缀作为子模块 import」，
+  解析到类则构造、到函数则调用；`on` 指定在某个已保存对象上调用
+- `args` 表达式：`{$snapshot: 启动参数, cast?: text|number|boolean|json}`、
+  `{$run: 上游节点, path}` 由平台求值；`{$var: 保存名, path?}`、`{$prev: path?}`、
+  `{$file: 文件名}` 由业务进程求值。其余结构按字面量递归求值
+- `as`：把返回值保存为节点内变量；`show`：`auto|text|table|line|image|none`
+- `out`：对外 JSON 字段，非 JSON 值报错，不做 repr 兜底
+- `result`：排查节点的判定来源，必须是 yes/no；留空表示算完转人工判断
+- `reason`：自动判定的依据，可含 `{保存名.字段}`；自动判定必须有非空依据
+- `evidence`：上游节点 id，把它那次到访的展示块合并进本次运行记录与待办
+
+执行语义：
+
+- 一个节点一次会话调用（`__newdiag_library__`），超时/崩溃沿用一次重试，业务异常不重试
+- 调用前按真实签名 `bind`，参数错误直接给出可读消息；`on` 步骤的签名在运行期校验
+- 展示物化在业务进程完成：图片（路径/bytes/Figure）登记为附件，`{x, y}` 转曲线，
+  列表或带 `as_dict()` 的对象转表格，标量字典转指标；只输出合法展示块
+- 能力步骤执行完走默认分支；排查节点按 `result` 走是/否，留空则创建带展示的判断待办，
+  提交后写 run 再分支，不重跑配方
+- 回退、终止、并行/串行继续沿用原调度器；历史 run 不被覆盖
+- 发布期探测 `project:call`（`on` 步骤除外），参数名与必填按真实签名校验；签名指纹同上
+
+不新增表与 API 路径；运行资源仍由各实例会话持有，人工等待不关闭会话。
 
 ### 节点内配置四阶段函数（兼容）
 
@@ -953,3 +1011,4 @@ backend/
 | v1.10（2026-11-04） | 数据准备节点、按实际到访共享不可变解析产物、字段索引读取及回退版本隔离 |
 | v1.11（2026-11-05） | 流程诊断类、实例方法、启动共享数据、按需资源缓存、人工等待对象恢复及按到访回退资源视图；保留旧协议 |
 | v1.12（2026-11-05） | 普通 Python 成员与业务对象整体快照，默认全部恢复，不再强制 self.data；恢复范围与运行资源边界移入 TODO |
+| v1.13（2026-11-06） | 能力配方（library/v1）与能力步骤节点：节点内按序调用现成库、节点间只传 JSON、返回值自动物化展示、判定可带上游证据；三个现成库零改动接入，新增示例与开发手册 |

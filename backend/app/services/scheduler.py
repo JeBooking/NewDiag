@@ -208,9 +208,11 @@ class Scheduler:
                 if request["type"] == "judgment" and not str(payload.get("reason") or "").strip():
                     raise ValueError("请填写判断依据")
                 operation = request["type"]
-                runner = (self._resume_diagnosis if step.get("diagnosisMethod") else
-                          self._invoke_functions if step.get("pipeline") else self._invoke_pipeline)
-                configuration = step.get("pipeline") or step.get("call") or {}
+                runner = (self._resume_diagnosis if step.get("diagnosisMethod")
+                          else self._resume_recipe if step.get("recipe")
+                          else self._invoke_functions if step.get("pipeline")
+                          else self._invoke_pipeline)
+                configuration = step.get("recipe") or step.get("pipeline") or step.get("call") or {}
                 value, failure = runner(
                     db, instance, token, configuration, request["pipeline"], operation,
                     data=payload.get("data"),
@@ -220,7 +222,10 @@ class Scheduler:
                     raise ValueError("实例正在终止，提交结果已丢弃")
                 if failure is not None:
                     raise ValueError(f"{failure[0]}: {failure[1]}")
-                self._accept_pipeline(db, instance, plan, token, step, value)
+                if step.get("recipe"):
+                    self._accept_recipe(db, instance, plan, token, step, value)
+                else:
+                    self._accept_pipeline(db, instance, plan, token, step, value)
                 self._refresh(db, instance, plan)
                 db.commit()
                 if instance.status not in TERMINAL_INSTANCE:
@@ -346,7 +351,8 @@ class Scheduler:
             self._ensure_entry_token(db, instance, plan)
             db.commit()
             if finished_runs or (not plan.get("diagnosis") and not any(
-                step.get("call") or step.get("pipeline") for step in plan["steps"].values()
+                step.get("call") or step.get("pipeline") or step.get("recipe")
+                for step in plan["steps"].values()
             )):
                 return True  # 只在实例首次启动时比对签名，人工恢复不重新拦
             stored = self._stored_signatures(db, instance)
@@ -506,6 +512,11 @@ class Scheduler:
         if step.get("diagnosisMethod"):
             db.commit()
             self._run_diagnosis(db, instance, plan, token, step)
+            return
+
+        if step.get("recipe"):
+            db.commit()
+            self._run_recipe(db, instance, plan, token, step)
             return
 
         if step.get("pipeline"):
@@ -720,6 +731,230 @@ class Scheduler:
         state = dict(state)
         state["decision"] = extra["decision"]
         state["stages"] = [*state.get("stages", []), {"stage": "manualJudgment"}]
+        return {"status": "complete", "state": state}, None
+
+    # ------------------------------------------------------------ 能力配方
+
+    def _run_recipe(self, db, instance, plan, token, step):
+        """一个节点内按声明顺序调用现成库；节点之间只经过 JSON。"""
+        recipe = step["recipe"]
+        started = now_iso()
+        request, error = self._eval_recipe(db, instance, token, recipe)
+        if error is not None:
+            logger.warning("实例 %s 节点 %s 配方参数求值失败：%s", instance.id, token.node_id, error)
+            self._write_run(
+                db, instance, token, status="failed", error=f"{ERR_ARGUMENT}: {error}", started=started,
+            )
+            self._fail_token(db, instance, token)
+            return
+
+        request.update({
+            "project": recipe["project"],
+            "artifactRoot": str(self._artifact_root(instance.id)),
+            "fileRoot": str(self._file_root()),
+        })
+        call = {"project": recipe["project"], "function": "__newdiag_library__"}
+        value, failure = self._invoke(db, instance, call, request, token)
+        if self._is_cancelled(instance.id):
+            self._write_run(
+                db, instance, token, status="abandoned", args=request.get("steps"),
+                error="execution/terminated: 用户终止诊断", started=started,
+            )
+            return
+        if failure is not None:
+            code, message, attempts = failure
+            logger.warning("实例 %s 节点 %s 调用配方失败（%s）：%s",
+                           instance.id, token.node_id, code, message)
+            self._write_run(
+                db, instance, token, status="failed", args=request.get("steps"),
+                error=f"{code}: {message}", started=started, attempt=attempts,
+                evidence={"project": recipe["project"]},
+            )
+            self._fail_token(db, instance, token)
+            return
+        if not isinstance(value, dict) or value.get("status") not in ("complete", "judgment"):
+            self._write_run(
+                db, instance, token, status="failed", args=request.get("steps"),
+                error=f"{ERR_EXCEPTION}: 配方返回了无效结果 {value!r}", started=started,
+            )
+            self._fail_token(db, instance, token)
+            return
+
+        state = {
+            "output": value.get("output") or {},
+            "presentation": value.get("presentation"),
+            "result": value.get("result"),
+            "reason": value.get("reason") or "",
+            "steps": value.get("steps") or [],
+            "notes": value.get("notes") or [],
+            "project": recipe["project"],
+            "inputs": request.get("steps"),
+            "startedAt": started,
+        }
+        self._accept_recipe(db, instance, plan, token, step, {"status": value["status"], "state": state})
+
+    def _eval_recipe(self, db, instance, token, recipe: dict):
+        """只求平台该求的值：启动参数与上游输出；对象和文件路径留给业务进程。"""
+        steps = []
+        for index, item in enumerate(recipe.get("steps") or []):
+            args, error = self._eval_recipe_value(
+                db, instance, token, item.get("args") or {}, f"第 {index + 1} 步参数",
+            )
+            if error is not None:
+                return None, error
+            steps.append({**{key: value for key, value in item.items() if key != "args"}, "args": args})
+        if not steps:
+            return None, "配方没有可执行的步骤"
+        return {
+            "steps": steps,
+            "out": recipe.get("out") or {},
+            "result": recipe.get("result"),
+            "reason": recipe.get("reason"),
+        }, None
+
+    def _eval_recipe_value(self, db, instance, token, value, where: str):
+        if isinstance(value, list):
+            result = []
+            for item in value:
+                resolved, error = self._eval_recipe_value(db, instance, token, item, where)
+                if error is not None:
+                    return None, error
+                result.append(resolved)
+            return result, None
+        if not isinstance(value, dict):
+            return value, None
+
+        keys = list(value)
+        kind = keys[0] if keys and isinstance(keys[0], str) else ""
+        if not kind.startswith("$"):
+            result = {}
+            for key, item in value.items():
+                resolved, error = self._eval_recipe_value(db, instance, token, item, f"{where}.{key}")
+                if error is not None:
+                    return None, error
+                result[key] = resolved
+            return result, None
+        if kind == "$snapshot":
+            name = str(value.get("$snapshot") or "")
+            found, raw = _snapshot_value(self._snapshot_payload(db, instance), "", name)
+            if not found:
+                return None, f"{where} 的启动参数 {name} 没有值"
+            try:
+                return {"$value": _cast(raw, value.get("cast"))}, None
+            except (TypeError, ValueError) as exc:
+                return None, f"{where} 的启动参数 {name} 无法转换成 {value.get('cast')}：{exc}"
+        if kind == "$run":
+            found, raw = self._lookup_run(
+                db, instance, token, str(value.get("$run")), str(value.get("path") or "")
+            )
+            if not found:
+                return None, f"{where} 找不到节点 {value.get('$run')} 的输出 {value.get('path')}"
+            if artifacts.is_reference(raw):
+                try:
+                    raw = artifacts.load(self._artifact_root(instance.id), raw)
+                except (ValueError, OSError) as exc:
+                    return None, f"{where} 读取共享数据失败：{exc}"
+            return {"$value": raw}, None
+        # $var / $prev / $file 由业务进程求值，这里原样带过去
+        return value, None
+
+    def _accept_recipe(self, db, instance, plan, token, step, value) -> None:
+        state = value["state"]
+        is_decision = step.get("kind") == "investigation"
+        presentation = self._presentation_with_evidence(
+            db, instance, token, step.get("recipe") or {}, state.get("presentation")
+        )
+        if value["status"] == "judgment" and is_decision:
+            meta = self._node_meta(db, instance, token.node_id)
+            db.add(models.Review(
+                id=new_id(), instance_id=instance.id, token_id=token.id, node_id=token.node_id,
+                kind="decision", status="pending", created_at=now_iso(),
+                request_json=_dumps({
+                    "title": meta.get("title") or token.node_id,
+                    "detail": meta.get("detail") or "", "nodeKind": step["kind"],
+                    "type": "judgment",
+                    "instructions": "结合图表与依据选择是或否，并填写判断依据",
+                    "presentation": presentation,
+                    "evidence": state.get("output"),
+                    "pipeline": {**state, "presentation": presentation},
+                    "attachments": meta.get("attachments") or [],
+                }),
+            ))
+            token.status = "waiting"
+            token.updated_at = now_iso()
+            db.flush()
+            logger.info("实例 %s 节点 %s 等待人工判断", instance.id, token.node_id)
+            return
+
+        decision = state.get("decision") or {
+            "result": state.get("result"), "reason": state.get("reason"),
+        }
+        branch = decision.get("result") if is_decision else "default"
+        output = dict(state.get("output") or {})
+        if is_decision:
+            output.update({
+                "result": branch, "reason": decision.get("reason") or state.get("reason") or "",
+            })
+        error = None
+        if is_decision and branch not in ("yes", "no"):
+            error = f"{ERR_ROUTE}: 判定结果是 {branch!r}"
+        elif not (step.get("next") or {}).get(branch):
+            error = f"{ERR_ROUTE}: 分支 {branch} 没有后继节点"
+        self._write_run(
+            db, instance, token, status="failed" if error else "ok",
+            args=state.get("inputs"), output=output, error=error,
+            started=state.get("startedAt"),
+            evidence={
+                "branch": branch, "presentation": presentation,
+                "steps": state.get("steps"), "project": state.get("project"),
+                "notes": state.get("notes") or [],
+            },
+        )
+        if error:
+            logger.warning("实例 %s 节点 %s 无法路由：%s", instance.id, token.node_id, error)
+            self._fail_token(db, instance, token)
+            return
+        self._spawn_successors(db, instance, plan, token, step, branch)
+        token.status = "done"
+        token.updated_at = now_iso()
+        db.flush()
+
+    def _presentation_with_evidence(self, db, instance, token, recipe: dict, presentation) -> dict:
+        """recipe.evidence 指向上游节点时，把它那次到访的图和数据一起带进来。
+
+        判断类待办如果只写文字，人得自己去执行轨迹里翻上一张图；把上游展示拼进来，
+        待办面板本身就是完整的证据链。
+        """
+        blocks = list(((presentation or {}).get("blocks") or []))
+        source = recipe.get("evidence")
+        if not source:
+            return {"blocks": blocks}
+        run = self._ancestor_run(db, instance, token, str(source))
+        if run is None:
+            logger.warning("实例 %s 节点 %s 找不到上游 %s 的展示", instance.id, token.node_id, source)
+            return {"blocks": blocks}
+        evidence = _loads(run.evidence_json) or {}
+        upstream = ((evidence.get("presentation") or {}).get("blocks") or [])
+        merged = [block for block in upstream if isinstance(block, dict)][:6]
+        return {"blocks": [*merged, *blocks][:12]}
+
+    def _ancestor_run(self, db, instance, token, node_id: str):
+        parent_id = token.parent_token_id
+        seen: set[str] = set()
+        while parent_id and parent_id not in seen:
+            seen.add(parent_id)
+            parent = db.get(models.Token, parent_id)
+            if parent is None or parent.instance_id != instance.id:
+                break
+            if parent.node_id == node_id:
+                return self._successful_run(db, instance.id, parent.id)
+            parent_id = parent.parent_token_id
+        return None
+
+    def _resume_recipe(self, db, instance, token, configuration, state, operation, **extra):
+        state = dict(state)
+        state["decision"] = extra["decision"]
+        state["steps"] = [*state.get("steps", []), {"stage": "manualJudgment"}]
         return {"status": "complete", "state": state}, None
 
     def _run_functions(self, db, instance, plan, token, step):
@@ -1384,7 +1619,7 @@ class Scheduler:
                 raise ValueError("回退分支必须是是/否")
             if not (step.get("next") or {}).get(branch_key):
                 raise ValueError(f"目标节点没有 {branch_key} 分支的后继")
-            if (step.get("call") or step.get("pipeline")) and self._successful_run(
+            if (step.get("call") or step.get("pipeline") or step.get("recipe")) and self._successful_run(
                 db, instance.id, target_token.id
             ) is None:
                 raise ValueError("目标到访没有可复用的成功结果，请选择重新执行")
@@ -1585,6 +1820,29 @@ def _lookup(root, path: str) -> tuple[bool, object]:
         else:
             return False, None
     return True, current
+
+
+def _cast(value, kind):
+    """启动表单只有字符串；配方用 cast 显式声明要数字还是 JSON，避免把 "12" 传给数值比较。"""
+    if kind in (None, ""):
+        return value
+    if kind == "text":
+        return value if isinstance(value, str) else str(value)
+    if kind == "number":
+        number = float(str(value).strip())
+        return int(number) if number.is_integer() else number
+    if kind == "boolean":
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ("1", "true", "yes", "y", "是"):
+            return True
+        if text in ("0", "false", "no", "n", "否"):
+            return False
+        raise ValueError(f"{value!r} 不是布尔值")
+    if kind == "json":
+        return json.loads(value) if isinstance(value, str) else value
+    raise ValueError(f"未知的类型转换 {kind}")
 
 
 def _branch_of(step: dict, value) -> str | None:

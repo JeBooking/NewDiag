@@ -29,6 +29,12 @@ export const KIND_META: Record<NodeKind, KindMeta> = {
     codeCapable: true,
     branch: 'single',
   },
+  capability: {
+    label: '能力步骤',
+    color: '#0d9488',
+    codeCapable: true,
+    branch: 'single',
+  },
   investigation: {
     label: '排查',
     color: '#2563eb',
@@ -82,6 +88,7 @@ export const KIND_META: Record<NodeKind, KindMeta> = {
 
 export const V1_KINDS: NodeKind[] = [
   'dataPreparation',
+  'capability',
   'investigation',
   'investigationAction',
   'conclusion',

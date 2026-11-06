@@ -4,6 +4,7 @@ export type NodeKind =
   | 'start'
   | 'investigation'
   | 'dataPreparation'
+  | 'capability'
   | 'investigationAction'
   | 'conclusion'
   | 'remediation'
@@ -70,6 +71,58 @@ export interface FunctionPipeline {
 /** 开始节点参数的输入控件类型，由函数签名推导，作者可覆盖 */
 export type ParamType = 'text' | 'number' | 'boolean' | 'datetime'
 
+/** 能力配方里一个步骤的展示方式 */
+export type RecipeShow = 'auto' | 'text' | 'table' | 'line' | 'image' | 'none'
+
+/**
+ * 能力配方的一个调用步骤。
+ * args 里以 $ 开头的单键对象是表达式：
+ *   {$snapshot: 启动参数名, cast?} {$run: 上游节点, path} {$var: 本节点已保存对象, path?}
+ *   {$prev: path?} {$file: 文件名}
+ * 其余结构原样作为字面量传入。
+ */
+export interface RecipeStep {
+  /** 点分调用名，如 Dataset.load、plot_window.save_plot */
+  call: string
+  /** 在该步骤保存的对象上调用；省略表示从工程根（模块或工厂实例）解析 */
+  on?: string
+  args?: Record<string, unknown>
+  /** 把返回值保存为本节点内的对象名，供后续步骤用 $var 引用 */
+  as?: string
+  show?: RecipeShow
+  /** 展示块的标题 */
+  label?: string
+}
+
+/** 输出字段或判定字段的来源：本节点内某个步骤保存的对象 + 字段路径 */
+export interface RecipeRef {
+  from: string
+  path?: string
+}
+
+export interface RecipeReason {
+  template?: string
+  from?: string
+  path?: string
+}
+
+/**
+ * 能力配方：一个节点内按顺序调用现成库，节点之间只传 JSON。
+ * 对象（数据集、绘图对象、判断引擎）只在本节点的进程内存在，因此不需要业务侧适配代码。
+ */
+export interface LibraryRecipe {
+  protocol?: 'library/v1'
+  project: string
+  steps: RecipeStep[]
+  /** 对外暴露的 JSON 字段，下游可用 {run: 节点, path: output.字段} 引用 */
+  out?: Record<string, RecipeRef>
+  /** 判定来源；只有排查节点需要，取值必须是 yes/no */
+  result?: RecipeRef
+  reason?: string | RecipeReason
+  /** 把某个上游节点的展示（如图表）一并带进本次待办 */
+  evidence?: string
+}
+
 /**
  * 开始节点声明的一个启动参数。
  * - scope=global：全局参数，所有函数可用
@@ -101,6 +154,8 @@ export interface DocNode {
   attachments?: AttachmentRef[]
   binding?: NodeBinding
   pipeline?: FunctionPipeline
+  /** 能力配方；与 binding / pipeline / method 互斥 */
+  recipe?: LibraryRecipe
   method?: string
   /** 该节点返回结构里的字段名，供下游绑定 */
   outputs?: string[]
@@ -186,6 +241,7 @@ export interface PlanStep {
   call?: PlanCall
   diagnosisMethod?: { name: string; args: Record<string, ArgExpr> }
   pipeline?: FunctionPipeline & { args: Record<string, ArgExpr> }
+  recipe?: LibraryRecipe
   human?: boolean
   text?: string
   next?: Record<string, string[]>

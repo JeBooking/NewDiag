@@ -123,6 +123,50 @@ function judgePathIssues(
   return issues
 }
 
+/** 能力配方的结构问题；参数与签名在发布时由后端按真实签名校验 */
+function recipeIssues(node: DocNode): LintIssue[] {
+  const recipe = node.recipe
+  if (!recipe) {
+    return node.kind === 'capability'
+      ? [{ id: `node:${node.id}:recipe:missing`, level: 'error', nodeId: node.id,
+        message: '能力步骤必须配置能力配方' }]
+      : []
+  }
+  const issues: LintIssue[] = []
+  const report = (suffix: string, message: string) =>
+    issues.push({ id: `node:${node.id}:recipe:${suffix}`, level: 'error', nodeId: node.id, message })
+  if (node.binding || node.pipeline || node.method) {
+    report('conflict', '能力配方不能与函数绑定、四阶段函数或诊断类方法同时配置')
+  }
+  if (!recipe.project?.trim()) report('project', '请选择能力配方调用的工程')
+  if (!recipe.steps?.length) report('steps', '能力配方至少需要一个调用步骤')
+  const saved = new Set<string>()
+  recipe.steps?.forEach((step, index) => {
+    if (!step.call?.trim()) report(`call:${index}`, `第 ${index + 1} 步缺少调用名`)
+    if (step.on && !saved.has(step.on)) {
+      report(`on:${index}`, `第 ${index + 1} 步引用的对象 ${step.on} 还没有产生`)
+    }
+    if (step.as) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(step.as)) {
+        report(`as:${index}`, `第 ${index + 1} 步的保存名不合法`)
+      } else if (saved.has(step.as)) {
+        report(`as:${index}`, `第 ${index + 1} 步的保存名 ${step.as} 重复`)
+      }
+      saved.add(step.as)
+    }
+  })
+  for (const [name, source] of Object.entries(recipe.out ?? {})) {
+    if (!saved.has(source.from)) report(`out:${name}`, `输出 ${name} 引用的对象 ${source.from} 不存在`)
+  }
+  if (recipe.result && !saved.has(recipe.result.from)) {
+    report('result', `判定来源引用的对象 ${recipe.result.from} 不存在`)
+  }
+  if (recipe.result && !recipe.reason) {
+    report('reason', '自动判定必须填写判断依据')
+  }
+  return issues
+}
+
 export function lintDoc(
   doc: FlowDoc,
   signatures?: ReadonlyMap<string, ProjectFunction[]>,
@@ -135,11 +179,13 @@ export function lintDoc(
     issues.push({ id: 'doc:diagnosis', level: 'error', message: '请在流程属性中选择完整的诊断业务类' })
   }
   for (const node of nodes) {
-    if (node.method && (!doc.diagnosis || node.kind !== 'investigation' || node.binding || node.pipeline)) {
+    if (node.method && (!doc.diagnosis || node.kind !== 'investigation'
+      || node.binding || node.pipeline || node.recipe)) {
       issues.push({ id: `node:${node.id}:method`, nodeId: node.id, level: 'error',
         message: '实例方法需要流程诊断类，只能用于排查节点，不能混用其他绑定' })
     }
-    if (doc.diagnosis && (node.binding || node.pipeline || node.kind === 'dataPreparation')) {
+    if (doc.diagnosis && (node.binding || node.pipeline || node.recipe
+      || node.kind === 'dataPreparation' || node.kind === 'capability')) {
       issues.push({ id: `node:${node.id}:diagnosis-conflict`, nodeId: node.id, level: 'error',
         message: '诊断类流程请使用实例方法；清除原有绑定或使用未配置诊断类的流程' })
     }
@@ -303,6 +349,7 @@ export function lintDoc(
         message: '数据准备节点必须配置获取与解析阶段',
       })
     }
+    issues.push(...recipeIssues(node))
     // 6. 函数绑定
     if (node.pipeline) {
       const preparation = node.kind === 'dataPreparation'
