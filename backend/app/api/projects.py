@@ -32,8 +32,8 @@ def get_project_or_404(db: Session, project_id: str) -> Project:
     return project
 
 
-def _functions(project: Project) -> ProjectFunctions:
-    result = probe(project)
+def _functions(project: Project, module: str = "", catalog: bool = False) -> ProjectFunctions:
+    result = probe(project, module, catalog)
     functions = [ProjectFunction(**item) for item in result.get("functions", [])]
     return ProjectFunctions(functions=functions, error=result.get("error"))
 
@@ -99,12 +99,16 @@ def delete_project(project_id: str, db: Session = Depends(get_db)) -> None:
 
 
 @router.post("/projects/{project_id}/refresh", response_model=ProjectFunctions)
-def refresh_project(project_id: str, db: Session = Depends(get_db)) -> ProjectFunctions:
+def refresh_project(
+    project_id: str, module: str = "", catalog: bool = False, db: Session = Depends(get_db)
+) -> ProjectFunctions:
     project = get_project_or_404(db, project_id)
-    return _functions(project)
+    return _functions(project, module, catalog)
 
 
 @router.get("/projects/{project_id}/functions", response_model=list[ProjectFunction])
-def project_functions(project_id: str, db: Session = Depends(get_db)) -> list[ProjectFunction]:
+def project_functions(
+    project_id: str, module: str = "", catalog: bool = False, db: Session = Depends(get_db)
+) -> list[ProjectFunction]:
     project = get_project_or_404(db, project_id)
-    return _functions(project).functions
+    return _functions(project, module, catalog).functions

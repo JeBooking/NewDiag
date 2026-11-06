@@ -10,6 +10,7 @@
 
 外部 Python 类和桌面应用改造，见 [模块接入手册](docs/module-integration.md)。
 开发新诊断类的完整步骤、接口和故障处理，见 [诊断类开发手册](docs/diagnosis-development-guide.md)。
+**把多个既有工程按配置接入、不写总控代码**，见 [组合接入开发手册](docs/composition-manual.md)，可运行示例在 [examples/composed-diagnosis](examples/composed-diagnosis)。
 推荐一张流程绑定一个诊断类，一次执行创建一个逻辑对象：启动准备主要数据，节点调用实例方法，
 其余资源首次访问时加载并缓存，人工等待后恢复已有数据。
 [完整实例示例](examples/diagnosis-instance/README.md)包含三份可导入流程；旧函数、四阶段及数据准备节点保持兼容。

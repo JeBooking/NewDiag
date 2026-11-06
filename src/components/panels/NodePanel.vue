@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import type {
+  CompositionArgument,
   DocNode,
   FlowDoc,
   FlowMode,
@@ -15,6 +16,7 @@ import { errorText } from '@/services/api'
 import { probeFlow, type ProbeResult } from '@/services/flows'
 import AttachmentField from './AttachmentField.vue'
 import BindingEditor from './BindingEditor.vue'
+import CompositionArguments from './CompositionArguments.vue'
 import FunctionPipelineEditor from '@/components/panels/FunctionPipelineEditor.vue'
 import ParamValueInput from './ParamValueInput.vue'
 import DiagnosisMethodEditor from '@/components/panels/DiagnosisMethodEditor.vue'
@@ -54,6 +56,34 @@ const connectionMode = computed(() => props.node.pipeline ? 'functions' : 'legac
 const pipelineValue = computed<FunctionPipeline>(() => ({
   ...props.node.pipeline, manualFields: props.node.pipeline?.manualFields ?? [],
 }))
+
+/** 组合配置里的操作；节点只引用操作 id，并提供操作参数 */
+const compositionOperations = computed(() => Object.keys(props.doc?.composition?.operations ?? {}))
+const operationParameters = computed(
+  () => props.doc?.composition?.operations?.[props.node.operation ?? '']?.parameters ?? [],
+)
+const operationSources = [
+  { value: 'lit', label: '常量' },
+  { value: 'input', label: '启动参数' },
+  { value: 'items', label: '列表' },
+  { value: 'fields', label: '字典' },
+]
+
+function changeOperation(value: unknown): void {
+  const id = String(value ?? '').trim()
+  if (!id) {
+    emit('update', { operation: undefined, operationArguments: undefined })
+    return
+  }
+  const parameters = props.doc?.composition?.operations?.[id]?.parameters ?? []
+  const args: Record<string, CompositionArgument> = {}
+  for (const name of parameters) args[name] = { lit: '' }
+  emit('update', { operation: id, operationArguments: args, binding: undefined, pipeline: undefined })
+}
+
+function setOperationArguments(value: Record<string, CompositionArgument>): void {
+  emit('update', { operationArguments: value })
+}
 
 function changeConnectionMode(value: unknown): void {
   if (value === 'functions') emit('update', { pipeline: { manualFields: [] }, binding: undefined })
@@ -596,33 +626,59 @@ function addGlobalInput(): void {
         />
       </template>
 
-      <div class="section-title">参数绑定</div>
-      <div class="section-hint">{{ codeHint }}</div>
-      <el-select
-        v-if="node.kind === 'investigation' && !doc?.diagnosis" :model-value="connectionMode" :disabled="readonly"
-        aria-label="排查接入方式" @change="changeConnectionMode"
-      >
-        <el-option label="分别选择四阶段函数" value="functions" />
-        <el-option label="原有函数或适配器类" value="legacy" />
-      </el-select>
-      <DiagnosisMethodEditor
-        v-if="node.kind === 'investigation' && doc?.diagnosis"
-        :diagnosis="doc.diagnosis" :value="node.method" :readonly="readonly"
-        @update="emit('update', { method: $event, pipeline: undefined, binding: undefined })"
-      />
-      <FunctionPipelineEditor
-        v-else-if="node.kind === 'dataPreparation'
-          || (node.kind === 'investigation' && connectionMode === 'functions')"
-        :key="node.id" :value="pipelineValue" :readonly="readonly"
-        :preparation="node.kind === 'dataPreparation'" :doc="doc" :node-id="node.id"
-        @update="patchPipeline"
-      />
-      <BindingEditor
-        v-else-if="node.kind === 'investigation'"
-        :binding="node.binding"
-        :readonly="readonly"
-        @update="patchBinding"
-      />
+      <template v-if="node.kind === 'investigation' && (compositionOperations.length || node.operation)">
+        <div class="section-title">组合操作</div>
+        <div class="section-hint">
+          选择流程属性里的组合操作，平台按步骤调用各工程公开接口；不选则仍是人工排查。
+        </div>
+        <el-select
+          :model-value="node.operation ?? ''" :disabled="readonly" clearable
+          placeholder="选择操作（可留空）" aria-label="组合操作"
+          @update:model-value="changeOperation"
+        >
+          <el-option v-for="id in compositionOperations" :key="id" :label="id" :value="id" />
+        </el-select>
+        <template v-if="node.operation">
+          <label class="label">操作参数</label>
+          <CompositionArguments
+            :model-value="node.operationArguments ?? {}" :sources="operationSources" :readonly="readonly"
+            @update:model-value="setOperationArguments"
+          />
+          <div class="section-hint">
+            参数名来自操作声明（{{ operationParameters.join('、') || '无' }}）；常用来源是常量与启动参数。
+          </div>
+        </template>
+      </template>
+
+      <template v-if="!node.operation">
+        <div class="section-title">参数绑定</div>
+        <div class="section-hint">{{ codeHint }}</div>
+        <el-select
+          v-if="node.kind === 'investigation' && !doc?.diagnosis" :model-value="connectionMode"
+          :disabled="readonly" aria-label="排查接入方式" @change="changeConnectionMode"
+        >
+          <el-option label="分别选择四阶段函数" value="functions" />
+          <el-option label="原有函数或适配器类" value="legacy" />
+        </el-select>
+        <DiagnosisMethodEditor
+          v-if="node.kind === 'investigation' && doc?.diagnosis"
+          :diagnosis="doc.diagnosis" :value="node.method" :readonly="readonly"
+          @update="emit('update', { method: $event, pipeline: undefined, binding: undefined })"
+        />
+        <FunctionPipelineEditor
+          v-else-if="node.kind === 'dataPreparation'
+            || (node.kind === 'investigation' && connectionMode === 'functions')"
+          :key="node.id" :value="pipelineValue" :readonly="readonly"
+          :preparation="node.kind === 'dataPreparation'" :doc="doc" :node-id="node.id"
+          @update="patchPipeline"
+        />
+        <BindingEditor
+          v-else-if="node.kind === 'investigation'"
+          :binding="node.binding"
+          :readonly="readonly"
+          @update="patchBinding"
+        />
+      </template>
 
       <template v-if="node.binding || node.pipeline || node.method">
         <div class="section-title">输出字段</div>

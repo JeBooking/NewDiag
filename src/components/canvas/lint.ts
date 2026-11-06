@@ -134,6 +134,10 @@ export function lintDoc(
     || doc.diagnosis.protocol !== 'diagnosis/v1' || !doc.diagnosis.version)) {
     issues.push({ id: 'doc:diagnosis', level: 'error', message: '请在流程属性中选择完整的诊断业务类' })
   }
+  if (doc.diagnosis && doc.composition) {
+    issues.push({ id: 'doc:composition-conflict', level: 'error',
+      message: '组合配置与诊断实例类不能同时使用，请保留一种接入方式' })
+  }
   for (const node of nodes) {
     if (node.method && (!doc.diagnosis || node.kind !== 'investigation' || node.binding || node.pipeline)) {
       issues.push({ id: `node:${node.id}:method`, nodeId: node.id, level: 'error',
@@ -142,6 +146,33 @@ export function lintDoc(
     if (doc.diagnosis && (node.binding || node.pipeline || node.kind === 'dataPreparation')) {
       issues.push({ id: `node:${node.id}:diagnosis-conflict`, nodeId: node.id, level: 'error',
         message: '诊断类流程请使用实例方法；清除原有绑定或使用未配置诊断类的流程' })
+    }
+    if (node.operation) {
+      const operation = doc.composition?.operations?.[node.operation]
+      if (node.kind !== 'investigation') {
+        issues.push({ id: `node:${node.id}:operation-kind`, nodeId: node.id, level: 'error',
+          message: '只有排查节点可以绑定组合操作' })
+      } else if (!operation) {
+        issues.push({ id: `node:${node.id}:operation`, nodeId: node.id, level: 'error',
+          message: `节点引用了组合配置里不存在的操作「${node.operation}」` })
+      } else {
+        if (node.binding || node.pipeline || node.method) {
+          issues.push({ id: `node:${node.id}:operation-conflict`, nodeId: node.id, level: 'error',
+            message: '绑定组合操作的节点不能再配置函数、四阶段或实例方法' })
+        }
+        const declared = new Set(operation.parameters ?? [])
+        const provided = Object.keys(node.operationArguments ?? {})
+        const missing = [...declared].filter((name) => !provided.includes(name))
+        const extra = provided.filter((name) => !declared.has(name))
+        if (missing.length) {
+          issues.push({ id: `node:${node.id}:operation-missing`, nodeId: node.id, level: 'error',
+            message: `操作「${node.operation}」缺少参数：${missing.join('、')}` })
+        }
+        if (extra.length) {
+          issues.push({ id: `node:${node.id}:operation-extra`, nodeId: node.id, level: 'error',
+            message: `操作「${node.operation}」未声明参数：${extra.join('、')}` })
+        }
+      }
     }
   }
 

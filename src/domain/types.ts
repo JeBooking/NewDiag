@@ -108,6 +108,9 @@ export interface DocNode {
   params?: Record<string, ParamSource>
   /** 仅 start 节点：本次诊断的启动参数声明 */
   inputs?: StartParam[]
+  /** 组合模式：引用 composition.operations 里的操作；配置后由平台自动执行 */
+  operation?: string
+  operationArguments?: Record<string, CompositionArgument>
   position: { x: number; y: number }
 }
 
@@ -124,10 +127,92 @@ export interface FlowDoc {
   name: string
   mode: FlowMode
   diagnosis?: NodeBinding
+  composition?: FlowComposition
   nodes: DocNode[]
   edges: DocEdge[]
   /** 旧版全局启动字段；新文档改用 start 节点的 inputs，读取时兼容 */
   snapshotFields?: string[]
+}
+
+/** 组合配置：参数来源表达式；同一对象只允许出现一种来源键 */
+export interface CompositionArgument {
+  lit?: unknown
+  input?: string
+  param?: string
+  step?: string
+  resource?: string
+  object?: string
+  system?: 'directory' | 'file'
+  name?: string
+  path?: string
+  items?: CompositionArgument[]
+  fields?: Record<string, CompositionArgument>
+}
+
+export type CompositionCallKind = 'constructor' | 'function' | 'method'
+export type CompositionOutput = 'auto' | 'value' | 'object' | 'file' | 'files' | 'image'
+
+export interface CompositionObject {
+  id: string
+  project: string
+  module: string
+  entry: string
+  args?: Record<string, CompositionArgument>
+}
+
+/** 一步 = 一次跨工程调用；同工程的对象留在该工程进程里，句柄不跨进程 */
+export interface CompositionStep {
+  id: string
+  project: string
+  module: string
+  kind: CompositionCallKind
+  /** kind=method 时必填：对象 id（声明的对象或前面步骤 saveAs 的结果） */
+  target?: string
+  function: string
+  output?: CompositionOutput
+  /** 把对象结果登记成实例内对象名，后续步骤可按名字调用它的方法 */
+  saveAs?: string
+  args?: Record<string, CompositionArgument>
+}
+
+export interface CompositionResource {
+  id: string
+  trigger: 'start' | 'lazy'
+  steps: CompositionStep[]
+}
+
+export interface CompositionResult {
+  step: string
+  outcome?: string
+  reason?: string
+  normalReason?: string
+}
+
+export interface CompositionBlock {
+  type: 'text' | 'image' | 'table' | 'metrics' | 'line'
+  step?: string
+  path?: string
+  text?: string
+  caption?: string
+  alt?: string
+  title?: string
+  columns?: string[]
+  headers?: string[]
+  items?: Array<{ label: string; key: string; unit?: string }>
+}
+
+export interface CompositionOperation {
+  parameters?: string[]
+  steps: CompositionStep[]
+  /** 有 result 才是自动判断；没有则取数绘图后交给人判断 */
+  result?: CompositionResult
+  presentation?: CompositionBlock[]
+}
+
+export interface FlowComposition {
+  objects?: CompositionObject[]
+  resources?: CompositionResource[]
+  operations?: Record<string, CompositionOperation>
 }
 
 /** 流程目录，树形；parentId 为空表示根目录 */

@@ -24,6 +24,7 @@ from app import models
 from app.db import SessionLocal, new_id, now_iso
 from app.logging_setup import brief
 from app.services import signatures, storage
+from app.services.composition import CompositionEngine, CompositionFailure, CompositionState
 from app.services.sessions import SessionCrashed, SessionError, SessionManager, SessionTimeout
 from app.worker.function_pipeline import PipelineFailure, execute_pipeline, persisted_state
 from app.worker import artifacts
@@ -78,6 +79,8 @@ class Scheduler:
         self._operation_locks: dict[str, threading.RLock] = {}
         self._termination_locks: dict[str, threading.Lock] = {}
         self._cancelled: set[str] = set()
+        # 组合实例的对象句柄与资源结果；只在本进程内有效，实例结束时清空。
+        self._compositions: dict[str, CompositionState] = {}
 
     def _instance_lock(self, instance_id: str):
         with self._lock:
@@ -129,6 +132,7 @@ class Scheduler:
                 raise ValueError("实例已结束，不能终止")
         with self._lock:
             self._cancelled.add(instance_id)
+        self._compositions.pop(instance_id, None)
         self._sessions.cancel(instance_id)
         with self._instance_lock(instance_id), self._open() as db:
             instance = db.get(models.Instance, instance_id)
@@ -345,9 +349,9 @@ class Scheduler:
             )
             self._ensure_entry_token(db, instance, plan)
             db.commit()
-            if finished_runs or (not plan.get("diagnosis") and not any(
-                step.get("call") or step.get("pipeline") for step in plan["steps"].values()
-            )):
+            if finished_runs or (not plan.get("diagnosis") and not plan.get("composition")
+                                 and not any(step.get("call") or step.get("pipeline")
+                                             for step in plan["steps"].values())):
                 return True  # 只在实例首次启动时比对签名，人工恢复不重新拦
             stored = self._stored_signatures(db, instance)
             expected = plan if plan.get("signature") else {**plan, "signature": stored}
@@ -497,6 +501,15 @@ class Scheduler:
             logger.info(
                 "实例 %s 等待人工：节点 %s（%s）", instance.id, token.node_id, step.get("kind")
             )
+            return
+
+        if step.get("composeResources"):
+            db.commit()
+            self._run_composition_resources(db, instance, plan, token, step)
+            return
+        if step.get("composeOperation"):
+            db.commit()
+            self._run_composition_operation(db, instance, plan, token, step)
             return
 
         if plan.get("diagnosis") and step.get("kind") == "start":
@@ -722,6 +735,134 @@ class Scheduler:
         state["stages"] = [*state.get("stages", []), {"stage": "manualJudgment"}]
         return {"status": "complete", "state": state}, None
 
+    # ------------------------------------------------------------ 组合执行
+
+    def _composition_engine(self, db, instance, plan, token) -> CompositionEngine:
+        state = self._compositions.get(instance.id)
+        if state is None:
+            state = self._compositions[instance.id] = CompositionState()
+        snapshot = self._snapshot_payload(db, instance)
+        inputs = snapshot.get("global") if isinstance(snapshot.get("global"), dict) else snapshot
+
+        def project_of(name: str):
+            return self._project(db, name)
+
+        def call(project, payload: dict):
+            payload = {**payload, "fileRoot": str(self._file_root()),
+                       "artifactRoot": str(self._artifact_root(instance.id))}
+            # 组合调用有副作用（取数落盘、创建对象），不做自动重试。
+            value, failure = self._invoke(
+                db, instance,
+                {"project": getattr(project, "name", project), "function": "__newdiag_compose__"},
+                payload, token, retry=False,
+            )
+            if failure is not None:
+                raise CompositionFailure(failure[0], failure[1])
+            return value
+
+        return CompositionEngine(
+            plan.get("composition") or {}, state,
+            inputs=inputs if isinstance(inputs, dict) else {},
+            artifact_root=self._artifact_root(instance.id),
+            project_of=project_of, call=call,
+        )
+
+    def _run_composition_resources(self, db, instance, plan, token, step) -> None:
+        started, t0 = now_iso(), time.perf_counter()
+        engine = self._composition_engine(db, instance, plan, token)
+        try:
+            loaded = engine.run_resources(step.get("composeResources") or [])
+        except CompositionFailure as exc:
+            self._composition_failed(db, instance, token, exc, started)
+            return
+        if self._is_cancelled(instance.id):
+            return
+        summary = {resource_id: _step_summary(results) for resource_id, results in loaded.items()}
+        self._write_run(
+            db, instance, token, status="ok", started=started,
+            output={"resources": summary},
+            evidence={"composition": {"resources": sorted(summary),
+                                      "durationMs": round((time.perf_counter() - t0) * 1000)}},
+        )
+        self._spawn_successors(db, instance, plan, token, step, "default")
+        token.status, token.updated_at = "done", now_iso()
+        db.flush()
+        logger.info("实例 %s 启动资源完成：%s", instance.id, sorted(summary))
+
+    def _run_composition_operation(self, db, instance, plan, token, step) -> None:
+        started, t0 = now_iso(), time.perf_counter()
+        operation_id = str(step.get("composeOperation") or "")
+        engine = self._composition_engine(db, instance, plan, token)
+        try:
+            params = engine.resolve_params(step.get("operationArgs") or {})
+            outcome = engine.run_operation(operation_id, params)
+        except CompositionFailure as exc:
+            self._composition_failed(db, instance, token, exc, started)
+            return
+        if self._is_cancelled(instance.id):
+            return
+
+        presentation = outcome["presentation"]
+        decision = outcome["decision"]
+        steps = _step_summary(outcome["results"])
+        evidence = {
+            "presentation": presentation,
+            "composition": {"operation": operation_id, "steps": steps,
+                            "durationMs": round((time.perf_counter() - t0) * 1000)},
+        }
+
+        if decision is None:
+            # 操作没有配置判断：取数与绘图已完成，交给人看图表做判断。
+            meta = self._node_meta(db, instance, token.node_id)
+            db.add(models.Review(
+                id=new_id(), instance_id=instance.id, token_id=token.id, node_id=token.node_id,
+                kind="decision", status="pending", created_at=now_iso(),
+                request_json=_dumps({
+                    "title": meta.get("title") or token.node_id,
+                    "detail": meta.get("detail") or "", "nodeKind": step.get("kind"),
+                    "attachments": meta.get("attachments") or [],
+                    "presentation": presentation,
+                    "instructions": "根据展示数据选择「是」或「否」，并填写判断依据",
+                }),
+            ))
+            self._write_run(db, instance, token, status="ok", started=started, args=params,
+                            output={"data": None}, evidence=evidence)
+            token.status, token.updated_at = "waiting", now_iso()
+            db.flush()
+            logger.info("实例 %s 组合节点 %s 等待人工判断", instance.id, token.node_id)
+            return
+
+        branch = decision["branch"]
+        targets = (step.get("next") or {}).get(branch)
+        if not targets:
+            self._write_run(
+                db, instance, token, status="failed", started=started, args=params,
+                output={"result": branch, "reason": decision["reason"], "data": decision["value"]},
+                evidence={**evidence, "branch": branch},
+                error=f"{ERR_ROUTE}: 分支 {branch} 没有后继节点",
+            )
+            self._fail_token(db, instance, token)
+            return
+
+        self._write_run(
+            db, instance, token, status="ok", started=started, args=params,
+            output={"result": branch, "reason": decision["reason"], "data": decision["value"]},
+            evidence={**evidence, "branch": branch},
+        )
+        self._spawn_successors(db, instance, plan, token, step, branch)
+        token.status, token.updated_at = "done", now_iso()
+        db.flush()
+        logger.info("实例 %s 组合操作 %s -> %s（%.0fms）：%s", instance.id, operation_id, branch,
+                    (time.perf_counter() - t0) * 1000, decision["reason"][:120])
+
+    def _composition_failed(self, db, instance, token, exc: CompositionFailure, started) -> None:
+        if self._is_cancelled(instance.id):
+            return
+        logger.warning("实例 %s 组合执行失败 %s：%s", instance.id, exc.code, exc.message)
+        self._write_run(db, instance, token, status="failed", started=started,
+                        error=f"{exc.code}: {exc.message}")
+        self._fail_token(db, instance, token)
+
     def _run_functions(self, db, instance, plan, token, step):
         pipeline = step["pipeline"]
         function = (pipeline.get("acquire") or {}).get("function", "")
@@ -914,15 +1055,16 @@ class Scheduler:
             token.updated_at = now_iso()
         db.flush()
 
-    def _invoke(self, db, instance, call: dict, args: dict, token):
-        """调会话子进程；超时/崩溃重试一次。返回 (value, (code, message, attempts))。"""
+    def _invoke(self, db, instance, call: dict, args: dict, token, *, retry: bool = True):
+        """调会话子进程；超时/崩溃默认重试一次，组合调用传 retry=False。"""
         ref = str(call.get("project") or "")
         function = str(call.get("function") or "")
         project = self._project(db, ref)
         if project is None:
             return None, (ERR_EXCEPTION, f"工程 {ref} 未登记，无法调用 {function}", 1)
         attempts = 0
-        while attempts < 2:
+        limit = 2 if retry else 1
+        while attempts < limit:
             if self._is_cancelled(instance.id):
                 return None, ("execution/terminated", "用户终止诊断", attempts)
             attempts += 1
@@ -943,11 +1085,11 @@ class Scheduler:
                 self._register_files(db, files)
                 return value, None
             except SessionTimeout as exc:
-                if attempts >= 2:
+                if attempts >= limit:
                     return None, (ERR_TIMEOUT, str(exc), attempts)
                 logger.warning("实例 %s 调用 %s 超时，重启会话后重试", instance.id, function)
             except SessionCrashed as exc:
-                if attempts >= 2:
+                if attempts >= limit:
                     return None, (ERR_CRASH, str(exc), attempts)
                 logger.warning(
                     "实例 %s 调用 %s 会话崩溃，重启会话后重试：%s", instance.id, function, exc
@@ -1521,6 +1663,7 @@ class Scheduler:
         return run
 
     def _close_session(self, instance_id: str) -> None:
+        self._compositions.pop(instance_id, None)
         try:
             self._sessions.close(instance_id)
         except Exception:  # noqa: BLE001 - 关闭失败不影响实例结论
@@ -1585,6 +1728,37 @@ def _lookup(root, path: str) -> tuple[bool, object]:
         else:
             return False, None
     return True, current
+
+
+def _step_summary(results: dict) -> list[dict]:
+    """把步骤结果压成可展示的清单；业务对象只留类型名，不落库。"""
+    summary = []
+    for step_id, ref in (results or {}).items():
+        item: dict = {"id": step_id, "output": ref.get("kind")}
+        kind = ref.get("kind")
+        if kind == "handle":
+            item["object"] = (ref.get("preview") or {}).get("$object")
+        elif kind == "file":
+            item["file"] = ref.get("name")
+            item["size"] = ref.get("size")
+        elif kind == "files":
+            item["files"] = len(ref.get("items") or [])
+        elif kind == "image":
+            item["image"] = ref.get("hash")
+        else:
+            item["preview"] = _brief_value(ref.get("value"))
+        summary.append(item)
+    return summary
+
+
+def _brief_value(value):
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    try:
+        text = json.dumps(value, ensure_ascii=False, default=repr)
+    except (TypeError, ValueError):
+        text = repr(value)
+    return text if len(text) <= 120 else text[:117] + "..."
 
 
 def _branch_of(step: dict, value) -> str | None:

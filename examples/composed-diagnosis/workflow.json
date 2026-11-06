@@ -1,0 +1,348 @@
+{
+  "format": 1,
+  "name": "三工程组合诊断（振动与温度）",
+  "mode": "parallel",
+  "composition": {
+    "objects": [
+      {
+        "id": "client",
+        "project": "MockDataService",
+        "module": "dataclient",
+        "entry": "DataClient",
+        "args": { "root": { "system": "directory" } }
+      }
+    ],
+    "resources": [
+      {
+        "id": "main",
+        "trigger": "start",
+        "steps": [
+          {
+            "id": "fetch",
+            "project": "MockDataService",
+            "module": "dataclient",
+            "kind": "method",
+            "target": "client",
+            "function": "fetch",
+            "args": {
+              "device_id": { "input": "device" },
+              "activity": { "input": "activity" },
+              "start_time": { "input": "start_time" },
+              "end_time": { "input": "end_time" }
+            },
+            "output": "file"
+          },
+          {
+            "id": "dataset",
+            "project": "PlotEngine",
+            "module": "dataset",
+            "kind": "function",
+            "function": "Dataset.load",
+            "args": { "path": { "step": "fetch" } },
+            "output": "object",
+            "saveAs": "dataset"
+          }
+        ]
+      }
+    ],
+    "operations": {
+      "vibrationCheck": {
+        "parameters": ["metric"],
+        "steps": [
+          {
+            "id": "series",
+            "project": "PlotEngine",
+            "module": "dataset",
+            "kind": "method",
+            "target": "dataset",
+            "function": "plot_series",
+            "args": {
+              "device": { "input": "device" },
+              "activity": { "input": "activity" },
+              "metric": { "param": "metric" }
+            }
+          },
+          {
+            "id": "chart",
+            "project": "PlotEngine",
+            "module": "plot_window",
+            "kind": "function",
+            "function": "save_plot",
+            "args": {
+              "data": { "step": "series" },
+              "path": { "system": "file", "name": "vibration.png" },
+              "title": { "lit": "振动曲线" },
+              "xlabel": { "lit": "采样点" },
+              "ylabel": { "lit": "mm/s" }
+            },
+            "output": "image"
+          },
+          {
+            "id": "judge",
+            "project": "JudgeEngine",
+            "module": "judgekit",
+            "kind": "constructor",
+            "function": "JudgeEngine",
+            "args": {
+              "thresholds": {
+                "fields": {
+                  "peak": { "input": "peak" },
+                  "mean": { "input": "mean" },
+                  "trend": { "input": "trend" }
+                }
+              }
+            },
+            "output": "object",
+            "saveAs": "vibrationJudge"
+          },
+          {
+            "id": "verdicts",
+            "project": "JudgeEngine",
+            "module": "judgekit",
+            "kind": "method",
+            "target": "vibrationJudge",
+            "function": "judge_series",
+            "args": { "item": { "step": "series" } },
+            "output": "object"
+          },
+          {
+            "id": "summary",
+            "project": "JudgeEngine",
+            "module": "judgekit",
+            "kind": "method",
+            "target": "vibrationJudge",
+            "function": "summary",
+            "args": { "verdicts": { "step": "verdicts" } }
+          }
+        ],
+        "result": {
+          "step": "summary",
+          "outcome": "overall",
+          "reason": "reasons",
+          "normalReason": "三条规则均未触发：峰值、均值、趋势都在阈值内"
+        },
+        "presentation": [
+          { "type": "image", "step": "chart", "caption": "振动曲线（同一份数据既绘图也判断）" },
+          {
+            "type": "table",
+            "step": "summary",
+            "path": "verdicts",
+            "columns": ["label", "result", "reason"],
+            "headers": ["规则", "结论", "依据"]
+          }
+        ]
+      },
+      "temperatureCheck": {
+        "parameters": ["metric"],
+        "steps": [
+          {
+            "id": "series",
+            "project": "PlotEngine",
+            "module": "dataset",
+            "kind": "method",
+            "target": "dataset",
+            "function": "plot_series",
+            "args": {
+              "device": { "input": "device" },
+              "activity": { "input": "activity" },
+              "metric": { "param": "metric" }
+            }
+          },
+          {
+            "id": "chart",
+            "project": "PlotEngine",
+            "module": "plot_window",
+            "kind": "function",
+            "function": "save_plot",
+            "args": {
+              "data": { "step": "series" },
+              "path": { "system": "file", "name": "temperature.png" },
+              "title": { "lit": "温度曲线" },
+              "xlabel": { "lit": "采样点" },
+              "ylabel": { "lit": "℃" }
+            },
+            "output": "image"
+          },
+          {
+            "id": "meanRule",
+            "project": "JudgeEngine",
+            "module": "judgekit",
+            "kind": "constructor",
+            "function": "MeanThresholdRule",
+            "args": { "threshold": { "input": "mean" } },
+            "output": "object",
+            "saveAs": "tempMeanRule"
+          },
+          {
+            "id": "trendRule",
+            "project": "JudgeEngine",
+            "module": "judgekit",
+            "kind": "constructor",
+            "function": "RisingTrendRule",
+            "args": { "threshold": { "input": "trend" } },
+            "output": "object",
+            "saveAs": "tempTrendRule"
+          },
+          {
+            "id": "judge",
+            "project": "JudgeEngine",
+            "module": "judgekit",
+            "kind": "constructor",
+            "function": "JudgeEngine",
+            "args": {
+              "rules": {
+                "items": [
+                  { "object": "tempMeanRule" },
+                  { "object": "tempTrendRule" }
+                ]
+              }
+            },
+            "output": "object",
+            "saveAs": "temperatureJudge"
+          },
+          {
+            "id": "verdicts",
+            "project": "JudgeEngine",
+            "module": "judgekit",
+            "kind": "method",
+            "target": "temperatureJudge",
+            "function": "judge_series",
+            "args": { "item": { "step": "series" } },
+            "output": "object"
+          },
+          {
+            "id": "summary",
+            "project": "JudgeEngine",
+            "module": "judgekit",
+            "kind": "method",
+            "target": "temperatureJudge",
+            "function": "summary",
+            "args": { "verdicts": { "step": "verdicts" } }
+          }
+        ],
+        "result": {
+          "step": "summary",
+          "outcome": "overall",
+          "reason": "reasons",
+          "normalReason": "均值与趋势都未超过阈值"
+        },
+        "presentation": [
+          { "type": "image", "step": "chart", "caption": "温度曲线" },
+          {
+            "type": "table",
+            "step": "summary",
+            "path": "verdicts",
+            "columns": ["label", "result", "reason"],
+            "headers": ["规则", "结论", "依据"]
+          }
+        ]
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "s1",
+      "kind": "start",
+      "title": "开始",
+      "detail": "",
+      "inputs": [
+        { "name": "device", "scope": "global", "type": "text", "default": "D001" },
+        { "name": "activity", "scope": "global", "type": "text", "default": "满载" },
+        { "name": "start_time", "scope": "global", "type": "text", "default": "2026-11-05 08:00" },
+        { "name": "end_time", "scope": "global", "type": "text", "default": "2026-11-05 10:00" },
+        { "name": "peak", "scope": "global", "type": "number", "default": 12 },
+        { "name": "mean", "scope": "global", "type": "number", "default": 40 },
+        { "name": "trend", "scope": "global", "type": "number", "default": 0.05 }
+      ],
+      "position": { "x": 0, "y": 160 }
+    },
+    {
+      "id": "n1",
+      "kind": "investigation",
+      "title": "振动是否异常",
+      "detail": "取同一段数据绘图并判断振动峰值、均值与趋势",
+      "fields": {
+        "observation": "振动曲线",
+        "acquisition": "DataClient 取数后由 Dataset 解析",
+        "assessment": "JudgeEngine 任一规则触发即判为异常"
+      },
+      "operation": "vibrationCheck",
+      "operationArguments": { "metric": { "lit": "vibration" } },
+      "position": { "x": 240, "y": 120 }
+    },
+    {
+      "id": "c1",
+      "kind": "conclusion",
+      "title": "振动异常",
+      "detail": "振动超过阈值，进入停机检查。",
+      "position": { "x": 500, "y": 40 }
+    },
+    {
+      "id": "r1",
+      "kind": "remediation",
+      "title": "停机检查轴承",
+      "detail": "停机后检查轴承与联轴器，记录更换件。",
+      "position": { "x": 740, "y": 40 }
+    },
+    {
+      "id": "ps1",
+      "kind": "problemSolved",
+      "title": "异常已处理",
+      "detail": "轴承检查完成并记录结论。",
+      "position": { "x": 980, "y": 40 }
+    },
+    {
+      "id": "n2",
+      "kind": "investigation",
+      "title": "温度是否偏高",
+      "detail": "振动正常时继续排查温度均值与温升趋势",
+      "fields": {
+        "observation": "温度曲线",
+        "acquisition": "复用启动时解析好的 Dataset",
+        "assessment": "均值或趋势超出阈值判为异常"
+      },
+      "operation": "temperatureCheck",
+      "operationArguments": { "metric": { "lit": "temperature" } },
+      "position": { "x": 500, "y": 240 }
+    },
+    {
+      "id": "c2",
+      "kind": "conclusion",
+      "title": "指标均正常",
+      "detail": "振动与温度都在阈值内。",
+      "position": { "x": 740, "y": 300 }
+    },
+    {
+      "id": "r2",
+      "kind": "remediation",
+      "title": "复核并归档",
+      "detail": "记录本次诊断的图表与规则明细，归档备查。",
+      "position": { "x": 900, "y": 300 }
+    },
+    {
+      "id": "ps2",
+      "kind": "problemSolved",
+      "title": "设备正常",
+      "detail": "无需处置，本次诊断结束。",
+      "position": { "x": 1140, "y": 300 }
+    },
+    {
+      "id": "esc1",
+      "kind": "escalation",
+      "title": "温度异常上升",
+      "detail": "温度超出阈值，转交运行专业进一步分析。",
+      "position": { "x": 900, "y": 180 }
+    }
+  ],
+  "edges": [
+    { "id": "e0", "from": "s1", "to": "n1" },
+    { "id": "e1", "from": "n1", "to": "c1", "branch": "yes" },
+    { "id": "e2", "from": "n1", "to": "n2", "branch": "no" },
+    { "id": "e3", "from": "c1", "to": "r1" },
+    { "id": "e4", "from": "r1", "to": "ps1" },
+    { "id": "e5", "from": "n2", "to": "esc1", "branch": "yes" },
+    { "id": "e6", "from": "n2", "to": "c2", "branch": "no" },
+    { "id": "e7", "from": "c2", "to": "r2" },
+    { "id": "e8", "from": "r2", "to": "ps2" }
+  ]
+}

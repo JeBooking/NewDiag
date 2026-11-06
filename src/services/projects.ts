@@ -35,6 +35,8 @@ export interface ProjectFunctionParam {
 export interface ProjectFunction {
   name: string
   doc?: string | null
+  kind?: 'constructor' | 'function' | 'method' | null
+  owner?: string | null
   params: ProjectFunctionParam[]
   returns?: string | null
   protocol?: 'investigation/v1' | 'diagnosis/v1'
@@ -104,6 +106,9 @@ function normalizeFunction(raw: unknown): ProjectFunction | null {
   return {
     name,
     doc: text(item.doc) ?? text(item.description) ?? null,
+    kind: item.kind === 'constructor' || item.kind === 'function' || item.kind === 'method'
+      ? item.kind : null,
+    owner: text(item.owner) ?? null,
     params,
     returns: text(item.returns) ?? null,
     protocol: item.protocol === 'investigation/v1' || item.protocol === 'diagnosis/v1'
@@ -175,8 +180,18 @@ export async function refreshProject(id: string): Promise<ProjectFunctions> {
   return { functions: normalizeFunctions(item?.functions), error }
 }
 
-export async function fetchProjectFunctions(projectId: string): Promise<ProjectFunction[]> {
-  const data = await request<unknown>(`/projects/${encodeURIComponent(projectId)}/functions`)
+export async function fetchProjectFunctions(
+  projectId: string,
+  module = '',
+  catalog = false,
+): Promise<ProjectFunction[]> {
+  const params = new URLSearchParams()
+  if (module) params.set('module', module)
+  if (catalog) params.set('catalog', '1')
+  const query = params.toString()
+  const data = await request<unknown>(
+    `/projects/${encodeURIComponent(projectId)}/functions${query ? `?${query}` : ''}`,
+  )
   const list = Array.isArray(data) ? data : record(data)?.functions
   return normalizeFunctions(list)
 }

@@ -297,6 +297,10 @@ class ProjectFunction(ApiModel):
     automatic_judgment: bool | None = None
     methods: list[dict[str, Any]] = Field(default_factory=list)
     resources: list[dict[str, Any]] = Field(default_factory=list)
+    # 组合模式用：构造器 / 普通函数 / 方法的区分，以及编排时能看到的说明
+    kind: str | None = None
+    owner: str | None = None
+    doc: str | None = None
 
 
 class ProjectOut(ApiModel):

@@ -58,3 +58,14 @@
 - 不装 `pre-push` 钩子：钩子在后台运行，pytest 清理临时目录时没有确认通道，只能靠关闭批量删除保护绕过；改为显式手工执行，把确认留在人这边。
 - 判断结果看 pytest 汇总行，不看退出码：退出码可能被收尾清理污染。
 - 前端目前没有自动化测试，`pnpm type-check` 只保证类型；改 UI 必须在交付说明里写清手工验证步骤和实际结果。
+
+## 7. v1.13 组合实例（2026-11-06）
+
+新增「配置驱动组合」接入方式，`docs/spec.md` 第 14 节是设计依据；旧四阶段／数据准备／诊断实例类保留兼容，不再作为新流程默认方案。
+
+- 新增 `backend/app/worker/composition_runtime.py`（工程内对象表与调用执行）、`backend/app/services/composition.py`（表达式、跨工程桥接、资源缓存、结果映射）。
+- 扩展 `compiler.py`（doc.composition → plan.composition）、`scheduler.py`（启动资源、节点操作、人工判断展示）、`sessions.py`（一个实例多工程 worker）、`signatures.py`（`工程:模块:接口` 指纹）、`worker/probe.py`（类构造器与方法展开）、`worker/session.py`（`__newdiag_compose__`）。
+- 前端新增 `CompositionEditor / CompositionSteps / CompositionArguments / CompositionArgument`，流程属性与排查节点面板接入口；`types.ts` 增加组合类型。
+- 示例 `examples/composed-diagnosis`，手册 `docs/composition-manual.md`。
+- 不新增数据库表与 API 路径；`ProjectFunction` 响应增加 `kind/owner/doc` 兼容字段，`/api/projects/{id}/functions` 与 `/refresh` 支持 `module` 查询参数。
+- 未改动三个被接入工程。

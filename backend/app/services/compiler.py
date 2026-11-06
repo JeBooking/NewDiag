@@ -98,6 +98,8 @@ def validate_doc(
     _check_bindings(nodes_by_id, valid_edges, start, issues, functions, strict_binding)
     _, found = _compile_diagnosis(doc, nodes_by_id, valid_edges, start, functions)
     issues.extend({**issue, "level": LEVEL_WARNING} if not strict_binding else issue for issue in found)
+    _, found = _compile_composition(doc, nodes_by_id, functions)
+    issues.extend({**issue, "level": LEVEL_WARNING} if not strict_binding else issue for issue in found)
     return issues
 
 
@@ -115,7 +117,7 @@ class StartNode(NodeDefinition):
 class InvestigationNode(NodeDefinition):
     def compile(self, node, nodes, edges, start, functions):
         step = super().compile(node, nodes, edges, start, functions)
-        if node.get("method"):
+        if node.get("method") or node.get("operation"):
             return step
         if "pipeline" in node:
             step["pipeline"], _ = _compile_function_pipeline(node, nodes, edges, start, functions)
@@ -258,6 +260,17 @@ def compile_doc(
     }
     if doc.get("diagnosis"):
         plan["diagnosis"], _ = _compile_diagnosis(doc, nodes_by_id, valid_edges, start, functions)
+    composition, _ = _compile_composition(doc, nodes_by_id, functions)
+    if composition is not None:
+        plan["composition"] = composition
+        start_id = start.id or entry
+        start_step = steps.get(start_id) or {}
+        start_step["composeResources"] = composition["startup"]
+        for nid, node in nodes_by_id.items():
+            if not node.get("operation"):
+                continue
+            steps[nid]["composeOperation"] = str(node["operation"])
+            steps[nid]["operationArgs"] = dict(node.get("operationArguments") or {})
     return plan
 
 
@@ -654,6 +667,512 @@ def _compile_diagnosis(doc, nodes, edges, start, functions):
     args, found = _resolve_args(init_node, nodes, edges, start, functions)
     issues.extend(found)
     return {**binding, "args": args, "definition": meta}, issues
+
+
+# ---------------------------------------------------------------- 组合配置
+#
+# doc.composition 声明工程对象、启动资源和节点操作；节点只引用 operation 并提供参数。
+# 编译期把「谁调用谁、参数从哪来」全部写死，运行期不再按名字猜。
+
+
+COMPOSITION_CALL_KINDS = ("constructor", "function", "method")
+COMPOSITION_OUTPUTS = ("auto", "value", "object", "file", "files", "image")
+COMPOSITION_TRIGGERS = ("start", "lazy")
+ARGUMENT_KEYS = ("lit", "input", "param", "step", "resource", "object", "system", "items", "fields")
+NODE_ARGUMENT_KEYS = ("lit", "input", "object", "system", "items", "fields")
+
+
+def _compile_composition(doc: dict, nodes: dict, functions: dict | None):
+    """把 composition 编译成 plan.composition；没有配置时返回 (None, [])。"""
+    issues: list[dict] = []
+    raw = doc.get("composition")
+    if raw is None:
+        for nid, node in nodes.items():
+            if node.get("operation"):
+                issues.append(_issue(LEVEL_ERROR, "节点引用了操作，但流程没有组合配置", node_id=nid))
+        return None, issues
+
+    if doc.get("diagnosis"):
+        issues.append(_issue(LEVEL_ERROR, "组合配置与诊断类不能同时使用"))
+    if not isinstance(raw, dict):
+        return None, [_issue(LEVEL_ERROR, "组合配置必须是对象")]
+    for nid, node in nodes.items():
+        if node.get("kind") == "dataPreparation":
+            issues.append(_issue(LEVEL_ERROR, "组合流程不再使用数据准备节点，请改为启动资源", node_id=nid))
+        if node.get("pipeline"):
+            issues.append(_issue(LEVEL_ERROR, "组合流程不再使用四阶段函数配置", node_id=nid))
+
+    objects = _compile_objects(raw.get("objects"), issues)
+    resources, resource_order, startup_objects, startup_owners = _compile_resources(
+        raw.get("resources"), objects, issues)
+    operations = _compile_operations(raw.get("operations"), objects, resources,
+                                     startup_objects, startup_owners, issues)
+    _compile_operation_nodes(nodes, operations, issues)
+    _check_composition_signatures(objects, resources, operations, functions, issues)
+
+    startup = [rid for rid in resource_order
+               if resources[rid]["trigger"] == COMPOSITION_TRIGGERS[0]]
+    return {
+        "objects": objects,
+        "resources": resources,
+        "operations": operations,
+        "startup": startup,
+    }, issues
+
+
+def _compile_objects(items, issues: list[dict]) -> dict:
+    result: dict[str, dict] = {}
+    if items is None:
+        return result
+    if not isinstance(items, list):
+        issues.append(_issue(LEVEL_ERROR, "组合对象必须是数组"))
+        return result
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            issues.append(_issue(LEVEL_ERROR, f"组合对象第 {index + 1} 项必须是对象"))
+            continue
+        object_id = _text(item.get("id"))
+        if not object_id:
+            issues.append(_issue(LEVEL_ERROR, "组合对象缺少 id"))
+            continue
+        if object_id in result:
+            issues.append(_issue(LEVEL_ERROR, f"组合对象 id 重复：{object_id}"))
+            continue
+        project = _text(item.get("project"))
+        module = _text(item.get("module"))
+        entry = _text(item.get("entry"))
+        for name, value in (("工程", project), ("模块", module), ("构造器", entry)):
+            if not value:
+                issues.append(_issue(LEVEL_ERROR, f"组合对象 {object_id} 缺少{name}"))
+        args = item.get("args") or {}
+        if not isinstance(args, dict):
+            issues.append(_issue(LEVEL_ERROR, f"组合对象 {object_id} 的构造参数必须是对象"))
+            args = {}
+        for name, expression in args.items():
+            _check_argument(expression, f"对象 {object_id}.{name}", issues,
+                            step_ids=set(), object_ids=set(result), resource_ids=set(),
+                            parameters=set(), node_id=None,
+                            allowed=("lit", "input", "system", "items", "fields"))
+        if project and module and entry:
+            result[object_id] = {"project": project, "module": module, "entry": entry, "args": args}
+    return result
+
+
+def _compile_resources(items, objects: dict, issues: list[dict]):
+    result: dict[str, dict] = {}
+    order: list[str] = []
+    # 启动资源产出的对象，供后续操作直接引用；按需资源产出不进入这个集合。
+    startup_objects: set[str] = set()
+    startup_owners: dict[str, str] = {}
+    if items is None:
+        return result, order, startup_objects, startup_owners
+    if not isinstance(items, list):
+        issues.append(_issue(LEVEL_ERROR, "组合资源必须是数组"))
+        return result, order, startup_objects, startup_owners
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            issues.append(_issue(LEVEL_ERROR, f"组合资源第 {index + 1} 项必须是对象"))
+            continue
+        resource_id = _text(item.get("id"))
+        if not resource_id:
+            issues.append(_issue(LEVEL_ERROR, "组合资源缺少 id"))
+            continue
+        if resource_id in result:
+            issues.append(_issue(LEVEL_ERROR, f"组合资源 id 重复：{resource_id}"))
+            continue
+        trigger = _text(item.get("trigger")) or "lazy"
+        if trigger not in COMPOSITION_TRIGGERS:
+            issues.append(_issue(LEVEL_ERROR, f"资源 {resource_id} 的触发方式必须是 start 或 lazy"))
+            trigger = "lazy"
+        available = set(objects) | startup_objects
+        owners = {object_id: item["entry"] for object_id, item in objects.items()}
+        owners.update(startup_owners)
+        steps = _compile_steps(
+            item.get("steps"), label=f"资源 {resource_id}", objects=objects,
+            available=available, owners=owners, resource_ids=set(result), parameters=set(),
+            allow_params=False, node_id=None, issues=issues,
+        )
+        if not steps:
+            issues.append(_issue(LEVEL_ERROR, f"资源 {resource_id} 至少需要一个步骤"))
+        result[resource_id] = {"id": resource_id, "trigger": trigger, "steps": steps}
+        order.append(resource_id)
+        if trigger == "start":
+            startup_objects |= available - set(objects)
+            startup_owners.update({key: value for key, value in owners.items()
+                                   if key not in objects})
+    return result, order, startup_objects, startup_owners
+
+
+def _compile_operations(items, objects: dict, resources: dict, startup_objects: set[str],
+                        startup_owners: dict, issues: list[dict]) -> dict:
+    result: dict[str, dict] = {}
+    if items is None:
+        return result
+    if not isinstance(items, dict):
+        issues.append(_issue(LEVEL_ERROR, "组合操作必须是对象，键为操作 id"))
+        return result
+    for operation_id, item in items.items():
+        operation_id = _text(operation_id)
+        if not operation_id:
+            issues.append(_issue(LEVEL_ERROR, "组合操作 id 不能为空"))
+            continue
+        if not isinstance(item, dict):
+            issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 必须是对象"))
+            continue
+        declared = item.get("parameters")
+        if declared is None:
+            declared = _used_parameters(item.get("steps"))
+        elif not isinstance(declared, list) or any(not _text(name) for name in declared):
+            issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 的 parameters 必须是名称数组"))
+            declared = []
+        declared = list(dict.fromkeys(_text(name) for name in declared if _text(name)))
+        owners = {object_id: item["entry"] for object_id, item in objects.items()}
+        owners.update(startup_owners)
+        steps = _compile_steps(
+            item.get("steps"), label=f"操作 {operation_id}", objects=objects,
+            available=set(objects) | set(startup_objects), owners=owners,
+            resource_ids=set(resources),
+            parameters=set(declared), allow_params=True, node_id=None, issues=issues,
+        )
+        used = _used_parameters(item.get("steps"))
+        for name in sorted(used - set(declared)):
+            issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 使用了未声明的参数 {name}"))
+        for name in sorted(set(declared) - used):
+            issues.append(_issue(LEVEL_WARNING, f"操作 {operation_id} 声明了参数 {name} 但没有任何步骤使用"))
+        if not steps:
+            issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 至少需要一个步骤"))
+        result[operation_id] = {
+            "id": operation_id, "parameters": declared, "steps": steps,
+            "result": _compile_result(item.get("result"), operation_id, steps, issues),
+            "presentation": _compile_presentation(item.get("presentation"), operation_id, steps, issues),
+        }
+    return result
+
+
+def _compile_steps(items, *, label: str, objects: dict, available: set[str],
+                   owners: dict[str, str], resource_ids: set[str], parameters: set[str],
+                   allow_params: bool, node_id, issues: list[dict]) -> list[dict]:
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        issues.append(_issue(LEVEL_ERROR, f"{label}的 steps 必须是数组", node_id=node_id))
+        return []
+    result: list[dict] = []
+    seen: set[str] = set()
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            issues.append(_issue(LEVEL_ERROR, f"{label}第 {index + 1} 步必须是对象", node_id=node_id))
+            continue
+        step_id = _text(item.get("id"))
+        if not step_id:
+            issues.append(_issue(LEVEL_ERROR, f"{label}第 {index + 1} 步缺少 id", node_id=node_id))
+            continue
+        if step_id in seen:
+            issues.append(_issue(LEVEL_ERROR, f"{label}的步骤 id 重复：{step_id}", node_id=node_id))
+            continue
+        seen.add(step_id)
+
+        project = _text(item.get("project"))
+        module = _text(item.get("module"))
+        function = _text(item.get("function"))
+        kind = _text(item.get("kind")) or "function"
+        if kind not in COMPOSITION_CALL_KINDS:
+            issues.append(_issue(LEVEL_ERROR, f"{label}的步骤 {step_id} 调用类型不合法：{kind}", node_id=node_id))
+            kind = "function"
+        for name, value in (("工程", project), ("模块", module), ("接口", function)):
+            if not value:
+                issues.append(_issue(LEVEL_ERROR, f"{label}的步骤 {step_id} 缺少{name}", node_id=node_id))
+        target = _text(item.get("target"))
+        if kind == "method":
+            if not target:
+                issues.append(_issue(LEVEL_ERROR, f"{label}的步骤 {step_id} 调用实例方法必须指定对象", node_id=node_id))
+            elif target not in available:
+                issues.append(_issue(
+                    LEVEL_ERROR,
+                    f"{label}的步骤 {step_id} 引用了尚不存在的对象 {target}："
+                    f"必须先声明对象，或由更早的步骤用 saveAs 产出",
+                    node_id=node_id,
+                ))
+        elif target:
+            issues.append(_issue(LEVEL_ERROR, f"{label}的步骤 {step_id} 只有实例方法才能指定对象", node_id=node_id))
+
+        output = _text(item.get("output")) or "auto"
+        if output not in COMPOSITION_OUTPUTS:
+            issues.append(_issue(LEVEL_ERROR, f"{label}的步骤 {step_id} 的输出类型不合法：{output}", node_id=node_id))
+            output = "auto"
+        save_as = _text(item.get("saveAs"))
+        if save_as:
+            if output not in ("auto", "object"):
+                issues.append(_issue(LEVEL_ERROR,
+                                     f"{label}的步骤 {step_id} 只有对象输出才能用 saveAs 命名", node_id=node_id))
+                save_as = ""
+            elif save_as in objects or save_as in available:
+                issues.append(_issue(LEVEL_ERROR, f"{label}的对象名重复：{save_as}", node_id=node_id))
+                save_as = ""
+        # 返回类型没有注解时无法静态推断对象属于哪个类；允许作者显式声明，签名才查得到。
+        owner = _text(item.get("owner"))
+
+        args = item.get("args") or {}
+        if not isinstance(args, dict):
+            issues.append(_issue(LEVEL_ERROR, f"{label}的步骤 {step_id} 的 args 必须是对象", node_id=node_id))
+            args = {}
+        allowed = ARGUMENT_KEYS if allow_params else tuple(k for k in ARGUMENT_KEYS if k != "param")
+        for name, expression in args.items():
+            _check_argument(expression, f"{label}.{step_id}.{name}", issues,
+                            step_ids=set(seen) - {step_id}, object_ids=available,
+                            resource_ids=resource_ids, parameters=parameters, node_id=node_id,
+                            allowed=allowed)
+        result.append({
+            "id": step_id, "project": project, "module": module, "kind": kind,
+            "target": target, "function": function, "output": output, "args": args,
+            "interface": _interface_name(kind, function, target, owners, owner),
+            **({"saveAs": save_as} if save_as else {}),
+            **({"owner": owner} if owner else {}),
+        })
+        if save_as:
+            available.add(save_as)
+            produced = owner or _produced_owner(kind, function, target, owners)
+            if produced:
+                owners[save_as] = produced
+            else:
+                issues.append(_issue(
+                    LEVEL_WARNING,
+                    f"{label}的步骤 {step_id} 产出的对象 {save_as} 无法静态确定类型，"
+                    f"方法调用不做签名校验；可加 owner 声明类名",
+                    node_id=node_id,
+                ))
+    return result
+
+
+def _interface_name(kind: str, function: str, target: str, owners: dict[str, str],
+                    explicit: str = "") -> str:
+    """探测/指纹用的接口全名；实例方法要带类名，同名方法才不会被混在一起。
+
+    owner 声明在方法步骤上是「被调用对象属于哪个类」，声明在产出对象的步骤上
+    是「返回对象属于哪个类」；只有前者改变接口全名。
+    """
+    if kind != "method":
+        return function
+    owner = explicit or owners.get(target)
+    return f"{owner}.{function}" if owner else function
+
+
+def _produced_owner(kind: str, function: str, target: str, owners: dict[str, str]) -> str:
+    if kind == "method":
+        return owners.get(target, "")
+    if kind == "constructor":
+        return function
+    return function.rsplit(".", 1)[0] if "." in function else ""
+
+
+def _check_argument(expression, where: str, issues: list[dict], *, step_ids, object_ids,
+                    resource_ids, parameters, node_id, allowed) -> None:
+    if not isinstance(expression, dict):
+        issues.append(_issue(LEVEL_ERROR, f"{where} 的参数来源必须是对象", node_id=node_id))
+        return
+    keys = [key for key in expression if key in ARGUMENT_KEYS]
+    if len(keys) != 1:
+        issues.append(_issue(LEVEL_ERROR, f"{where} 必须且只能指定一种来源（{'/'.join(ARGUMENT_KEYS)}）",
+                             node_id=node_id))
+        return
+    key = keys[0]
+    if key not in allowed:
+        issues.append(_issue(LEVEL_ERROR, f"{where} 不允许使用 {key} 来源", node_id=node_id))
+        return
+    if key == "lit":
+        return
+    if key == "input":
+        if not _text(expression.get("input")):
+            issues.append(_issue(LEVEL_ERROR, f"{where} 的启动输入名为空", node_id=node_id))
+        return
+    if key in ("step", "resource", "param", "object"):
+        name = _text(expression.get(key))
+        if not name:
+            issues.append(_issue(LEVEL_ERROR, f"{where} 的 {key} 名称为空", node_id=node_id))
+            return
+        if key == "step" and name not in step_ids:
+            issues.append(_issue(LEVEL_ERROR, f"{where} 引用了尚未执行的步骤 {name}；步骤只能引用它前面的结果",
+                                 node_id=node_id))
+        if key == "resource":
+            if name not in resource_ids:
+                issues.append(_issue(LEVEL_ERROR, f"{where} 引用了未声明的资源 {name}", node_id=node_id))
+            elif not _text(expression.get("step")):
+                issues.append(_issue(LEVEL_ERROR, f"{where} 引用资源时必须指定步骤", node_id=node_id))
+        if key == "param" and name not in parameters:
+            issues.append(_issue(LEVEL_ERROR, f"{where} 引用了未声明的操作参数 {name}", node_id=node_id))
+        if key == "object" and name not in object_ids:
+            issues.append(_issue(LEVEL_ERROR, f"{where} 引用了未声明的对象 {name}", node_id=node_id))
+        return
+    if key == "system":
+        if _text(expression.get("system")) not in ("directory", "file"):
+            issues.append(_issue(LEVEL_ERROR, f"{where} 的平台路径只能是 directory 或 file", node_id=node_id))
+        return
+    if key == "items":
+        raw = expression.get("items")
+        if not isinstance(raw, list):
+            issues.append(_issue(LEVEL_ERROR, f"{where} 的 items 必须是数组", node_id=node_id))
+            return
+        for index, item in enumerate(raw):
+            _check_argument(item, f"{where}[{index}]", issues, step_ids=step_ids, object_ids=object_ids,
+                            resource_ids=resource_ids, parameters=parameters, node_id=node_id,
+                            allowed=allowed)
+        return
+    if key == "fields":
+        raw = expression.get("fields")
+        if not isinstance(raw, dict):
+            issues.append(_issue(LEVEL_ERROR, f"{where} 的 fields 必须是对象", node_id=node_id))
+            return
+        for name, item in raw.items():
+            _check_argument(item, f"{where}.{name}", issues, step_ids=step_ids, object_ids=object_ids,
+                            resource_ids=resource_ids, parameters=parameters, node_id=node_id,
+                            allowed=allowed)
+
+
+def _compile_result(item, operation_id: str, steps: list[dict], issues: list[dict]):
+    if item is None:
+        return None
+    if not isinstance(item, dict):
+        issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 的 result 必须是对象"))
+        return None
+    step_id = _text(item.get("step"))
+    if not step_id:
+        issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 的 result 必须指定步骤"))
+        return None
+    if step_id not in {step["id"] for step in steps}:
+        issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 的 result 引用了未执行的步骤 {step_id}"))
+        return None
+    for key in ("outcome", "reason", "normalReason"):
+        if key in item and not isinstance(item.get(key), str):
+            issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 的 result.{key} 必须是字符串"))
+    return {
+        "step": step_id,
+        "outcome": _text(item.get("outcome")),
+        "reason": _text(item.get("reason")),
+        "normalReason": _text(item.get("normalReason")),
+    }
+
+
+def _compile_presentation(items, operation_id: str, steps: list[dict], issues: list[dict]) -> list[dict]:
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 的 presentation 必须是数组"))
+        return []
+    known = {step["id"] for step in steps}
+    result = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict) or _text(item.get("type")) not in ("text", "image", "table", "metrics", "line"):
+            issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 的展示块第 {index + 1} 项类型不合法"))
+            continue
+        step_id = _text(item.get("step"))
+        if step_id and step_id not in known:
+            issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 的展示块引用了未执行的步骤 {step_id}"))
+            continue
+        if not step_id and "text" not in item:
+            issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 的展示块缺少步骤或文本"))
+            continue
+        result.append(item)
+    return result
+
+
+def _compile_operation_nodes(nodes: dict, operations: dict, issues: list[dict]) -> None:
+    for nid, node in nodes.items():
+        operation_id = _text(node.get("operation"))
+        if not operation_id:
+            if node.get("operationArguments"):
+                issues.append(_issue(LEVEL_ERROR, "配置了操作参数但没有选择操作", node_id=nid))
+            continue
+        if node.get("kind") != "investigation":
+            issues.append(_issue(LEVEL_ERROR, "只有排查节点可以绑定操作", node_id=nid))
+            continue
+        if node.get("binding") or node.get("pipeline") or node.get("method"):
+            issues.append(_issue(LEVEL_ERROR, "绑定操作的节点不能再配置函数、四阶段或实例方法", node_id=nid))
+            continue
+        operation = operations.get(operation_id)
+        if operation is None:
+            issues.append(_issue(LEVEL_ERROR, f"节点引用了未声明的操作 {operation_id}", node_id=nid))
+            continue
+        arguments = node.get("operationArguments") or {}
+        if not isinstance(arguments, dict):
+            issues.append(_issue(LEVEL_ERROR, "操作参数必须是对象", node_id=nid))
+            continue
+        required = set(operation["parameters"])
+        missing = sorted(required - set(arguments))
+        extra = sorted(set(arguments) - required)
+        if missing:
+            issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 缺少参数：{', '.join(missing)}", node_id=nid))
+        if extra:
+            issues.append(_issue(LEVEL_ERROR, f"操作 {operation_id} 未声明参数：{', '.join(extra)}", node_id=nid))
+        for name, expression in arguments.items():
+            _check_argument(expression, f"节点 {nid}.{name}", issues, step_ids=set(),
+                            object_ids=set(), resource_ids=set(),
+                            parameters=required, node_id=nid, allowed=NODE_ARGUMENT_KEYS)
+
+
+def _check_composition_signatures(objects: dict, resources: dict, operations: dict,
+                                  functions: dict | None, issues: list[dict]) -> None:
+    if functions is None:
+        return
+
+    def check(project: str, module: str, function: str, args: dict, where: str) -> None:
+        if not project or not module or not function:
+            return
+        key = _composition_key(project, module, function)
+        params = functions.get(key)
+        if not isinstance(params, list):
+            detail = params.get("error", "接口尚未探测") if isinstance(params, dict) else "接口尚未探测"
+            issues.append(_issue(LEVEL_ERROR, f"{where} 的接口不可用：{detail}"))
+            return
+        missing = [param["name"] for param in params
+                   if param.get("required", True) and param["name"] not in args]
+        if missing:
+            issues.append(_issue(LEVEL_ERROR, f"{where} 缺少必填参数：{', '.join(missing)}"))
+        unknown = sorted(set(args) - {param["name"] for param in params})
+        if unknown:
+            issues.append(_issue(LEVEL_WARNING, f"{where} 含接口未声明的参数：{', '.join(unknown)}"))
+
+    for object_id, item in objects.items():
+        check(item["project"], item["module"], item["entry"], item.get("args") or {},
+              f"对象 {object_id}")
+    for resource_id, item in resources.items():
+        for step in item["steps"]:
+            check(step["project"], step["module"], step.get("interface") or step["function"],
+                  step["args"], f"资源 {resource_id} 的步骤 {step['id']}")
+    for operation_id, item in operations.items():
+        for step in item["steps"]:
+            check(step["project"], step["module"], step.get("interface") or step["function"],
+                  step["args"], f"操作 {operation_id} 的步骤 {step['id']}")
+
+
+def _composition_key(project: str, module: str, function: str) -> str:
+    return f"{project}:{module}:{function}"
+
+
+def _used_parameters(steps) -> set[str]:
+    found: set[str] = set()
+
+    def walk(expression) -> None:
+        if isinstance(expression, dict):
+            if "param" in expression:
+                name = _text(expression.get("param"))
+                if name:
+                    found.add(name)
+                return
+            for key in ("items", "fields"):
+                value = expression.get(key)
+                if key == "items" and isinstance(value, list):
+                    for item in value:
+                        walk(item)
+                elif key == "fields" and isinstance(value, dict):
+                    for item in value.values():
+                        walk(item)
+
+    for step in steps if isinstance(steps, list) else []:
+        if not isinstance(step, dict):
+            continue
+        for expression in (step.get("args") or {}).values():
+            walk(expression)
+    return found
 
 
 def _compile_function_pipeline(node, nodes, edges, start, functions):

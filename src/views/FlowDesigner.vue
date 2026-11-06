@@ -518,12 +518,14 @@ onBeforeRouteLeave(async () => {
             v-else-if="editor.flow"
             :flow="editor.flow"
             :diagnosis="editor.doc?.diagnosis"
+            :composition="editor.doc?.composition"
             :snapshot-fields="editor.doc?.snapshotFields ?? []"
             :readonly="editor.readonly"
             :publishing="editor.publishing"
             @update-meta="patchMeta"
             @update-snapshot-fields="patchSnapshotFields"
             @update-diagnosis="editor.doc && editor.applyDoc({ ...editor.doc, diagnosis: $event })"
+            @update-composition="editor.doc && editor.applyDoc({ ...editor.doc, composition: $event })"
             @publish="publish"
           />
         </aside>

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { FlowDetail, FlowMode, NodeBinding } from '@/domain/types'
+import type { FlowComposition, FlowDetail, FlowMode, NodeBinding } from '@/domain/types'
 import BindingEditor from '@/components/panels/BindingEditor.vue'
+import CompositionEditor from '@/components/panels/CompositionEditor.vue'
 
 const props = defineProps<{
   flow: FlowDetail
@@ -9,12 +10,14 @@ const props = defineProps<{
   readonly?: boolean
   publishing?: boolean
   diagnosis?: NodeBinding
+  composition?: FlowComposition
 }>()
 const emit = defineEmits<{
   (e: 'update-meta', patch: { name?: string; mode?: FlowMode }): void
   (e: 'update-snapshot-fields', value: string[]): void
   (e: 'publish'): void
   (e: 'update-diagnosis', value: NodeBinding | undefined): void
+  (e: 'update-composition', value: FlowComposition | undefined): void
 }>()
 
 const draft = ref('')
@@ -117,6 +120,16 @@ function removeField(name: string): void {
       @update="emit('update-diagnosis', $event)"
     />
     <div class="section-hint">可选。选择后，排查节点直接调用该诊断类的方法，获取和解析由实例统一管理。启动参数在开始节点配置。</div>
+
+    <div class="section-title">组合配置</div>
+    <div v-if="diagnosis" class="section-hint">已启用诊断实例类，组合配置与它互斥；如需组合多个既有工程，请先清空诊断实例。</div>
+    <CompositionEditor
+      v-else :composition="composition ?? {}" :readonly="readonly"
+      @update="emit('update-composition', $event)"
+    />
+    <div class="section-hint">
+      排查节点选择这里的操作后，平台按配置逐项调用各工程公开接口；不需要新写总控代码。
+    </div>
 
     <div class="section-title">快照字段（旧版兼容）</div>
     <div class="tag-input">

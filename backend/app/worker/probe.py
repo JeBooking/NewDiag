@@ -13,6 +13,7 @@ import inspect
 import json
 import sys
 import traceback
+import hashlib
 
 if __package__:
     from . import node_sdk, diagnosis_sdk
@@ -61,6 +62,7 @@ def _discover(config: dict) -> list[dict]:
     path = config.get("path") or ""
     module_name = config.get("module") or ""
     factory_name = config.get("factory") or ""
+    catalog = bool(config.get("catalog"))
     if path and path not in sys.path:
         sys.path.insert(0, path)
     if not module_name:
@@ -68,7 +70,7 @@ def _discover(config: dict) -> list[dict]:
     module = importlib.import_module(module_name)
 
     if not factory_name:
-        return _module_functions(module)
+        return _module_functions(module, catalog)
 
     target = _resolve(module, factory_name)
     if inspect.isclass(target):
@@ -82,7 +84,7 @@ def _discover(config: dict) -> list[dict]:
     raise TypeError(f"factory 不是可调用对象：{factory_name}")
 
 
-def _module_functions(module) -> list[dict]:
+def _module_functions(module, catalog: bool = False) -> list[dict]:
     names = getattr(module, "__all__", None)
     if names is None:
         names = [
@@ -102,10 +104,45 @@ def _module_functions(module) -> list[dict]:
         if is_adapter(obj):
             result.append(_describe_adapter(name, obj))
             continue
-        if callable(obj) and not inspect.isclass(obj):
+        if inspect.isclass(obj):
+            # 类目录只在组合模式请求：旧的函数绑定面板不该出现构造器和方法。
+            if catalog:
+                result.extend(_class_entries(name, obj))
+            continue
+        if callable(obj):
             result.append(_describe(name, obj))
     result.sort(key=lambda item: item["name"])
     return result
+
+
+def _class_entries(name: str, cls: type) -> list[dict]:
+    """类展开成「构造器 + 公开方法」两条目，名字用 Class 与 Class.method。
+
+    只做静态读取，不实例化、不调用任何业务方法。
+    """
+    entries: list[dict] = []
+    entry = _describe(name, cls)
+    if not entry.get("error"):
+        entry.update({"kind": "constructor", "owner": name, "doc": _doc(cls)})
+        entries.append(entry)
+    for attr in dir(cls):
+        if attr.startswith("_"):
+            continue
+        raw = inspect.getattr_static(cls, attr, None)
+        if isinstance(raw, property):
+            continue
+        func = raw.__func__ if isinstance(raw, (staticmethod, classmethod)) else raw
+        if func is None or not callable(func):
+            continue
+        # 跳过继承自内置异常/对象的方法，例如 QueryError.add_note —— 对编排没有意义
+        if getattr(func, "__module__", "") == "builtins":
+            continue
+        item = _describe(f"{name}.{attr}", func)
+        if item.get("error"):
+            continue
+        item.update({"kind": "method", "owner": name, "doc": _doc(func)})
+        entries.append(item)
+    return entries
 
 
 def expanded_functions(functions):
@@ -189,7 +226,30 @@ def _describe(name: str, func) -> dict:
              for p in signature.parameters.values()):
         pipeline_error = "四阶段函数参数必须显式命名且支持关键字传参，不支持 *args、**kwargs 或位置专用参数"
     return {"name": name, "params": params, "returns": _type_name(signature.return_annotation),
-            "pipelineError": pipeline_error}
+            "pipelineError": pipeline_error, "source": _source_digest(func)}
+
+
+def _doc(value) -> str:
+    """给编排团队看的说明；读不到就是空串，不因此判定接口不可用。"""
+    try:
+        text = inspect.getdoc(value) or ""
+    except (TypeError, ValueError):
+        return ""
+    return text.strip()[:500]
+
+
+def _source_digest(func) -> str:
+    """源码摘要：签名没变但实现改了，发布指纹也要跟着变。
+
+    取不到源码（内置函数、动态生成）时留空，调用方按「未知」处理，不阻断。
+    """
+    try:
+        text = inspect.getsource(func)
+    except (OSError, TypeError):
+        return ""
+    lines = [line.rstrip() for line in text.replace("\r\n", "\n").strip().split("\n")]
+    normalized = "\n".join(lines)
+    return "sha256:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _type_name(annotation) -> str:

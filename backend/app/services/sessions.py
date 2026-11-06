@@ -45,26 +45,34 @@ class SessionHandle:
 
 
 class SessionManager:
-    """进程内单例式管理器；线程安全，数据库无关。"""
+    """进程内单例式管理器；线程安全，数据库无关。
+
+    一个实例同时可能有多个工程在跑：句柄按 (实例, 工程登记项) 归档，
+    同一工程重复调用复用同一个进程，不同工程互不挤占。
+    """
 
     def __init__(self) -> None:
-        self._handles: dict[str, SessionHandle] = {}
+        self._handles: dict[str, dict[tuple, SessionHandle]] = {}
         self._lock = threading.Lock()
         self._cancelled: set[str] = set()
 
     def ensure(self, instance_id: str, project) -> SessionHandle:
+        project_key = tuple(
+            getattr(project, key, None) for key in ("path", "module", "python", "factory")
+        )
         with self._lock:
             if instance_id in self._cancelled:
                 raise SessionError("实例已终止，不能启动会话")
-            handle = self._handles.get(instance_id)
-            project_key = tuple(getattr(project, key, None) for key in ("path", "module", "python", "factory"))
-            if handle is not None and handle.proc.poll() is None and handle.project_key == project_key:
+            handles = self._handles.setdefault(instance_id, {})
+            handle = handles.get(project_key)
+            if handle is not None and handle.proc.poll() is None:
                 return handle
             if handle is not None:
+                handles.pop(project_key, None)
                 self._dispose(handle)
             handle = self._spawn(instance_id, project)
             handle.project_key = project_key
-            self._handles[instance_id] = handle
+            handles[project_key] = handle
             return handle
 
     def call(
@@ -155,8 +163,8 @@ class SessionManager:
         # 标记与摘除使用同一把锁，避免取消后并发 ensure 重建进程。
         with self._lock:
             self._cancelled.add(instance_id)
-            handle = self._handles.pop(instance_id, None)
-        if handle is not None:
+            handles = self._handles.pop(instance_id, {})
+        for handle in handles.values():
             logger.info("实例 %s 终止会话 pid=%s", instance_id, handle.proc.pid)
             self._kill(handle)
             handle.inbox.put(None)
@@ -168,8 +176,8 @@ class SessionManager:
 
     def close(self, instance_id: str) -> None:
         with self._lock:
-            handle = self._handles.pop(instance_id, None)
-        if handle is not None:
+            handles = self._handles.pop(instance_id, {})
+        for handle in handles.values():
             logger.info("实例 %s 会话关闭 pid=%s", instance_id, handle.proc.pid)
             self._dispose(handle)
 

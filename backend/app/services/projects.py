@@ -69,7 +69,8 @@ def _normalize(payload: Any) -> dict[str, Any]:
                 }
             )
             for key in ("protocol", "version", "configParams", "manualFields",
-                        "automaticAcquisition", "automaticJudgment", "methods", "resources"):
+                        "automaticAcquisition", "automaticJudgment", "methods", "resources",
+                        "doc", "kind", "owner"):
                 if key in item:
                     functions[-1][key] = item[key]
     error = payload.get("error")
@@ -96,7 +97,13 @@ def _extract_json(stdout: str) -> Any:
     raise ValueError("probe 输出无法解析为 JSON")
 
 
-def probe(project: Any) -> dict[str, Any]:
+def probe(project: Any, module: str = "", catalog: bool = False) -> dict[str, Any]:
+    """探测登记的工程；module 非空时改探该工程下的另一个模块。
+
+    一个工程可以登记主模块，同时在组合配置里使用同目录下的其它模块
+    （例如 PlotEngine 的 dataset 与 plot_window），不必重复登记工程。
+    catalog=True 时额外返回类构造器与公开方法，供组合配置选择。
+    """
     script = probe_script()
     if not script.is_file():
         logger.warning("缺少接口发现脚本：%s", script)
@@ -106,8 +113,9 @@ def probe(project: Any) -> dict[str, Any]:
     payload = {
         "name": _field(project, "name") or "",
         "path": project_path,
-        "module": _field(project, "module") or "",
+        "module": (module or _field(project, "module") or ""),
         "factory": _field(project, "factory"),
+        "catalog": bool(catalog),
     }
 
     handle = tempfile.NamedTemporaryFile(
