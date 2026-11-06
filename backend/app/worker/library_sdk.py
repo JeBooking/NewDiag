@@ -328,15 +328,21 @@ def _reason(ctx: _Context, spec) -> str:
         raise RecipeError("reason.template 必须是字符串")
 
     def replace(match):
-        name, _, path = match.group(1).partition(".")
+        # {保存名.字段|取不到时的备用文本}：判定结论为空时也要能写出人话
+        expression, _, fallback = match.group(1).partition("|")
+        name, _, path = expression.strip().partition(".")
         try:
             value = _select(ctx.get_var(name), path)
         except (RecipeError, KeyError):
-            ctx.notes.append(f"依据模板引用了取不到的值 {match.group(1)}")
+            if fallback:
+                return fallback
+            ctx.notes.append(f"依据模板引用了取不到的值 {expression.strip()}")
             return "?"
+        if value is None or value == "" or value == []:
+            return fallback or str(value)
         return str(value)
 
-    return re.sub(r"\{([A-Za-z_][A-Za-z0-9_.]*)\}", replace, template)
+    return re.sub(r"\{([^{}]+)\}", replace, template)
 
 
 # ---------------------------------------------------------------- 展示物化

@@ -248,7 +248,7 @@
           "path": "overall"
         },
         "reason": {
-          "template": "判定 {summary.overall}；触发依据：{summary.reasons.0}"
+          "template": "判定 {summary.overall}；触发依据：{summary.reasons.0|三条规则均未触发}"
         },
         "evidence": "n2"
       },

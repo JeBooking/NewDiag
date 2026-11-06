@@ -277,3 +277,16 @@ def test_manual_judgment_carries_upstream_evidence(runtime):
     action = next(r for r in pending_reviews(runtime.factory) if r.node_id == "r1")
     runtime.scheduler.submit_review("i1", action.id, {"result": "done"})
     wait_for(runtime.factory, lambda: status_of(runtime.factory) == "success")
+
+
+def test_reason_template_falls_back_when_value_is_empty():
+    from app.worker import library_sdk
+
+    ctx = library_sdk._Context(object(), {"project": "分析"})
+    ctx.vars["summary"] = {"overall": "no", "reasons": []}
+    built = library_sdk._reason(
+        ctx, {"template": "判定 {summary.overall}；{summary.reasons.0|三条规则均未触发}"},
+    )
+    assert built == "判定 no；三条规则均未触发"
+    missing = library_sdk._reason(ctx, {"template": "{summary.nope|没这个字段}"})
+    assert missing == "没这个字段"
