@@ -1,4 +1,4 @@
-# 诊断流程平台 · 设计说明（v1.12）
+# 诊断流程平台 · 设计说明（v1.13）
 
 本文件是重写项目的唯一设计依据。所有条目来自 2026-10-31 的需求讨论，标注「待定」的部分表示尚未拍板，实现时不得自行假设。
 
@@ -953,3 +953,32 @@ backend/
 | v1.10（2026-11-04） | 数据准备节点、按实际到访共享不可变解析产物、字段索引读取及回退版本隔离 |
 | v1.11（2026-11-05） | 流程诊断类、实例方法、启动共享数据、按需资源缓存、人工等待对象恢复及按到访回退资源视图；保留旧协议 |
 | v1.12（2026-11-05） | 普通 Python 成员与业务对象整体快照，默认全部恢复，不再强制 self.data；恢复范围与运行资源边界移入 TODO |
+| v1.13（2026-11-06） | 配置驱动组合实例，公开接口目录、多工程对象、启动／按需资源、操作复用、结果映射及图片独立窗口；保存恢复沿用现有机制 |
+
+## 14. 配置驱动的诊断实例（v1.13）
+
+本节扩展第 4、5、6、7 节。模块维护者只维护代码及公开接口；编排团队登记工程、通过表单配置调用关系，无需另写总控诊断类。四阶段方案不参与本轮架构扩展。
+
+doc 顶层可选 `composition: {objects, resources, operations}`，与 `diagnosis` 互斥。节点可选 `operation` 引用其中一个操作，`operationArguments` 绑定该操作的业务参数；未绑定操作的排查仍为人工节点。配置随 doc 保存，发布冻结到 plan.composition；节点编译为 compositionOperation、operationArguments。
+
+新建流程默认使用空组合配置；已有业务诊断类流程保留原执行方式。资源的请求参数须为可传递的业务数据，不能作为进程对象句柄通道。流程包 manifest 的 bindings 同时记录组合调用的工程、模块和公开接口。
+
+- objects：CompositionCall[]，每项 id 为实例内对象名，首次引用时创建；对象在所属工程中保存，不跨工程传对象。
+- resources：`{id, trigger: startup|lazy, defaults?, calls, result}`。startup 在开始节点获取解析；lazy 首次引用时执行。相同资源及归一化参数在实例内复用，defaults 合并后计算缓存键。循环依赖拒绝发布。
+- operations：`{id, parameters?: string[], calls, presentation, decision?}`。节点可复用同一个操作，parameters 由节点 operationArguments 提供。
+- calls：有序 CompositionCall[]；每项 `{id, project, module?, interface?, function, target?, arguments, output?}`。module 缺省用工程登记模块；interface 是发现目录中的接口名，target 存在时 function 为末级方法名，否则为完整公开接口路径。output 为 value（默认）、object、file 或 image。
+- arguments、target、result 和展示／判断映射使用 CompositionArgument：`{lit}`；`{source: input|parameter|value|object|resource, name, path?, arguments?}`；`{system: directory|file}`；`{items: [...]}`；`{fields: {...}}`。input 读取全局启动输入；value 仅能读取同一调用列表的此前结果；resource.arguments 为本次按需请求参数。system 路径由平台分配，file 为 PNG 输出路径。
+- presentation：`[{type: image|text, value: CompositionArgument}]`。image 的来源须为 image 返回值；结构化结果按格式化文本展示，沿用平台通用展示组件。
+- decision：`{result, reason, normalReason?}`，前两项为参数来源；result 接受布尔或 yes/no，reason 接受非空字符串或依据列表。列表为空时用 normalReason。无 decision 则进入人工判断待办。
+
+发布前探测每个调用的公开接口；必填参数必须绑定。接口签名与可读取源码摘要进入发布指纹，调用时再次核对源码摘要；接口实现变化需重新发布。源码版本摘要不等于运行环境归档。
+
+`GET /api/projects/{id}/functions?catalog=true&module=...` 返回普通函数、构造器、类／实例方法和 docstring；既有无查询参数接口维持原行为。新增响应字段 doc、kind、fingerprint、variadicKeywords。允许仅绑定函数显式参数而省略 **kwargs；接口须同步并支持关键字参数。发现不执行构造器或业务方法。
+
+每次诊断按工程维护独立 worker。普通 Python 对象在本工程内以句柄传递；跨工程传 JSON／不可变产物引用或收集后的文件读取路径。每次实际调用分配唯一输出目录，数据文件保存副本，图片沿用平台内容寻址存储。
+
+组合实例的状态清单仍保存在 artifacts，以 diagnosis_states 关联实例、generation 和具体到访。清单引用各工程对象图及资源缓存；对象图存取继续使用现有 save_python/load_python。人工等待、回退和结束关闭相关 worker，恢复不重跑构造器和启动取数。恢复范围及平台重启自动续跑边界沿用 v1.12。
+
+实例终止、关闭和超时清理覆盖全部工程进程。组合调用不自动重试，避免结果未知时重复创建对象、获取数据或写文件；错误记录具体工程、调用和接口，业务异常不映射成否。
+
+图片可鼠标点击或键盘 Enter／Space 在独立浏览器窗口查看。完整接入步骤见 [组合实例接入](composition-integration.md)，可导入三工程示例在 examples/composed-projects。

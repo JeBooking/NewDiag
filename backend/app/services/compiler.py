@@ -115,6 +115,10 @@ class StartNode(NodeDefinition):
 class InvestigationNode(NodeDefinition):
     def compile(self, node, nodes, edges, start, functions):
         step = super().compile(node, nodes, edges, start, functions)
+        if node.get('operation'):
+            step['compositionOperation'] = node['operation']
+            step['operationArguments'] = node.get('operationArguments', {})
+            return step
         if node.get("method"):
             return step
         if "pipeline" in node:
@@ -256,6 +260,9 @@ def compile_doc(
         "steps": steps,
         "signature": {},
     }
+    if doc.get('composition') is not None:
+        from .composition import freeze
+        plan['composition'] = freeze(doc['composition'], functions)
     if doc.get("diagnosis"):
         plan["diagnosis"], _ = _compile_diagnosis(doc, nodes_by_id, valid_edges, start, functions)
     return plan
@@ -611,7 +618,29 @@ def _check_bindings(
 
 def _compile_diagnosis(doc, nodes, edges, start, functions):
     issues = []
+    if doc.get('composition') is not None:
+        from .composition import validate
+        errors = validate(doc['composition'], list(nodes.values()), functions)
+        declared = start.global_names()
+
+        from .composition import configuration_expressions, walk_expression
+
+        def check_inputs(expression):
+            for value in walk_expression(expression):
+                if value.get('source') == 'input' and value.get('name') not in declared:
+                    errors.append(f"启动输入 {value.get('name')} 尚未在开始节点声明")
+        if isinstance(doc['composition'], dict) and not errors:
+            for value in configuration_expressions(doc['composition']):
+                check_inputs(value)
+            for node in nodes.values():
+                for value in node.get('operationArguments', {}).values():
+                    check_inputs(value)
+        if doc.get('diagnosis'):
+            errors.append('组合实例与手写诊断类不能同时配置')
+        return None, [_issue(LEVEL_ERROR, message) for message in errors]
     binding = doc.get("diagnosis")
+    if any(node.get('operation') for node in nodes.values()):
+        issues.append(_issue(LEVEL_ERROR, '选择排查操作前必须配置组合实例'))
     method_nodes = [node for node in nodes.values() if "method" in node]
     if binding is None:
         if method_nodes:

@@ -208,7 +208,7 @@ class Scheduler:
                 if request["type"] == "judgment" and not str(payload.get("reason") or "").strip():
                     raise ValueError("请填写判断依据")
                 operation = request["type"]
-                runner = (self._resume_diagnosis if step.get("diagnosisMethod") else
+                runner = (self._resume_diagnosis if step.get("diagnosisMethod") or step.get('compositionOperation') else
                           self._invoke_functions if step.get("pipeline") else self._invoke_pipeline)
                 configuration = step.get("pipeline") or step.get("call") or {}
                 value, failure = runner(
@@ -345,7 +345,7 @@ class Scheduler:
             )
             self._ensure_entry_token(db, instance, plan)
             db.commit()
-            if finished_runs or (not plan.get("diagnosis") and not any(
+            if finished_runs or (not plan.get("diagnosis") and not plan.get('composition') and not any(
                 step.get("call") or step.get("pipeline") for step in plan["steps"].values()
             )):
                 return True  # 只在实例首次启动时比对签名，人工恢复不重新拦
@@ -427,7 +427,7 @@ class Scheduler:
             self._refresh(db, instance, plan)
             db.commit()
             if instance.status in TERMINAL_INSTANCE or (
-                plan.get("diagnosis") and instance.status in ("waiting", "paused")
+                (plan.get("diagnosis") or plan.get('composition')) and instance.status in ("waiting", "paused")
             ):
                 self._close_session(instance_id)
         finally:
@@ -475,7 +475,7 @@ class Scheduler:
             step.get("kind"),
             token.generation,
         )
-        if plan.get("diagnosis") and step.get("kind") != "start":
+        if (plan.get("diagnosis") or plan.get('composition')) and step.get("kind") != "start":
             reference = self._diagnosis_state(db, instance.id, token.generation)
             if reference is not None:
                 self._save_diagnosis_state(db, instance, token, reference)
@@ -492,13 +492,17 @@ class Scheduler:
             token.status = "waiting"
             token.updated_at = now_iso()
             db.flush()
-            if plan.get("diagnosis"):
+            if plan.get("diagnosis") or plan.get('composition'):
                 self._close_session(instance.id)
             logger.info(
                 "实例 %s 等待人工：节点 %s（%s）", instance.id, token.node_id, step.get("kind")
             )
             return
 
+        if plan.get('composition') and (step.get('kind') == 'start' or step.get('compositionOperation')):
+            db.commit()
+            self._run_composition(db, instance, plan, token, step)
+            return
         if plan.get("diagnosis") and step.get("kind") == "start":
             db.commit()
             self._run_diagnosis(db, instance, plan, token, step, initialize=True)
@@ -716,6 +720,74 @@ class Scheduler:
             "status": "judgment" if result["result"] is None else "complete", "state": state,
         })
 
+    def _run_composition(self, db, instance, plan, token, step):
+        from .composition import CompositionRuntime
+        initialize = step.get('kind') == 'start'
+        reference = None if initialize else self._diagnosis_state(db, instance.id, token.generation)
+        started = now_iso()
+        if not initialize and reference is None:
+            self._write_run(db, instance, token, status='failed', started=started,
+                            error='execution/state: 组合实例缺少初始化状态')
+            self._fail_token(db, instance, token)
+            return
+
+        def invoke(project_name, request):
+            project = self._project(db, project_name)
+            if project is None:
+                raise ValueError(f'工程 {project_name} 尚未登记')
+            request['fileRoot'] = str(self._file_root())
+            # 组合调用可能创建对象或文件，结果不确定时不自动重放。
+            response = self._sessions.call(instance.id, project, '__newdiag_composition__',
+                                           request, timeout=self._timeout)
+            value, files = response if isinstance(response, tuple) else (response, [])
+            self._register_files(db, files)
+            return value
+
+        inputs = self._snapshot_payload(db, instance)
+        inputs = inputs.get('global', inputs)
+        state = {'inputs': inputs, 'stages': [], 'startedAt': started,
+                 'diagnosisClass': '组合实例', 'diagnosisVersion': '1'}
+        runtime = None
+        try:
+            runtime = CompositionRuntime(plan['composition'], self._artifact_root(instance.id), invoke, reference)
+            state['stages'] = runtime.stages
+            runtime.inputs = inputs
+            parameters = {name: runtime.resolve(value, {}) for name, value in step.get('operationArguments', {}).items()}
+            result = runtime.execute(inputs, step.get('compositionOperation'), parameters)
+            if self._is_cancelled(instance.id):
+                return
+            state['diagnosisState'] = runtime.save()
+            self._save_diagnosis_state(db, instance, token, state['diagnosisState'])
+            if initialize:
+                self._write_run(db, instance, token, status='ok', started=started,
+                                output={'initialized': True}, evidence={'pipeline': state})
+                self._spawn_successors(db, instance, plan, token, step, 'default')
+                token.status, token.updated_at = 'done', now_iso()
+                db.flush()
+                return
+            state.update({'parsed': None, 'presentation': result['presentation'],
+                          'decision': {'result': result['result'], 'reason': result['reason']}})
+            self._accept_pipeline(db, instance, plan, token, step, {
+                'status': 'judgment' if result['result'] is None else 'complete', 'state': state,
+            })
+        except Exception as exc:
+            if self._is_cancelled(instance.id):
+                self._write_run(db, instance, token, status='abandoned', started=started,
+                                error='execution/terminated: 用户终止诊断')
+                return
+            logger.exception('组合实例 %s 节点 %s 执行失败', instance.id, token.node_id)
+            if runtime is not None:
+                # 保留已成功获取的资源，失败步骤自身从未进入成功缓存。
+                try:
+                    state['diagnosisState'] = runtime.save()
+                    self._save_diagnosis_state(db, instance, token, state['diagnosisState'])
+                except Exception:
+                    logger.exception('组合实例 %s 失败检查点保存失败', instance.id)
+            self._write_run(db, instance, token, status='failed', started=started,
+                            error=f'execution/composition: {exc}', evidence={'pipeline': persisted_state(state)})
+            self._close_session(instance.id)
+            self._fail_token(db, instance, token)
+
     def _resume_diagnosis(self, db, instance, token, configuration, state, operation, **extra):
         state = dict(state)
         state["decision"] = extra["decision"]
@@ -859,8 +931,8 @@ class Scheduler:
         state = value["state"]
         status = value["status"]
         call = step.get("call") or {"function": "平台四阶段函数", "version": "1"}
-        if step.get("diagnosisMethod"):
-            call = {"function": state["diagnosisClass"] + "." + step["diagnosisMethod"]["name"],
+        if step.get("diagnosisMethod") or step.get('compositionOperation'):
+            call = {"function": state["diagnosisClass"] + "." + (step.get('compositionOperation') or step["diagnosisMethod"]["name"]),
                     "version": state["diagnosisVersion"]}
         if status == "prepared":
             self._write_run(db, instance, token, status="ok", args=state["inputs"],
@@ -1384,7 +1456,7 @@ class Scheduler:
                 raise ValueError("回退分支必须是是/否")
             if not (step.get("next") or {}).get(branch_key):
                 raise ValueError(f"目标节点没有 {branch_key} 分支的后继")
-            if (step.get("call") or step.get("pipeline")) and self._successful_run(
+            if (step.get("call") or step.get("pipeline") or step.get('compositionOperation')) and self._successful_run(
                 db, instance.id, target_token.id
             ) is None:
                 raise ValueError("目标到访没有可复用的成功结果，请选择重新执行")
@@ -1423,7 +1495,7 @@ class Scheduler:
 
         # 历史 run 的成功/失败结果不能被回退覆盖，轨迹仍需展示真实执行结论。
         new_generation = max((t.generation for t in tokens), default=1) + 1
-        if plan.get("diagnosis"):
+        if plan.get("diagnosis") or plan.get('composition'):
             reference = self._diagnosis_visit_state(db, instance, target_token)
             if reference is None:
                 raise ValueError("所选到访缺少诊断数据版本，无法恢复")

@@ -18,7 +18,7 @@ import { layoutDoc } from '@/components/canvas/autolayout'
 import FlowPanel from '@/components/panels/FlowPanel.vue'
 import NodePanel from '@/components/panels/NodePanel.vue'
 import { useLint } from '@/components/canvas/lint'
-import type { DocNode, FlowDoc, FlowMode, LintIssue } from '@/domain/types'
+import type { Composition, DocNode, FlowDoc, FlowMode, LintIssue } from '@/domain/types'
 import { errorText, isApiError } from '@/services/api'
 import { updateFlow } from '@/services/flows'
 import {
@@ -288,6 +288,25 @@ function patchSnapshotFields(fields: string[]): void {
   editor.applyDoc({ ...doc, snapshotFields: fields })
 }
 
+function updateComposition(composition: Composition | undefined): void {
+  const doc = editor.doc
+  if (!doc) return
+  const sameMode = Boolean(doc.composition) === Boolean(composition)
+  editor.applyDoc({
+    ...doc,
+    composition,
+    diagnosis: undefined,
+    nodes: sameMode ? doc.nodes : doc.nodes.map((node) => ({
+      ...node,
+      method: undefined,
+      operation: undefined,
+      operationArguments: undefined,
+      binding: undefined,
+      pipeline: undefined,
+    })),
+  })
+}
+
 async function patchMeta(patch: { name?: string; mode?: FlowMode }): Promise<void> {  if (!editor.flow) return
   try {
     const updated = await updateFlow(editor.flow.id, patch)
@@ -518,12 +537,14 @@ onBeforeRouteLeave(async () => {
             v-else-if="editor.flow"
             :flow="editor.flow"
             :diagnosis="editor.doc?.diagnosis"
+            :composition="editor.doc?.composition"
             :snapshot-fields="editor.doc?.snapshotFields ?? []"
             :readonly="editor.readonly"
             :publishing="editor.publishing"
             @update-meta="patchMeta"
             @update-snapshot-fields="patchSnapshotFields"
             @update-diagnosis="editor.doc && editor.applyDoc({ ...editor.doc, diagnosis: $event })"
+            @update-composition="updateComposition"
             @publish="publish"
           />
         </aside>

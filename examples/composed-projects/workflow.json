@@ -1,0 +1,402 @@
+{
+  "format": 1,
+  "name": "三工程组合诊断",
+  "mode": "parallel",
+  "composition": {
+    "objects": [
+      {
+        "id": "dataClient",
+        "project": "MockDataService",
+        "module": "dataclient",
+        "interface": "DataClient",
+        "function": "DataClient",
+        "arguments": {
+          "root": {
+            "system": "directory"
+          }
+        },
+        "output": "object"
+      }
+    ],
+    "resources": [
+      {
+        "id": "mainDataset",
+        "trigger": "startup",
+        "defaults": {},
+        "calls": [
+          {
+            "id": "file",
+            "project": "MockDataService",
+            "module": "dataclient",
+            "interface": "DataClient.fetch",
+            "function": "fetch",
+            "arguments": {
+              "device_id": {
+                "source": "input",
+                "name": "device_id"
+              },
+              "activity": {
+                "source": "input",
+                "name": "activity"
+              },
+              "start_time": {
+                "source": "input",
+                "name": "start_time"
+              },
+              "end_time": {
+                "source": "input",
+                "name": "end_time"
+              }
+            },
+            "output": "file",
+            "target": {
+              "source": "object",
+              "name": "dataClient"
+            }
+          },
+          {
+            "id": "dataset",
+            "project": "PlotEngine",
+            "module": "dataset",
+            "interface": "Dataset.load",
+            "function": "Dataset.load",
+            "arguments": {
+              "path": {
+                "source": "value",
+                "name": "file",
+                "path": "file"
+              }
+            },
+            "output": "object"
+          }
+        ],
+        "result": {
+          "source": "value",
+          "name": "dataset"
+        }
+      },
+      {
+        "id": "extraDataset",
+        "trigger": "lazy",
+        "defaults": {
+          "metrics": [
+            "vibration"
+          ]
+        },
+        "calls": [
+          {
+            "id": "file",
+            "project": "MockDataService",
+            "module": "dataclient",
+            "interface": "DataClient.fetch",
+            "function": "fetch",
+            "arguments": {
+              "device_id": {
+                "source": "input",
+                "name": "device_id"
+              },
+              "activity": {
+                "source": "input",
+                "name": "activity"
+              },
+              "start_time": {
+                "source": "input",
+                "name": "start_time"
+              },
+              "end_time": {
+                "source": "input",
+                "name": "end_time"
+              },
+              "metrics": {
+                "source": "parameter",
+                "name": "metrics"
+              }
+            },
+            "output": "file",
+            "target": {
+              "source": "object",
+              "name": "dataClient"
+            }
+          },
+          {
+            "id": "dataset",
+            "project": "PlotEngine",
+            "module": "dataset",
+            "interface": "Dataset.load",
+            "function": "Dataset.load",
+            "arguments": {
+              "path": {
+                "source": "value",
+                "name": "file",
+                "path": "file"
+              }
+            },
+            "output": "object"
+          }
+        ],
+        "result": {
+          "source": "value",
+          "name": "dataset"
+        }
+      }
+    ],
+    "operations": [
+      {
+        "id": "检查指标",
+        "parameters": [
+          "metric",
+          "thresholds"
+        ],
+        "calls": [
+          {
+            "id": "series",
+            "project": "PlotEngine",
+            "module": "dataset",
+            "interface": "Dataset.plot_series",
+            "function": "plot_series",
+            "arguments": {
+              "device": {
+                "source": "input",
+                "name": "device_id"
+              },
+              "activity": {
+                "source": "input",
+                "name": "activity"
+              },
+              "metric": {
+                "source": "parameter",
+                "name": "metric"
+              }
+            },
+            "output": "value",
+            "target": {
+              "source": "resource",
+              "name": "mainDataset"
+            }
+          },
+          {
+            "id": "chart",
+            "project": "PlotEngine",
+            "module": "plot_window",
+            "interface": "save_plot",
+            "function": "save_plot",
+            "arguments": {
+              "data": {
+                "source": "value",
+                "name": "series"
+              },
+              "path": {
+                "system": "file"
+              },
+              "title": {
+                "source": "parameter",
+                "name": "metric"
+              }
+            },
+            "output": "image"
+          },
+          {
+            "id": "engine",
+            "project": "JudgeEngine",
+            "module": "judgekit",
+            "interface": "JudgeEngine",
+            "function": "JudgeEngine",
+            "arguments": {
+              "thresholds": {
+                "source": "parameter",
+                "name": "thresholds"
+              }
+            },
+            "output": "object"
+          },
+          {
+            "id": "verdicts",
+            "project": "JudgeEngine",
+            "module": "judgekit",
+            "interface": "JudgeEngine.judge_series",
+            "function": "judge_series",
+            "arguments": {
+              "item": {
+                "source": "value",
+                "name": "series"
+              }
+            },
+            "output": "object",
+            "target": {
+              "source": "value",
+              "name": "engine"
+            }
+          },
+          {
+            "id": "summary",
+            "project": "JudgeEngine",
+            "module": "judgekit",
+            "interface": "JudgeEngine.summary",
+            "function": "summary",
+            "arguments": {
+              "verdicts": {
+                "source": "value",
+                "name": "verdicts"
+              }
+            },
+            "output": "value",
+            "target": {
+              "source": "value",
+              "name": "engine"
+            }
+          }
+        ],
+        "presentation": [
+          {
+            "type": "image",
+            "value": {
+              "source": "value",
+              "name": "chart"
+            }
+          },
+          {
+            "type": "text",
+            "value": {
+              "source": "value",
+              "name": "summary",
+              "path": "verdicts"
+            }
+          }
+        ],
+        "decision": {
+          "result": {
+            "source": "value",
+            "name": "summary",
+            "path": "overall"
+          },
+          "reason": {
+            "source": "value",
+            "name": "summary",
+            "path": "reasons"
+          },
+          "normalReason": "配置的规则均未触发"
+        }
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "开始",
+      "kind": "start",
+      "title": "开始",
+      "detail": "开始",
+      "position": {
+        "x": 0,
+        "y": 120
+      },
+      "inputs": [
+        {
+          "name": "device_id",
+          "scope": "global",
+          "type": "text",
+          "default": "D001"
+        },
+        {
+          "name": "activity",
+          "scope": "global",
+          "type": "text",
+          "default": "满载"
+        },
+        {
+          "name": "start_time",
+          "scope": "global",
+          "type": "text",
+          "default": "2026-11-05 08:00"
+        },
+        {
+          "name": "end_time",
+          "scope": "global",
+          "type": "text",
+          "default": "2026-11-05 10:00"
+        }
+      ]
+    },
+    {
+      "id": "振动排查",
+      "kind": "investigation",
+      "title": "振动排查",
+      "detail": "振动排查",
+      "position": {
+        "x": 260,
+        "y": 120
+      },
+      "operation": "检查指标",
+      "operationArguments": {
+        "metric": {
+          "lit": "vibration"
+        },
+        "thresholds": {
+          "lit": {
+            "peak": 12,
+            "mean": 40,
+            "trend": 0.05
+          }
+        }
+      },
+      "fields": {
+        "observation": "设备振动",
+        "acquisition": "使用启动时加载的运行数据",
+        "assessment": "任一已配置规则触发则为是"
+      }
+    },
+    {
+      "id": "人工处置",
+      "kind": "remediation",
+      "title": "人工处置",
+      "detail": "人工处置",
+      "position": {
+        "x": 520,
+        "y": 120
+      }
+    },
+    {
+      "id": "问题解决",
+      "kind": "problemSolved",
+      "title": "问题解决",
+      "detail": "问题解决",
+      "position": {
+        "x": 780,
+        "y": 120
+      }
+    },
+    {
+      "id": "上升",
+      "kind": "escalation",
+      "title": "上升",
+      "detail": "上升",
+      "position": {
+        "x": 520,
+        "y": 120
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "开始",
+      "to": "振动排查"
+    },
+    {
+      "id": "e2",
+      "from": "振动排查",
+      "to": "人工处置",
+      "branch": "yes"
+    },
+    {
+      "id": "e3",
+      "from": "振动排查",
+      "to": "上升",
+      "branch": "no"
+    },
+    {
+      "id": "e4",
+      "from": "人工处置",
+      "to": "问题解决"
+    }
+  ]
+}

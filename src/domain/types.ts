@@ -92,6 +92,47 @@ export type ParamSource =
   | { snapshot: string }
   | { run: string; path: string }
 
+export type CompositionArgument =
+  | { lit: unknown }
+  | { source: 'input' | 'parameter' | 'value' | 'object' | 'resource'; name: string;
+      path?: string; arguments?: Record<string, CompositionArgument> }
+  | { system: 'directory' | 'file' }
+  | { items: CompositionArgument[] }
+  | { fields: Record<string, CompositionArgument> }
+
+export interface CompositionCall {
+  id: string
+  project: string
+  module?: string
+  function: string
+  interface?: string
+  target?: CompositionArgument
+  arguments: Record<string, CompositionArgument>
+  output?: 'value' | 'object' | 'file' | 'image'
+}
+
+export interface CompositionResource {
+  id: string
+  trigger: 'startup' | 'lazy'
+  defaults?: Record<string, unknown>
+  calls: CompositionCall[]
+  result: CompositionArgument
+}
+
+export interface CompositionOperation {
+  id: string
+  parameters?: string[]
+  calls: CompositionCall[]
+  presentation: { type: 'image' | 'text'; value: CompositionArgument }[]
+  decision?: { result: CompositionArgument; reason: CompositionArgument; normalReason?: string }
+}
+
+export interface Composition {
+  objects: CompositionCall[]
+  resources: CompositionResource[]
+  operations: CompositionOperation[]
+}
+
 export interface DocNode {
   id: string
   kind: NodeKind
@@ -102,6 +143,8 @@ export interface DocNode {
   binding?: NodeBinding
   pipeline?: FunctionPipeline
   method?: string
+  operation?: string
+  operationArguments?: Record<string, CompositionArgument>
   /** 该节点返回结构里的字段名，供下游绑定 */
   outputs?: string[]
   /** 参数名 → 来源；不填则按签名自动匹配 */
@@ -124,6 +167,7 @@ export interface FlowDoc {
   name: string
   mode: FlowMode
   diagnosis?: NodeBinding
+  composition?: Composition
   nodes: DocNode[]
   edges: DocEdge[]
   /** 旧版全局启动字段；新文档改用 start 节点的 inputs，读取时兼容 */
@@ -185,6 +229,8 @@ export interface PlanStep {
   kind: NodeKind
   call?: PlanCall
   diagnosisMethod?: { name: string; args: Record<string, ArgExpr> }
+  compositionOperation?: string
+  operationArguments?: Record<string, CompositionArgument>
   pipeline?: FunctionPipeline & { args: Record<string, ArgExpr> }
   human?: boolean
   text?: string
@@ -200,6 +246,7 @@ export interface Plan {
   entry: string
   steps: Record<string, PlanStep>
   signature: Record<string, string>
+  composition?: Composition
   diagnosis?: NodeBinding & {
     args: Record<string, ArgExpr>
     definition: Record<string, unknown>

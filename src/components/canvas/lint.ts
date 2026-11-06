@@ -130,6 +130,20 @@ export function lintDoc(
   const issues: LintIssue[] = []
   const nodes = doc.nodes ?? []
   const edges = doc.edges ?? []
+  for (const node of nodes) {
+    if (node.operation && !doc.composition) {
+      issues.push({ id: `node:${node.id}:composition`, nodeId: node.id,
+        level: 'error', message: '选择排查操作前必须配置组合实例' })
+    }
+  }
+  if (doc.composition) {
+    const operations = new Set(doc.composition.operations.map((item) => item.id))
+    for (const node of nodes) {
+      if (node.operation && !operations.has(node.operation)) {
+        issues.push({ id: `node:${node.id}:operation`, nodeId: node.id, level: 'error', message: '所选排查操作不存在' })
+      }
+    }
+  }
   if (doc.diagnosis && (!doc.diagnosis.project || !doc.diagnosis.function
     || doc.diagnosis.protocol !== 'diagnosis/v1' || !doc.diagnosis.version)) {
     issues.push({ id: 'doc:diagnosis', level: 'error', message: '请在流程属性中选择完整的诊断业务类' })

@@ -2,6 +2,8 @@
 
 本文件约束所有参与本仓库开发的 agent。`docs/spec.md` 是唯一设计依据，冲突时以 spec 为准，并在此处登记偏差。
 
+2026-11-06：按用户授权实现 v1.13 配置驱动组合实例：普通对象、启动／按需资源、多工程会话和操作映射，保存恢复沿用平台现有 artifacts 与 diagnosis_states。旧四阶段不作为本轮架构或扩展目标。需求开发按用户要求不运行测试。
+
 2026-11-05：按用户确认新增 v1.11 诊断实例类协议，契约扩展已同步到 spec、domain/types.ts 和后端模型。
 新增 worker/diagnosis_sdk.py、examples/diagnosis-instance，由 lead 集成；旧接入协议保留兼容，无未登记设计偏差。
 2026-11-05：按用户最新要求，v1.12 改为普通 Python 成员及对象整体保存恢复，不再强制 self.data。

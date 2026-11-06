@@ -105,6 +105,14 @@ def refresh_project(project_id: str, db: Session = Depends(get_db)) -> ProjectFu
 
 
 @router.get("/projects/{project_id}/functions", response_model=list[ProjectFunction])
-def project_functions(project_id: str, db: Session = Depends(get_db)) -> list[ProjectFunction]:
+def project_functions(project_id: str, db: Session = Depends(get_db),
+                      module: str | None = None, catalog: bool = False) -> list[ProjectFunction]:
     project = get_project_or_404(db, project_id)
+    if catalog:
+        result = probe({'name': project.name, 'path': project.path,
+                        'python': project.python, 'module': module or project.module,
+                        'factory': '', 'catalog': True})
+        if result.get('error'):
+            raise HTTPException(status_code=422, detail=result['error'])
+        return [ProjectFunction(**item) for item in result['functions']]
     return _functions(project).functions

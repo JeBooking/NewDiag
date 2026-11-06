@@ -29,6 +29,10 @@ function markBroken(src?: string): void {
   if (src) failed.add(src)
 }
 
+function openImage(src?: string): void {
+  if (src) window.open(fileUrl(src, true), '_blank', 'noopener,noreferrer,width=1100,height=760')
+}
+
 const blocks = computed<Block[]>(() => {
   if (!props.value || typeof props.value !== 'object') return []
   const raw = (props.value as { blocks?: unknown }).blocks
@@ -93,6 +97,12 @@ function text(value: unknown): string {
           loading="lazy"
           class="image"
           @error="markBroken(block.src)"
+          tabindex="0"
+          role="button"
+          aria-label="在独立窗口查看图片"
+          @click="openImage(block.src)"
+          @keydown.enter="openImage(block.src)"
+          @keydown.space.prevent="openImage(block.src)"
         />
         <p v-else class="image-missing">图片不可用{{ block.src ? `（${block.src.slice(0, 8)}）` : '' }}</p>
         <figcaption v-if="block.caption">{{ block.caption }}</figcaption>

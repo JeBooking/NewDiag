@@ -68,7 +68,7 @@ def _normalize(payload: Any) -> dict[str, Any]:
                     "returns": item.get("returns"),
                 }
             )
-            for key in ("protocol", "version", "configParams", "manualFields",
+            for key in ('doc', 'kind', 'fingerprint', 'compositionError', 'variadicKeywords', "protocol", "version", "configParams", "manualFields",
                         "automaticAcquisition", "automaticJudgment", "methods", "resources"):
                 if key in item:
                     functions[-1][key] = item[key]
@@ -108,6 +108,7 @@ def probe(project: Any) -> dict[str, Any]:
         "path": project_path,
         "module": _field(project, "module") or "",
         "factory": _field(project, "factory"),
+        'catalog': bool(_field(project, 'catalog')),
     }
 
     handle = tempfile.NamedTemporaryFile(

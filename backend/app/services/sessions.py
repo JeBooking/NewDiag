@@ -48,23 +48,24 @@ class SessionManager:
     """进程内单例式管理器；线程安全，数据库无关。"""
 
     def __init__(self) -> None:
-        self._handles: dict[str, SessionHandle] = {}
+        self._handles: dict[str | tuple[str, str], SessionHandle] = {}
         self._lock = threading.Lock()
         self._cancelled: set[str] = set()
 
-    def ensure(self, instance_id: str, project) -> SessionHandle:
+    def ensure(self, instance_id: str, project, *, isolated=False) -> SessionHandle:
         with self._lock:
             if instance_id in self._cancelled:
                 raise SessionError("实例已终止，不能启动会话")
-            handle = self._handles.get(instance_id)
+            key = (instance_id, getattr(project, 'name', None) or project.path) if isolated else instance_id
+            handle = self._handles.get(key)
             project_key = tuple(getattr(project, key, None) for key in ("path", "module", "python", "factory"))
             if handle is not None and handle.proc.poll() is None and handle.project_key == project_key:
                 return handle
             if handle is not None:
                 self._dispose(handle)
-            handle = self._spawn(instance_id, project)
+            handle = self._spawn(instance_id, project, isolated=isolated)
             handle.project_key = project_key
-            self._handles[instance_id] = handle
+            self._handles[key] = handle
             return handle
 
     def call(
@@ -76,7 +77,7 @@ class SessionManager:
         timeout: float = DEFAULT_TIMEOUT,
     ):
         """返回 (value, files)；files 是本次调用新落盘的附件清单，可能为空。"""
-        handle = self.ensure(instance_id, project)
+        handle = self.ensure(instance_id, project, isolated=function == '__newdiag_composition__')
         with handle.lock:
             handle.seq += 1
             request_id = str(handle.seq)
@@ -155,8 +156,9 @@ class SessionManager:
         # 标记与摘除使用同一把锁，避免取消后并发 ensure 重建进程。
         with self._lock:
             self._cancelled.add(instance_id)
-            handle = self._handles.pop(instance_id, None)
-        if handle is not None:
+            handles = [self._handles.pop(key) for key in list(self._handles)
+                       if key == instance_id or isinstance(key, tuple) and key[0] == instance_id]
+        for handle in handles:
             logger.info("实例 %s 终止会话 pid=%s", instance_id, handle.proc.pid)
             self._kill(handle)
             handle.inbox.put(None)
@@ -168,22 +170,25 @@ class SessionManager:
 
     def close(self, instance_id: str) -> None:
         with self._lock:
-            handle = self._handles.pop(instance_id, None)
-        if handle is not None:
+            handles = [self._handles.pop(key) for key in list(self._handles)
+                       if key == instance_id or isinstance(key, tuple) and key[0] == instance_id]
+        for handle in handles:
             logger.info("实例 %s 会话关闭 pid=%s", instance_id, handle.proc.pid)
             self._dispose(handle)
 
     def shutdown(self) -> None:
-        for instance_id in list(self._handles):
+        with self._lock:
+            instances = {handle.instance_id for handle in self._handles.values()}
+        for instance_id in instances:
             self.close(instance_id)
 
     # ------------------------------------------------------------ 内部
 
-    def _spawn(self, instance_id: str, project) -> SessionHandle:
+    def _spawn(self, instance_id: str, project, *, isolated=False) -> SessionHandle:
         base = {
             "path": getattr(project, "path", "") or "",
             "module": getattr(project, "module", "") or "",
-            "factory": getattr(project, "factory", "") or "",
+            "factory": '' if isolated else getattr(project, "factory", "") or "",
         }
         fd, config_path = tempfile.mkstemp(prefix="diag-session-", suffix=".json")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
