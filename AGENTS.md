@@ -60,3 +60,18 @@ runtimeInputs、diagnosisMethod.inputs 和 parameters 待办契约由 lead 同�
 - 不装 `pre-push` 钩子：钩子在后台运行，pytest 清理临时目录时没有确认通道，只能靠关闭批量删除保护绕过；改为显式手工执行，把确认留在人这边。
 - 判断结果看 pytest 汇总行，不看退出码：退出码可能被收尾清理污染。
 - 前端目前没有自动化测试，`pnpm type-check` 只保证类型；改 UI 必须在交付说明里写清手工验证步骤和实际结果。
+## 7. 提交身份（2026-11-08 起）
+
+`git blame` 默认显示的是 **author**，不是 committer。所以要能按行追到「哪个 agent 写的」，必须把 author 写成 agent。
+
+- **author 名字**：`workbuddy-<角色>` —— `workbuddy-lead` / `workbuddy-canvas` / `workbuddy-shell` / `workbuddy-api` / `workbuddy-engine` / `workbuddy-tests`。**只写角色，不写任务**。
+- **author 邮箱**：统一 `jebooking_otlk@outlook.com`（GitHub 能关联到账号，通知可达）。
+- **committer 不动**：保持仓库默认身份 `JeBooking <jebooking_otlk@outlook.com>`。只覆盖 `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` 两个环境变量，**不要用 `-c user.name=...`**——那会连 committer 一起改掉，就是 2026-11-02 那次 15 个提交作者出错的成因。
+- **任务信息进正文**：subject 保持 `type: 简述`，做了哪件事、改了哪些文件写进 body。
+- **子 agent 仍然不提交**（见第 4 节），由 lead 统一 commit；lead 按这批代码的实际实现者设 author。
+- **历史不改**：本节生效之前的提交保持原样。
+
+```bash
+GIT_AUTHOR_NAME="workbuddy-shell" GIT_AUTHOR_EMAIL="jebooking_otlk@outlook.com" \
+  git commit -m "feat: 流程删除到回收站" -m "由 shell 实现：列表删除按钮 + 回收站页面"
+```
