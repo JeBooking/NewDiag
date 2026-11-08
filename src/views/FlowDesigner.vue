@@ -99,6 +99,25 @@ const allIssues = computed<LintIssue[]>(() => {
   return [...merged.values()]
 })
 
+/**
+ * 节点还在引用、但组合配置里找不到的操作名。
+ * 旧版前端保存草稿时会把 composition 整个丢掉，节点上的 operation 却留着；
+ * 这里把丢失的名字直接列出来，别让人对着提示猜。
+ */
+const orphanOperations = computed<string[]>(() => {
+  const doc = editor.doc
+  if (!doc) return []
+  const declared = new Set(Object.keys(doc.composition?.operations ?? {}))
+  return [
+    ...new Set(
+      (doc.nodes ?? [])
+        .map((node) => node.operation)
+        .filter((name): name is string => typeof name === 'string' && name !== ''
+          && !declared.has(name)),
+    ),
+  ]
+})
+
 async function load(id: string): Promise<void> {
   loadError.value = null
   try {
@@ -519,6 +538,7 @@ onBeforeRouteLeave(async () => {
             :flow="editor.flow"
             :diagnosis="editor.doc?.diagnosis"
             :composition="editor.doc?.composition"
+            :orphan-operations="orphanOperations"
             :snapshot-fields="editor.doc?.snapshotFields ?? []"
             :readonly="editor.readonly"
             :publishing="editor.publishing"

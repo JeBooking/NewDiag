@@ -21,6 +21,8 @@ import DraftInput from '@/components/panels/DraftInput.vue'
 const props = defineProps<{
   composition: FlowComposition
   readonly?: boolean
+  /** 节点引用了、但这份配置里没有的操作名（旧草稿丢过配置时会这样） */
+  orphanOperations?: string[]
 }>()
 const emit = defineEmits<{ (e: 'update', value: FlowComposition): void }>()
 
@@ -229,6 +231,13 @@ function setColumns(id: string, index: number, text: string): void {
 
 <template>
   <div class="composition">
+    <div v-if="orphanOperations?.length" class="alert">
+      <strong>节点引用了不存在的操作：{{ orphanOperations.join('、') }}</strong>
+      <span>
+        这份文档里找不到它们的配置，发布会被拒。常见原因是旧版本前端保存草稿时丢了组合配置：
+        点右上「放弃」回到上次保存的版本，或重新导入示例流程。
+      </span>
+    </div>
     <div class="section-title">工程对象</div>
     <div class="hint">
       工程是代码目录，模块是目录下的 .py 文件，构造器是要 new 的类。只有「需要提前创建、后面反复调用」的对象才加在这里；
@@ -432,6 +441,11 @@ function setColumns(id: string, index: number, text: string): void {
 }
 .sub-title { font-size: 12px; color: var(--el-text-color-secondary); }
 .hint { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; }
+.alert {
+  display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: 6px;
+  border: 1px solid var(--el-color-danger-light-5); background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger); font-size: 12px; line-height: 1.6;
+}
 .card {
   display: flex; flex-direction: column; gap: 6px; padding: 8px;
   border: 1px solid var(--el-border-color-lighter); border-radius: 6px;

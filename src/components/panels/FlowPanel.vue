@@ -11,6 +11,8 @@ const props = defineProps<{
   publishing?: boolean
   diagnosis?: NodeBinding
   composition?: FlowComposition
+  /** 节点引用了、配置里却不存在的操作名 */
+  orphanOperations?: string[]
 }>()
 const emit = defineEmits<{
   (e: 'update-meta', patch: { name?: string; mode?: FlowMode }): void
@@ -125,6 +127,7 @@ function removeField(name: string): void {
     <div v-if="diagnosis" class="section-hint">已启用诊断实例类，组合配置与它互斥；如需组合多个既有工程，请先清空诊断实例。</div>
     <CompositionEditor
       v-else :composition="composition ?? {}" :readonly="readonly"
+      :orphan-operations="orphanOperations"
       @update="emit('update-composition', $event)"
     />
     <div class="section-hint">
