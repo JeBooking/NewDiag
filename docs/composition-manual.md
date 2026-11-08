@@ -25,6 +25,18 @@
 
 接入方只提供公开接口；编排者在平台上选择接口、绑定参数。HTTP/数据库表结构不变，仍然是 doc → plan → Scheduler，人工待办、回退、终止、执行轨迹全部复用。
 
+### 先跑通示例
+
+动手改配置前，先确认环境和三个工程都通：
+
+```bash
+backend/.venv/Scripts/python.exe examples/composed-diagnosis/run.py
+```
+
+看到 `实例状态：success` 就说明后端、三个解释器、接口探测、发布、调度全链路可用；
+之后按第 2 节接自己的工程。跑不起来时先看 [`examples/composed-diagnosis/README.md`](../examples/composed-diagnosis/README.md)
+的「常见失败对照」。
+
 ---
 
 ## 2. 三步接入
