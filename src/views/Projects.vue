@@ -6,7 +6,6 @@ import { errorText } from '@/services/api'
 import {
   createProject,
   deleteProject,
-  fetchProjectFunctions,
   listProjects,
   refreshProject,
   updateProject,
@@ -32,6 +31,7 @@ const form = ref<CreateProjectPayload>({
 
 const drawerVisible = ref(false)
 const functionsLoading = ref(false)
+const functionsError = ref<string | null>(null)
 const activeProject = ref<Project | null>(null)
 const functions = ref<ProjectFunction[]>([])
 
@@ -156,7 +156,7 @@ async function remove(row: Project): Promise<void> {
 async function refresh(row: Project): Promise<void> {
   refreshingId.value = row.id
   try {
-    const result = await refreshProject(row.id)
+    const result = await refreshProject(row.id, row.module, true)
     if (result.error) ElMessage.warning(`接口发现失败：${result.error}`)
     else ElMessage.success('已重新发现接口')
     if (activeProject.value?.id === row.id) functions.value = result.functions
@@ -170,10 +170,14 @@ async function refresh(row: Project): Promise<void> {
 async function loadFunctions(row: Project): Promise<void> {
   functionsLoading.value = true
   functions.value = []
+  functionsError.value = null
   try {
-    functions.value = await fetchProjectFunctions(row.id)
+    // 目录模式：构造器与方法也要列出来，否则只有类的模块（如 dataset）会显示为空
+    const result = await refreshProject(row.id, row.module, true)
+    functions.value = result.functions
+    functionsError.value = result.error ?? null
   } catch (err) {
-    ElMessage.error(errorText(err, '读取接口失败'))
+    functionsError.value = errorText(err, '读取接口失败')
   } finally {
     functionsLoading.value = false
   }
@@ -309,7 +313,15 @@ function signatureText(fn: ProjectFunction): string {
 
     <el-drawer v-model="drawerVisible" :title="activeProject?.name || '接口'" size="520px">
       <div v-loading="functionsLoading" class="functions">
-        <el-empty v-if="!functionsLoading && !functions.length" description="没有发现可用接口" :image-size="60" />
+        <el-alert
+          v-if="functionsError" :title="functionsError" type="warning"
+          :closable="false" show-icon class="error"
+        />
+        <el-empty
+          v-if="!functionsLoading && !functions.length"
+          :description="functionsError ? '接口发现失败，看上面的原因' : '没有发现可用接口'"
+          :image-size="60"
+        />
         <div v-for="fn in functions" :key="fn.name" class="function">
           <div class="signature">{{ signatureText(fn) }}</div>
           <div v-if="fn.doc" class="doc">{{ fn.doc }}</div>

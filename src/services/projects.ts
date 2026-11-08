@@ -171,10 +171,19 @@ function normalizeFunctions(raw: unknown): ProjectFunction[] {
   return raw.map(normalizeFunction).filter((item): item is ProjectFunction => Boolean(item))
 }
 
-export async function refreshProject(id: string): Promise<ProjectFunctions> {
-  const data = await request<unknown>(`/projects/${encodeURIComponent(id)}/refresh`, {
-    method: 'POST',
-  })
+export async function refreshProject(
+  id: string,
+  module = '',
+  catalog = false,
+): Promise<ProjectFunctions> {
+  const params = new URLSearchParams()
+  if (module) params.set('module', module)
+  if (catalog) params.set('catalog', '1')
+  const query = params.toString()
+  const data = await request<unknown>(
+    `/projects/${encodeURIComponent(id)}/refresh${query ? `?${query}` : ''}`,
+    { method: 'POST' },
+  )
   const item = record(data)
   const error = typeof item?.error === 'string' && item.error ? item.error : null
   return { functions: normalizeFunctions(item?.functions), error }
