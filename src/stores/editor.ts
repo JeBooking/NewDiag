@@ -27,6 +27,8 @@ function cloneDoc(doc: FlowDoc): FlowDoc {
 function coerceDoc(raw: unknown, name: string, mode: FlowMode): FlowDoc {
   const record = raw && typeof raw === 'object' ? (raw as Partial<FlowDoc>) : {}
   return {
+    // 先摊开原文档：组合配置、快照字段等新增字段不能被归一化吃掉
+    ...record,
     format: 1,
     name: typeof record.name === 'string' && record.name ? record.name : name,
     mode: record.mode === 'serial' ? 'serial' : record.mode === 'parallel' ? 'parallel' : mode,
