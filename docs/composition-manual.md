@@ -152,6 +152,9 @@ plan：冻结 工程名 + 模块名 + 接口名 + 参数绑定
 平台按名字找到登记项，用登记的目录和解释器起 worker，调用接口
 ```
 
+操作（operation）是流程层的「无代码函数」：一个名字 + 一组参数 + 有序步骤 + 判断映射。
+它不属于任何工程，也不写 Python；`vibrationCheck` 就是这样一个操作，所以三个工程里都找不到它。
+
 因此：
 
 - 流程里选的是**工程名**，不是路径。路径改了不用动流程；名字改了所有引用都断。
@@ -308,6 +311,65 @@ plan：冻结 工程名 + 模块名 + 接口名 + 参数绑定
 | `summary` | JudgeEngine | judgekit | 实例方法 | `vibrationJudge.summary` | 普通值 |
 
 ---
+
+### 3.7 从零配一个新操作（以电流为例）
+
+`vibrationCheck` 不是代码，是流程配置里的一个操作。它的定义只在
+`workflow.json` 的 `composition.operations.vibrationCheck` 下，不在任何工程里。
+
+操作 = 名字 + 参数 + 有序步骤 + 判断映射，相当于一个「无代码函数」：
+
+```
+currentCheck(metric)            ← 名字和参数
+  series   = dataset.plot_series(..., metric)
+  chart    = save_plot(series, ...)
+  judge    = JudgeEngine(...)
+  verdicts = judge.judge_series(series)
+  summary  = judge.summary(verdicts)
+  return summary.overall ? 是 : 否，依据 summary.reasons
+```
+
+照着做，给示例加一个电流检查：
+
+1. 设计页点画布空白处 → 右侧「流程属性」→「组合配置」→「节点操作」→ 点「+ 操作」。
+2. 第一行 id 改成 `currentCheck`；右边参数框填 `metric`。
+3. 点「+ 添加步骤」，按下面五行填（接口都从下拉里选）：
+
+| 步骤 id | 工程 | 模块 | 调用类型 | 调用对象 | 接口 | 输出 | 参数 |
+|---|---|---|---|---|---|---|---|
+| `series` | PlotEngine | `dataset` | 实例方法 | `dataset` | `plot_series` | 自动 | `device`、`activity` ← 启动参数；`metric` ← 操作参数 |
+| `chart` | PlotEngine | `plot_window` | 普通函数 | — | `save_plot` | 图片 | `data` ← 步骤 `series`；`path` ← 平台路径、文件名 `current.png` |
+| `judge` | JudgeEngine | `judgekit` | 构造器 | — | `JudgeEngine` | 对象 | `thresholds` ← 字典，`mean` ← 启动参数 `mean`；命名对象 `currentJudge` |
+| `verdicts` | JudgeEngine | `judgekit` | 实例方法 | `currentJudge` | `judge_series` | 对象 | `item` ← 步骤 `series` |
+| `summary` | JudgeEngine | `judgekit` | 实例方法 | `currentJudge` | `summary` | 自动 | `verdicts` ← 步骤 `verdicts` |
+
+参数来源都在下拉里选，几个容易卡住的：
+
+- 「启动参数」→ 选 `device` / `activity`；
+- 「操作参数」→ 选 `metric`；
+- 「前面步骤」→ 名称填 `series`；
+- 「平台路径」→ 选「输出文件」→ 文件名填 `current.png`；
+- 「字典」→ 会显示一个 JSON 输入框，粘贴 `{"mean": {"input": "mean"}}`。
+
+> `JudgeEngine` 默认还带 peak、trend 两条规则；只想判均值时，把 `peak` 阈值设高一点，
+> 例如 `{"mean": {"input": "mean"}, "peak": {"lit": 999}}`。
+
+4. 勾选「自动判断」：来源步骤 `summary`，判断字段 `overall`，依据字段 `reasons`，
+   正常依据填「均值与趋势都未超过阈值」。
+5. 点两次「+ 展示块」：
+   - 类型「图片」，来源步骤 `chart`，图注「电流曲线」；
+   - 类型「表格」，来源步骤 `summary`，字段路径 `verdicts`，列填 `label, result, reason`。
+6. 画布上选中一个排查节点（或新建一个），右侧「组合操作」选 `currentCheck`，
+   操作参数 `metric` 选「常量」并填 `current`。
+
+保存 → 发布新版本 → 执行，这个节点就会走电流检查。
+
+几条规则：
+
+- 同一操作内 `saveAs` 名字不能重复；不同操作可以重名，平台按操作隔离。
+- 操作只能顺序调用，没有 if / for；需要分支就拆成两个排查节点。
+- 操作只负责「调谁、传什么、怎么判」，真正的算法（画图、阈值判断）仍在工程里。
+- 想复用这套配置，复制整个操作到另一个流程即可；不用改工程代码。
 
 ## 4. 运行期到底发生了什么
 
