@@ -4,6 +4,7 @@ import type { CompositionArgument, CompositionStep } from '@/domain/types'
 import type { Project, ProjectFunction } from '@/services/projects'
 import { fetchProjectFunctions } from '@/services/projects'
 import CompositionArguments from '@/components/panels/CompositionArguments.vue'
+import DraftInput from '@/components/panels/DraftInput.vue'
 
 /**
  * 有序调用列表：一步 = 一次公开接口调用。
@@ -139,9 +140,9 @@ function setArgs(index: number, value: Record<string, CompositionArgument>): voi
     <div v-for="(step, index) in steps" :key="`${index}-${step.id}`" class="step">
       <div class="head">
         <span class="seq">{{ index + 1 }}</span>
-        <el-input
-          :model-value="step.id" :disabled="readonly" size="small" class="id"
-          @change="patch(index, { id: String($event).trim() || step.id })"
+        <DraftInput
+          :model-value="step.id" :readonly="readonly" class="id" placeholder="步骤 id"
+          @update:model-value="patch(index, { id: $event.trim() || step.id })"
         />
         <span class="summary">{{ step.function || '未选择接口' }}</span>
         <template v-if="!readonly">

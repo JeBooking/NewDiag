@@ -12,6 +12,7 @@ import type { Project, ProjectFunction } from '@/services/projects'
 import { fetchProjectFunctions, listProjects } from '@/services/projects'
 import CompositionArguments from '@/components/panels/CompositionArguments.vue'
 import CompositionSteps from '@/components/panels/CompositionSteps.vue'
+import DraftInput from '@/components/panels/DraftInput.vue'
 
 /**
  * 组合配置：声明工程对象、启动资源和节点操作。
@@ -235,10 +236,9 @@ function setColumns(id: string, index: number, text: string): void {
     </div>
     <div v-for="(item, index) in objects" :key="`object-${index}`" class="card">
       <div class="row">
-        <el-input
-          :model-value="item.id" :disabled="readonly" size="small" class="id"
-          placeholder="对象名"
-          @change="patchObject(index, { id: String($event).trim() || item.id })"
+        <DraftInput
+          :model-value="item.id" :readonly="readonly" class="id" placeholder="对象名"
+          @update:model-value="patchObject(index, { id: $event.trim() || item.id })"
         />
         <el-select
           :model-value="item.project" :disabled="readonly" size="small" filterable class="project"
@@ -283,9 +283,9 @@ function setColumns(id: string, index: number, text: string): void {
     </div>
     <div v-for="(item, index) in resources" :key="`resource-${index}`" class="card">
       <div class="row">
-        <el-input
-          :model-value="item.id" :disabled="readonly" size="small" class="id"
-          @change="patchResource(index, { id: String($event).trim() || item.id })"
+        <DraftInput
+          :model-value="item.id" :readonly="readonly" class="id" placeholder="资源名"
+          @update:model-value="patchResource(index, { id: $event.trim() || item.id })"
         />
         <el-select
           :model-value="item.trigger" :disabled="readonly" size="small" class="trigger"
@@ -312,14 +312,14 @@ function setColumns(id: string, index: number, text: string): void {
     </div>
     <div v-for="[id, operation] in operations" :key="`operation-${id}`" class="card">
       <div class="row">
-        <el-input
-          :model-value="id" :disabled="readonly" size="small" class="id"
-          @change="renameOperation(id, String($event))"
+        <DraftInput
+          :model-value="id" :readonly="readonly" class="id" placeholder="操作名"
+          @update:model-value="renameOperation(id, $event)"
         />
-        <el-input
-          :model-value="parametersText(operation)" :disabled="readonly" size="small" class="params"
+        <DraftInput
+          :model-value="parametersText(operation)" :readonly="readonly" class="params"
           placeholder="操作参数，逗号分隔，如 metric"
-          @change="setParameters(id, String($event))"
+          @update:model-value="setParameters(id, $event)"
         />
         <el-button v-if="!readonly" link size="small" type="danger" @click="removeOperation(id)">
           删除
@@ -399,11 +399,11 @@ function setColumns(id: string, index: number, text: string): void {
             placeholder="字段路径，可空"
             @update:model-value="patchBlock(id, index, { path: String($event) })"
           />
-          <el-input
+          <DraftInput
             v-if="block.type === 'table'"
-            :model-value="columnsText(block)" :disabled="readonly" size="small" class="grow"
+            :model-value="columnsText(block)" :readonly="readonly" class="grow"
             placeholder="列，逗号分隔"
-            @change="setColumns(id, index, String($event))"
+            @update:model-value="setColumns(id, index, $event)"
           />
           <el-input
             v-if="block.type === 'image'"

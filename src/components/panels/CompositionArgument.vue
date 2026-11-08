@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { CompositionArgument } from '@/domain/types'
+import DraftInput from '@/components/panels/DraftInput.vue'
 
 /**
  * 一个参数来源的可视化编辑：先选来源，再填细节。
@@ -74,10 +75,10 @@ function onNested(text: string): void {
     </el-select>
 
     <template v-if="source === 'lit'">
-      <el-input
-        :model-value="literalText" :disabled="readonly" size="small" class="detail"
+      <DraftInput
+        :model-value="literalText" :readonly="readonly" class="detail"
         placeholder="常量；数字、true、[..]、{..} 按 JSON 解析"
-        @change="onLiteral"
+        @update:model-value="onLiteral"
       />
     </template>
     <template v-else-if="source === 'system'">
@@ -95,10 +96,11 @@ function onNested(text: string): void {
       />
     </template>
     <template v-else-if="source === 'items' || source === 'fields'">
-      <el-input
-        :model-value="nestedText" :disabled="readonly" type="textarea" :rows="2" size="small"
+      <DraftInput
+        :model-value="nestedText" :readonly="readonly" type="textarea" :rows="2"
         class="detail" placeholder="JSON 结构，元素可以继续写来源表达式"
-        @change="onNested"
+        :revert="false"
+        @update:model-value="onNested"
       />
     </template>
     <template v-else-if="source === 'step' || source === 'resource'">

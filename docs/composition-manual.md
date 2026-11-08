@@ -160,6 +160,9 @@ pnpm dev
 
    这六格合起来等于一句 Python：`client = DataClient(root="<平台分配的目录>")`。
 
+   > 新加的行名字默认是 `arg1`（资源 `resource1`、操作 `operation1`、步骤 `step1`）：
+   > 点进方框改掉，按回车或点别处生效。名字只认这个方框，没有单独的“重命名”按钮。
+
    `interval` 有默认值，不用加。加完这一行，对象区就结束了——`Dataset`、`JudgeEngine` 不在这里加，
    它们分别在「启动资源」「节点操作」里用 `saveAs` 命名。
 

@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { CompositionArgument } from '@/domain/types'
 import CompositionArgumentEditor from '@/components/panels/CompositionArgument.vue'
+import DraftInput from '@/components/panels/DraftInput.vue'
 
 /** 参数名 → 来源 的表格；参数名用失焦提交，避免每敲一个字母就重建整张表 */
 const props = defineProps<{
@@ -43,9 +44,9 @@ function add(): void {
 <template>
   <div class="arguments">
     <div v-for="[name, value] in rows" :key="name" class="row">
-      <el-input
-        :model-value="name" :disabled="readonly" size="small" class="name"
-        @change="rename(name, String($event))"
+      <DraftInput
+        :model-value="name" :readonly="readonly" class="name" placeholder="参数名"
+        @update:model-value="rename(name, $event)"
       />
       <CompositionArgumentEditor
         :model-value="value" :sources="sources" :readonly="readonly"

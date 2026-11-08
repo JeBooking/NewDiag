@@ -7,6 +7,7 @@ import type { ProjectFunction, ProjectFunctionParam } from '@/services/projects'
 import { isScalarParam } from '@/services/paramTypes'
 import { dataPreparationDominates } from '@/domain/dataSources'
 import BindingEditor from '@/components/panels/BindingEditor.vue'
+import DraftInput from '@/components/panels/DraftInput.vue'
 
 const props = defineProps<{
   value: FunctionPipeline
@@ -253,10 +254,10 @@ function removeField(index: number): void {
             <el-option v-if="!param.required" label="使用函数默认值" value="omit" />
             <el-option v-for="item in allowed(stage.name)" :key="item.value" v-bind="item" />
           </el-select>
-          <el-input
-            v-if="source(stage.name, param.name) === 'lit'" :disabled="readonly"
-            :model-value="literal(stage.name, param.name)" aria-label="固定参数值"
-            @change="changeLiteral(stage.name, param.name, String($event))"
+          <DraftInput
+            v-if="source(stage.name, param.name) === 'lit'" :readonly="readonly"
+            :model-value="literal(stage.name, param.name)" placeholder="固定参数值"
+            @update:model-value="changeLiteral(stage.name, param.name, $event)"
           />
           <el-input
             v-else-if="!unset(stage.name, param.name)
