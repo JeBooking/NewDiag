@@ -61,26 +61,12 @@ def empty_doc(name: str, mode: str = "parallel") -> dict:
 
 
 def instance_doc(name: str, mode: str = "parallel") -> dict:
-    """新建流程用的诊断实例模板：骨架齐全、没有业务内容。
+    """新建流程用的空白模板：不预设接入方式。
 
-    工程 / 类 / 版本留空，由用户在「流程属性 → 诊断实例」里选中；
-    直接抄示例里的业务类名会生成指向不存在工程的假绑定，发布必然失败。
-    config 为空对象：初始化参数由选中的诊断类带出，模板不预设业务参数。
+    这里不能再塞一个空的 diagnosis 对象：它会被当成「已启用诊断类」，
+    既挡住组合配置，又会在发布时报配置不完整。用户在流程属性里选哪种接入方式都行。
     """
-    return {
-        "format": 1,
-        "name": name,
-        "mode": mode,
-        "diagnosis": {
-            "project": "",
-            "function": "",
-            "protocol": "diagnosis/v1",
-            "version": "",
-            "config": {},
-        },
-        "nodes": [],
-        "edges": [],
-    }
+    return empty_doc(name, mode)
 
 
 def get_flow_or_404(db: Session, flow_id: str) -> Flow:

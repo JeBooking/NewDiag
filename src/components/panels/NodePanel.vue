@@ -48,7 +48,13 @@ const outputs = computed(() => props.node.outputs ?? [])
 const outputDraft = ref('')
 
 const isStart = computed(() => props.node.kind === 'start')
-const allowsCustomInputs = computed(() => !!props.doc?.diagnosis || props.doc?.nodes.some((node) => node.pipeline))
+const allowsCustomInputs = computed(() =>
+  !!props.doc?.diagnosis
+  || !!props.doc?.composition
+  || props.doc?.nodes.some((node) => node.pipeline)
+  // 还没有任何函数绑定时（新建的空白流程 / 组合流程），启动参数只能手工加
+  || !props.doc?.nodes.some((node) => node.binding || node.pipeline || node.method),
+)
 const inputName = ref('')
 const inputType = ref<ParamType>('text')
 const inputError = ref('')
