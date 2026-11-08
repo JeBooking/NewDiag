@@ -83,17 +83,67 @@ backend/.venv/Scripts/python.exe examples/composed-diagnosis/run.py
 
 登记后点「刷新接口」应能看到构造器、方法和函数列表。探测是**静态**的：只读签名和 docstring，不实例化、不调用业务方法。
 
-### 2.3 在流程里配置
+### 2.3 先把名词对上
 
-路径：设计页 → 空白处点击（不选中节点）→ 右侧「流程属性」→「组合配置」。
+界面上这几个词容易混，先按这张表对上：
 
-三段配置：
+| 字段 | 是什么 | 这个示例里 |
+|---|---|---|
+| 工程 | 你刚才登记的一行：一个目录 + 一个解释器 | `MockDataService` / `PlotEngine` / `JudgeEngine` |
+| 模块 | 工程目录里的 Python 模块（`.py` 文件名或包名） | `dataclient` / `dataset` / `plot_window` / `judgekit` |
+| 构造器 | Python 里的 `类名(...)`，创建对象的那个入口 | `DataClient` |
+| 构造参数 | 构造器括号里的参数 | `root` = 平台目录；`interval` 不填 |
 
-1. **工程对象**：给对象起实例内名字，选工程、模块、构造器。构造参数常用 `平台路径 → 输出目录`。
-2. **启动资源**：一组有序步骤。示例里是 `fetch`（取数落盘）→ `dataset`（解析成 Dataset 对象，`saveAs: dataset`）。
-3. **节点操作**：排查节点内部的有序步骤，外加「自动判断」和「展示」。
+关键区别：
 
-然后在画布上选中排查节点 → 右侧「组合操作」→ 选择操作 → 填操作参数（示例里是 `metric = vibration`）。
+- **工程不是对象**。工程是代码放在哪；对象是这次诊断里 `new` 出来的一个实例。同一个工程可以建多个对象，也可以一个都不建。
+- **构造器不是普通函数**。它就是你写 `client = DataClient(root=...)` 时等号右边那个 `DataClient`。选它表示「用这个类造一个对象」。
+- **构造参数看类的签名**，不是随便填。`DataClient(root=None, interval=None)` 两个参数都有默认值；示例只给 `root`，`interval` 留空走默认 60 秒。
+
+### 2.4 这个示例只需要加一个对象
+
+在「工程对象」里点「+ 对象」，只填这一行：
+
+| 字段 | 填什么 |
+|---|---|
+| 对象名 | `client`（自己起的实例内名字，后面的步骤用它调用方法） |
+| 工程 | `MockDataService` |
+| 模块 | `dataclient` |
+| 构造器 | `DataClient` |
+| 构造参数 | `root` → 来源选「平台路径」→「输出目录」；`interval` 不加 |
+
+为什么是它：取数要调用 `client.fetch(...)`，所以必须先有 `client` 这个对象。
+
+为什么 `root` 要给平台目录：`DataClient.fetch` 会把取到的 JSON 写到 `root` 下。给平台目录，文件落在本次实例的独立目录里；
+留空会写回 `MockDataService/data`，污染源工程，而且同一组参数会覆盖旧文件。
+
+**其余对象不用在这里加**：
+
+- `Dataset` 是步骤 `Dataset.load(path)` 的返回值，用 `saveAs: dataset` 命名，写在「启动资源」里；
+- `JudgeEngine` 和两个规则对象是在排查操作里按阈值构造的，也用 `saveAs` 命名。
+
+只有「需要提前创建、后面反复调用」的东西才放进对象区。
+
+### 2.5 启动资源与节点操作
+
+「启动资源」是一次取数 + 解析，示例里两步：
+
+| 步骤 id | 工程 | 模块 | 调用类型 | 对象/接口 | 输出 | 关键参数 |
+|---|---|---|---|---|---|---|
+| `fetch` | MockDataService | dataclient | 实例方法 | `client.fetch` | 数据文件 | 设备/工况/起止时间 ← 启动参数 |
+| `dataset` | PlotEngine | dataset | 普通函数 | `Dataset.load` | 对象 + `saveAs: dataset` | `path` ← `fetch` 的结果 |
+
+「节点操作」是排查节点内部的一组调用，示例里 `vibrationCheck`：
+
+| 步骤 id | 工程 | 模块 | 调用类型 | 对象/接口 | 输出 |
+|---|---|---|---|---|---|
+| `series` | PlotEngine | dataset | 实例方法 | `dataset.plot_series` | 普通值 |
+| `chart` | PlotEngine | plot_window | 普通函数 | `save_plot` | 图片 |
+| `judge` | JudgeEngine | judgekit | 构造器 | `JudgeEngine` | 对象 + `saveAs: vibrationJudge` |
+| `verdicts` | JudgeEngine | judgekit | 实例方法 | `vibrationJudge.judge_series` | 对象 |
+| `summary` | JudgeEngine | judgekit | 实例方法 | `vibrationJudge.summary` | 普通值 |
+
+然后在画布上选中排查节点 → 右侧「组合操作」→ 选 `vibrationCheck` → 操作参数 `metric` 选常量 `vibration`。
 
 ---
 
@@ -112,6 +162,17 @@ backend/.venv/Scripts/python.exe examples/composed-diagnosis/run.py
 ```
 
 对象在**首次被引用**时创建，之后整个实例复用。对象只活在所属工程的 worker 里，句柄不跨进程。
+
+字段怎么理解：
+
+- `project` 是工程登记名，决定去哪个目录、用哪个解释器；
+- `module` 是那个目录下的模块名，决定 `import` 哪个文件；
+- `entry` 是**类名**，等价于 Python 里的 `DataClient(...)`；不要填函数名；
+- `args` 是构造参数，来自这个类的 `__init__` 签名。必填参数（没有默认值的）必须绑定，否则发布失败；
+  可选参数不写就交给 Python 默认值。
+
+同一个类可以建多个对象，用不同 `id` 和不同构造参数区分，例如两个阈值不同的 `JudgeEngine`。
+构造器下拉里会列出模块的全部公开类（含 `QueryError` 这类异常类），按需选，不是每个都要用。
 
 ### 3.2 步骤
 

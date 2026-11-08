@@ -229,7 +229,10 @@ function setColumns(id: string, index: number, text: string): void {
 <template>
   <div class="composition">
     <div class="section-title">工程对象</div>
-    <div class="hint">对象的构造参数只支持启动参数、常量与平台分配的目录；对象留在所属工程进程内。</div>
+    <div class="hint">
+      工程是代码目录，模块是目录下的 .py 文件，构造器是要 new 的类。只有「需要提前创建、后面反复调用」的对象才加在这里；
+      步骤返回的对象用 saveAs 命名即可。
+    </div>
     <div v-for="(item, index) in objects" :key="`object-${index}`" class="card">
       <div class="row">
         <el-input
@@ -257,7 +260,10 @@ function setColumns(id: string, index: number, text: string): void {
           @update:model-value="patchObject(index, { entry: String($event) })"
           @visible-change="(open: boolean) => open && ensureObjectCatalog(item.project, item.module)"
         >
-          <el-option v-for="fn in constructors(item)" :key="fn.name" :label="fn.name" :value="fn.name" />
+          <el-option v-for="fn in constructors(item)" :key="fn.name" :label="fn.name" :value="fn.name">
+            <span>{{ fn.name }}</span>
+            <span v-if="fn.doc" class="option-doc">{{ fn.doc.slice(0, 50) }}</span>
+          </el-option>
         </el-select>
         <el-button v-if="!readonly" link size="small" type="danger" @click="removeObject(index)">
           删除
@@ -438,6 +444,7 @@ function setColumns(id: string, index: number, text: string): void {
 .params { flex: 1; min-width: 140px; }
 .grow { flex: 1; min-width: 120px; }
 .block-type { width: 90px; flex: none; }
+.option-doc { margin-left: 8px; font-size: 11px; color: var(--el-text-color-secondary); }
 .result { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .presentation { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 </style>
