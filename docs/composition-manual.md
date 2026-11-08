@@ -1,6 +1,8 @@
-# 组合接入开发手册
+# 组合接入手册
 
-面向把既有 Python 工程接进诊断平台的人。读完后应能：登记工程 → 在流程里声明对象、资源和操作 → 发布 → 跑通一次诊断，并且**不新增总控代码、不复制原工程算法**。
+第 2 章是界面操作，照着点就行；第 3–5 章是配置字段、运行语义和接口约定，给要改流程或接新工程的人看。
+
+读完后应能：登记工程 → 声明对象、资源和操作 → 发布 → 跑通一次诊断，并且**不新增总控代码、不复制原工程算法**。
 
 设计依据是 [spec 第 14 节](spec.md)，可运行示例在 [`examples/composed-diagnosis`](../examples/composed-diagnosis)。
 
@@ -27,129 +29,117 @@
 
 ### 先跑通示例
 
-动手改配置前，先确认环境和三个工程都通：
+两条路任选：
 
-```bash
-backend/.venv/Scripts/python.exe examples/composed-diagnosis/run.py
-```
+- 命令行一条命令跑完（最快，见 [`examples/composed-diagnosis/README.md`](../examples/composed-diagnosis/README.md)）：
+  ```bash
+  backend/.venv/Scripts/python.exe examples/composed-diagnosis/run.py
+  ```
+- 在界面里跟着第 2 章点一遍，约 5 分钟。
 
-看到 `实例状态：success` 就说明后端、三个解释器、接口探测、发布、调度全链路可用；
-之后按第 2 节接自己的工程。跑不起来时先看 [`examples/composed-diagnosis/README.md`](../examples/composed-diagnosis/README.md)
-的「常见失败对照」。
+看到 `实例状态：success` 就说明后端、三个解释器、接口探测、发布、调度全链路可用。
+之后再按第 3 节改配置、按第 5 节接自己的工程。
 
 ---
 
-## 2. 三步接入
+## 2. 示例：照着点一遍
 
-### 2.1 确认模块有可调用的公开接口
+这一章只写点哪里、填什么，不讲原理。整套约 5 分钟；原理和字段含义在后面的「配置速查」。
 
-平台只认公开、同步、支持关键字传参的接口：
+### 2.1 启动平台
 
-| 允许 | 说明 |
-|---|---|
-| 模块级函数 | `save_plot`、`parse_time` |
-| 类构造器 | `DataClient(root=None, interval=None)` |
-| 类方法 / 静态方法 | `Dataset.load(path)` |
-| 实例方法 | `client.fetch(...)`、`judge.summary(verdicts)` |
-| 带 `**kwargs` 的函数 | 只绑定显式列出的参数，例如 `save_plot(..., **savefig_kwargs)` 可以直接用 |
+在仓库根目录执行：
 
-不允许：协程、`*args` 形式的可变位置参数、必须靠窗口按钮触发的逻辑。私有名称（`_` 开头）不会被探测，也不能调用。
+```bash
+pnpm install    # 第一次才需要
+pnpm dev
+```
 
-本方案用到的三个工程**一行未改**：
+浏览器打开 `http://127.0.0.1:5173`。
 
-| 工程 | 模块 | 用到的接口 |
-|---|---|---|
-| MockDataService | `dataclient` | `DataClient(root=...)`、`client.fetch(...)` |
-| PlotEngine | `dataset` | `Dataset.load(path)`、`dataset.plot_series(device, activity, metric)` |
-| PlotEngine | `plot_window` | `save_plot(data, path, title=..., xlabel=..., ylabel=...)` |
-| JudgeEngine | `judgekit` | `JudgeEngine(thresholds=...)`、`judge.judge_series(item)`、`judge.summary(verdicts)` |
+### 2.2 登记三个工程
 
-### 2.2 登记工程
+左侧点「工程管理」→ 右上「登记工程」，按下面三行各登记一次（工厂函数都留空）：
 
-「工程管理」页新增三行：
-
-| 名称 | 路径 | 模块 | 解释器 |
+| 名称 | 工程路径 | 模块 | 解释器 |
 |---|---|---|---|
-| MockDataService | `D:\FILE\Projects\MockDataService` | `dataclient` | 留空（用平台自身） |
-| PlotEngine | `D:\FILE\Projects\PlotEngine` | `dataset` | `...\PlotEngine\.venv\Scripts\python.exe` |
-| JudgeEngine | `D:\FILE\Projects\JudgeEngine` | `judgekit` | 留空 |
+| MockDataService | `D:\FILE\Projects\MockDataService` | `dataclient` | 不填 |
+| PlotEngine | `D:\FILE\Projects\PlotEngine` | `dataset` | `D:\FILE\Projects\PlotEngine\.venv\Scripts\python.exe` |
+| JudgeEngine | `D:\FILE\Projects\JudgeEngine` | `judgekit` | 不填 |
 
-规则：
+- 名称照抄：后面的流程按名字找工程，登记后不能改。
+- 解释器不填 = 用平台自带的 Python；PlotEngine 必须填它自己的，否则画图会报找不到 matplotlib。
+- 三行都登记完，在列表里点每行的「接口」；能看到接口列表就说明这一行走通了。
 
-- **名称**是流程配置与签名指纹的唯一键，登记后不能改。
-- **模块**只是默认值；步骤里可以写同一工程下的其它模块（示例里的 `plot_window` 就是）。一个工程对应一个解释器和一个工作目录，多模块共用同一个 worker。
-- **解释器**是真正执行该工程代码的 Python。PlotEngine 依赖 matplotlib/tkinter，必须用它自己的 `.venv`；`python` 留空表示用平台后端解释器。
-- 工程目录会被加入该 worker 的 `sys.path` 和 `cwd`；跨目录 import 需要模块方自己处理，平台不拼接兄弟工程路径。
+### 2.3 导入示例流程
 
-登记后点「刷新接口」应能看到构造器、方法和函数列表。探测是**静态**的：只读签名和 docstring，不实例化、不调用业务方法。
+左侧「流程」→ 右上「导入」→ 把 `examples/composed-diagnosis/workflow.json` 拖进弹窗（或点击选择文件）→ 点「导入」。
+列表里出现「三工程组合诊断（振动与温度）」。
 
-### 2.3 先把名词对上
+### 2.4 发布
 
-界面上这几个词容易混，先按这张表对上：
+点流程名字进入设计页 → **点一下画布空白处**（取消选中节点，右侧才显示流程属性）→ 属性栏拉到最下面 →
+点「发布新版本」→ 备注可空 → 确定。出现版本 v1 就算发布成功。
 
-| 字段 | 是什么 | 这个示例里 |
+### 2.5 跑一次（走异常分支）
+
+回到「流程」列表 → 这一行右侧点「执行」。表单里显示的是英文参数名，按下表填，其余不动：
+
+| 表单字段 | 含义 | 填什么 |
 |---|---|---|
-| 工程 | 你刚才登记的一行：一个目录 + 一个解释器 | `MockDataService` / `PlotEngine` / `JudgeEngine` |
-| 模块 | 工程目录里的 Python 模块（`.py` 文件名或包名） | `dataclient` / `dataset` / `plot_window` / `judgekit` |
-| 构造器 | Python 里的 `类名(...)`，创建对象的那个入口 | `DataClient` |
-| 构造参数 | 构造器括号里的参数 | `root` = 平台目录；`interval` 不填 |
+| `device` | 设备 | `D001` |
+| `activity` | 工况 | `满载` |
+| `start_time` | 起始时间 | `2026-11-05 08:00` |
+| `end_time` | 结束时间 | `2026-11-05 10:00` |
+| `peak` / `mean` / `trend` | 三个阈值 | 保持默认（12 / 40 / 0.05） |
 
-关键区别：
+点「开始执行」，跳到实例详情，等 5～10 秒。看到下面这些就算跑通：
 
-- **工程不是对象**。工程是代码放在哪；对象是这次诊断里 `new` 出来的一个实例。同一个工程可以建多个对象，也可以一个都不建。
-- **构造器不是普通函数**。它就是你写 `client = DataClient(root=...)` 时等号右边那个 `DataClient`。选它表示「用这个类造一个对象」。
-- **构造参数看类的签名**，不是随便填。`DataClient(root=None, interval=None)` 两个参数都有默认值；示例只给 `root`，`interval` 留空走默认 60 秒。
+1. 画布上「振动是否异常」变绿。
+2. 页面下方「运行记录」标签页里：结论「是」，依据「实测 13.05 > 阈值 12」。
+3. 同一条运行记录里有一张「振动曲线」，点开能看图。
+4. 走到「停机检查轴承」会停下，**右侧**待办出现「完成 / 回退」→ 点「完成」。
+5. 最后走到「异常已处理」，实例状态显示「成功」。
 
-### 2.4 这个示例只需要加一个对象
+### 2.6 再跑一次（走正常分支）
 
-在「工程对象」里点「+ 对象」，只填这一行：
+重复 2.5，只改两格：`device` 填 `D002`，`activity` 填 `空载`。
+预期：「振动是否异常」为「否」→「温度是否偏高」也为「否」→ 最后走到「设备正常」。
 
-| 字段 | 填什么 |
+### 2.7 三段配置各管什么（认路）
+
+设计页点空白处，右侧「流程属性」有三段。示例已经配好，不用改，只要知道谁管什么：
+
+| 段落 | 管什么 | 示例里是什么 |
+|---|---|---|
+| 工程对象 | 提前创建、后面反复用的对象 | 取数用的 `client` |
+| 启动资源 | 开始节点执行一次的取数和解析 | `fetch` 取数 → `dataset` 解析 |
+| 节点操作 | 排查节点内部的一组调用 | 振动、温度两个排查 |
+
+### 2.8 卡住了看这里
+
+| 现象 | 怎么办 |
 |---|---|
-| 对象名 | `client`（自己起的实例内名字，后面的步骤用它调用方法） |
-| 工程 | `MockDataService` |
-| 模块 | `dataclient` |
-| 构造器 | `DataClient` |
-| 构造参数 | `root` → 来源选「平台路径」→「输出目录」；`interval` 不加 |
-
-为什么是它：取数要调用 `client.fetch(...)`，所以必须先有 `client` 这个对象。
-
-为什么 `root` 要给平台目录：`DataClient.fetch` 会把取到的 JSON 写到 `root` 下。给平台目录，文件落在本次实例的独立目录里；
-留空会写回 `MockDataService/data`，污染源工程，而且同一组参数会覆盖旧文件。
-
-**其余对象不用在这里加**：
-
-- `Dataset` 是步骤 `Dataset.load(path)` 的返回值，用 `saveAs: dataset` 命名，写在「启动资源」里；
-- `JudgeEngine` 和两个规则对象是在排查操作里按阈值构造的，也用 `saveAs` 命名。
-
-只有「需要提前创建、后面反复调用」的东西才放进对象区。
-
-### 2.5 启动资源与节点操作
-
-「启动资源」是一次取数 + 解析，示例里两步：
-
-| 步骤 id | 工程 | 模块 | 调用类型 | 对象/接口 | 输出 | 关键参数 |
-|---|---|---|---|---|---|---|
-| `fetch` | MockDataService | dataclient | 实例方法 | `client.fetch` | 数据文件 | 设备/工况/起止时间 ← 启动参数 |
-| `dataset` | PlotEngine | dataset | 普通函数 | `Dataset.load` | 对象 + `saveAs: dataset` | `path` ← `fetch` 的结果 |
-
-「节点操作」是排查节点内部的一组调用，示例里 `vibrationCheck`：
-
-| 步骤 id | 工程 | 模块 | 调用类型 | 对象/接口 | 输出 |
-|---|---|---|---|---|---|
-| `series` | PlotEngine | dataset | 实例方法 | `dataset.plot_series` | 普通值 |
-| `chart` | PlotEngine | plot_window | 普通函数 | `save_plot` | 图片 |
-| `judge` | JudgeEngine | judgekit | 构造器 | `JudgeEngine` | 对象 + `saveAs: vibrationJudge` |
-| `verdicts` | JudgeEngine | judgekit | 实例方法 | `vibrationJudge.judge_series` | 对象 |
-| `summary` | JudgeEngine | judgekit | 实例方法 | `vibrationJudge.summary` | 普通值 |
-
-然后在画布上选中排查节点 → 右侧「组合操作」→ 选 `vibrationCheck` → 操作参数 `metric` 选常量 `vibration`。
+| 发布报「接口探测失败」 | 工程路径或模块写错。回 2.2 核对，并点该行的「接口」看能不能列出来 |
+| 发布报「找不到接口」 | PlotEngine 的解释器没填它的 `.venv`；补上再点「接口」确认 |
+| 执行后一直「运行中」 | 等 10 秒刷新；仍不动就看实例详情里运行记录的报错 |
+| 停在「停机检查轴承」不动 | 这是人工处置，右侧待办点「完成」 |
+| 列表里没有「执行」按钮 | 这个流程还没发布，回 2.4 |
 
 ---
 
 ## 3. 配置速查
 
 ### 3.1 对象
+
+先分清界面上的四个词：
+
+| 词 | 是什么 | 示例 |
+|---|---|---|
+| 工程 | 登记的一行：一个目录 + 一个解释器 | `MockDataService` |
+| 模块 | 工程目录下的 `.py` 文件或包名 | `dataclient` |
+| 构造器 | 要创建的**类名**，不是函数 | `DataClient` |
+| 构造参数 | 类名括号里的参数，看 `__init__` 签名 | `root`、`interval` |
 
 ```json
 {
@@ -267,6 +257,29 @@ backend/.venv/Scripts/python.exe examples/composed-diagnosis/run.py
 
 ---
 
+### 3.6 示例配置对照
+
+想知道 `workflow.json` 里每一步对应界面哪一格，看这两张表。
+
+「启动资源」两步：
+
+| 步骤 id | 工程 | 模块 | 调用类型 | 对象/接口 | 输出 | 参数来源 |
+|---|---|---|---|---|---|---|
+| `fetch` | MockDataService | dataclient | 实例方法 | `client.fetch` | 数据文件 | 设备/工况/起止时间 ← 启动参数 |
+| `dataset` | PlotEngine | dataset | 普通函数 | `Dataset.load` | 对象 + `saveAs: dataset` | `path` ← `fetch` 的结果 |
+
+「节点操作」`vibrationCheck` 五步：
+
+| 步骤 id | 工程 | 模块 | 调用类型 | 对象/接口 | 输出 |
+|---|---|---|---|---|---|
+| `series` | PlotEngine | dataset | 实例方法 | `dataset.plot_series` | 普通值 |
+| `chart` | PlotEngine | plot_window | 普通函数 | `save_plot` | 图片 |
+| `judge` | JudgeEngine | judgekit | 构造器 | `JudgeEngine` | 对象 + `saveAs: vibrationJudge` |
+| `verdicts` | JudgeEngine | judgekit | 实例方法 | `vibrationJudge.judge_series` | 对象 |
+| `summary` | JudgeEngine | judgekit | 实例方法 | `vibrationJudge.summary` | 普通值 |
+
+---
+
 ## 4. 运行期到底发生了什么
 
 以示例的一次振动排查为例：
@@ -311,7 +324,21 @@ backend/.venv/Scripts/python.exe examples/composed-diagnosis/run.py
 
 ---
 
-## 5. 接入一个新接口的检查清单
+## 5. 接入一个新接口
+
+### 5.1 什么接口能被平台调用
+
+| 允许 | 例子 |
+|---|---|
+| 模块级函数 | `save_plot`、`parse_time` |
+| 类构造器 | `DataClient(root=None, interval=None)` |
+| 类方法 / 静态方法 | `Dataset.load(path)` |
+| 实例方法 | `client.fetch(...)`、`judge.summary(verdicts)` |
+| 带 `**kwargs` 的函数 | 只绑定显式列出的参数，`save_plot(..., **savefig_kwargs)` 可直接用 |
+
+不允许：协程、`*args` 可变位置参数、必须靠窗口按钮触发的逻辑。`_` 开头的私有名称不会被探测，也不能调用。
+
+### 5.2 检查清单
 
 1. 它是公开、同步、能关键字调用的吗？带 `**kwargs` 可以，`*args` 不行。
 2. 它返回什么？
