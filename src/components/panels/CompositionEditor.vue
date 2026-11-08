@@ -237,6 +237,7 @@ function setColumns(id: string, index: number, text: string): void {
       <div class="row">
         <el-input
           :model-value="item.id" :disabled="readonly" size="small" class="id"
+          placeholder="对象名"
           @change="patchObject(index, { id: String($event).trim() || item.id })"
         />
         <el-select
