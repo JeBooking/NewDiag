@@ -47,14 +47,50 @@ def main() -> int:
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
     try:
-        functions = _discover(config)
-        payload = {"functions": functions}
+        if config.get("check") == "flowclass":
+            payload = _check_flowclass(config)
+        else:
+            functions = _discover(config)
+            payload = {"functions": functions}
     except BaseException as exc:  # noqa: BLE001 - 导入期任何异常都要报回
         payload = {"functions": [], "error": f"{exc}\n{traceback.format_exc()}"}
     finally:
         sys.stdout = real_stdout
     _emit(payload)
     return 0 if "error" not in payload else 1
+
+
+def _check_flowclass(config: dict) -> dict:
+    """验证流程类的运行解释器能导入全部工程，并且别名根上的接口真的存在。
+
+    不构造对象、不调用方法：只回答「发布后第一次执行会不会因为找不到模块/属性而失败」。
+    """
+    paths = config.get("paths") or []
+    for path in reversed(paths):
+        if path and path not in sys.path:
+            sys.path.insert(0, path)
+
+    modules = {}
+    errors = []
+    for item in config.get("imports") or []:
+        alias = str(item.get("alias") or "")
+        module_name = str(item.get("module") or "")
+        try:
+            modules[alias] = importlib.import_module(module_name)
+        except BaseException as exc:  # noqa: BLE001 - 缺依赖要让作者看到原始异常
+            errors.append(f"导入 {module_name}（别名 {alias}）失败：{exc}")
+
+    for call in config.get("calls") or []:
+        head, _, rest = str(call).partition(".")
+        target = modules.get(head)
+        if target is None:
+            continue  # 导入失败的别名已在上面报过
+        try:
+            for part in rest.split(".") if rest else []:
+                target = getattr(target, part)
+        except AttributeError:
+            errors.append(f"{call} 不存在：{head} 模块里找不到 {rest}")
+    return {"functions": [], "error": "\n".join(errors)}
 
 
 def _discover(config: dict) -> list[dict]:

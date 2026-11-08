@@ -115,6 +115,10 @@ def main() -> int:
 
 
 def _bootstrap(config: dict):
+    # 流程类会把被引用的工程都塞进同一个进程，先铺路径再导入入口模块
+    for item in reversed(config.get("paths") or []):
+        if item and item not in sys.path:
+            sys.path.insert(0, item)
     path = config.get("path") or ""
     if path:
         os.chdir(path)

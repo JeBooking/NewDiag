@@ -79,6 +79,7 @@ def probe_doc(doc: dict) -> dict:
             continue
         result[key] = _param_list(func)
     failed = [k for k, v in result.items() if isinstance(v, dict) and v.get("error")]
+    _add_flow_class(doc, result)
     logger.info(
         "签名探测：%d 个函数，%d 个失败，%d 个工程，%.0fms%s",
         sum(1 for v in result.values() if isinstance(v, list)),
@@ -88,6 +89,67 @@ def probe_doc(doc: dict) -> dict:
         f"，失败：{failed}" if failed else "",
     )
     return result
+
+
+def _add_flow_class(doc: dict, result: dict) -> None:
+    """类定义不落在任何工程里，编译期把它当成虚拟工程注入探针表。
+
+    这里多做一件事：用流程声明的运行解释器真的 import 一遍所有工程，
+    把「解释器缺 matplotlib」这类问题拦在发布，而不是等第一次执行。
+    """
+    from app.services import flowclass
+
+    try:
+        spec = flowclass.definition(doc)
+    except flowclass.FlowClassError:
+        return
+    if spec is None:
+        return
+    start = _start_items(doc)
+    key = f"{flowclass.PROJECT}:{flowclass.CLASS}.__definition__"
+    errors = flowclass.validate(doc, start)
+    if errors:
+        result[key] = {"error": "；".join(errors)}
+        return
+    result.update(flowclass.probe_entries(doc, start))
+    error = _probe_flow_imports(doc, spec, start)
+    if error:
+        result[key] = {"error": error}
+
+
+def _start_items(doc: dict) -> list[dict]:
+    from app.services.compiler import StartParams
+
+    return StartParams(doc).items
+
+
+def _probe_flow_imports(doc: dict, spec: dict, start: list[dict]) -> str:
+    from app.services import flowclass
+
+    paths: list[str] = []
+    for name in flowclass.project_names(doc):
+        project = _load_project(name)
+        if project is None:
+            return f"工程 {name} 未登记，无法导入"
+        path = str(getattr(project, "path", "") or "")
+        if not path:
+            return f"工程 {name} 没有登记路径"
+        if path not in paths:
+            paths.append(path)
+    if not paths:
+        return "类定义没有导入任何工程"
+    config = {
+        "check": "flowclass",
+        "paths": paths,
+        "imports": [item for item in spec.get("imports") or [] if isinstance(item, dict)],
+        "calls": flowclass.alias_calls(doc),
+    }
+    python = str(spec.get("runtime") or "") or sys.executable
+    payload, failure = _run_probe(config, python, paths[0])
+    if payload is None:
+        return failure
+    detail = str(payload.get("error") or "").strip()
+    return detail
 
 
 def _document_bindings(doc):
@@ -326,17 +388,8 @@ def _load_project(name: str):
                 pass
 
 
-def _probe_project(project) -> tuple[list[dict] | None, str]:
-    """起子进程探测一个工程，返回 (函数表, 错误描述)。"""
-    config = {
-        "path": getattr(project, "path", "") or "",
-        "module": getattr(project, "module", "") or "",
-        "factory": getattr(project, "factory", "") or "",
-    }
-    if not config["module"]:
-        return None, "工程没有登记模块名"
-    python = getattr(project, "python", None) or sys.executable
-    cwd = config["path"] or None
+def _run_probe(config: dict, python: str, cwd: str | None) -> tuple[dict | None, str]:
+    """起一次探针子进程，返回 (payload, 错误描述)。"""
     # stdio 编码在解释器启动时就固定了，只能启动前指定；子进程里改环境变量不起作用。
     # 只动 stdio：PYTHONUTF8=1 会连 open() 的默认编码一起改成 UTF-8，打挂读 GBK 文件的业务脚本
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
@@ -346,7 +399,7 @@ def _probe_project(project) -> tuple[list[dict] | None, str]:
             json.dump(config, fh, ensure_ascii=False)
         completed = subprocess.run(
             [python, str(PROBE), config_path],
-            cwd=cwd,
+            cwd=cwd or None,
             env=env,
             capture_output=True,
             text=True,
@@ -374,6 +427,22 @@ def _probe_project(project) -> tuple[list[dict] | None, str]:
             break
     if payload is None:
         return None, (completed.stderr or "探针没有输出可解析结果").strip()[:500]
+    return payload, ""
+
+
+def _probe_project(project) -> tuple[list[dict] | None, str]:
+    """起子进程探测一个工程，返回 (函数表, 错误描述)。"""
+    config = {
+        "path": getattr(project, "path", "") or "",
+        "module": getattr(project, "module", "") or "",
+        "factory": getattr(project, "factory", "") or "",
+    }
+    if not config["module"]:
+        return None, "工程没有登记模块名"
+    python = getattr(project, "python", None) or sys.executable
+    payload, failure = _run_probe(config, python, config["path"] or None)
+    if payload is None:
+        return None, failure
 
     functions = payload.get("functions")
     if not isinstance(functions, list):

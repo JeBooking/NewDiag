@@ -57,7 +57,10 @@ class SessionManager:
             if instance_id in self._cancelled:
                 raise SessionError("实例已终止，不能启动会话")
             handle = self._handles.get(instance_id)
-            project_key = tuple(getattr(project, key, None) for key in ("path", "module", "python", "factory"))
+            project_key = tuple(
+                getattr(project, key, None)
+                for key in ("path", "module", "python", "factory")
+            ) + (tuple(getattr(project, "paths", None) or ()),)
             if handle is not None and handle.proc.poll() is None and handle.project_key == project_key:
                 return handle
             if handle is not None:
@@ -184,6 +187,7 @@ class SessionManager:
             "path": getattr(project, "path", "") or "",
             "module": getattr(project, "module", "") or "",
             "factory": getattr(project, "factory", "") or "",
+            "paths": list(getattr(project, "paths", None) or []),
         }
         fd, config_path = tempfile.mkstemp(prefix="diag-session-", suffix=".json")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:

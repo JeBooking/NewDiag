@@ -705,6 +705,10 @@ class Scheduler:
 
     def _execute_diagnosis(self, db, instance, token, binding, method, state, *, initialize=False):
         args = state["inputs"]
+        try:
+            virtual = self._flow_project(db, instance, binding)
+        except (OSError, RuntimeError) as exc:
+            return None, (ERR_EXCEPTION, str(exc), 1)
         request = {"class": binding["function"], "version": binding["version"],
                    "config": binding.get("config") or {}, "definition": binding["definition"],
                    "artifactRoot": str(self._artifact_root(instance.id)),
@@ -713,8 +717,11 @@ class Scheduler:
                    "operation": "initialize" if initialize else "method",
                    "inputs": args if initialize else {}, "method": method.get("name"),
                    "arguments": args}
+        if virtual is not None:
+            request["frozen"] = True
         value, failure = self._invoke(db, instance, {
             "project": binding["project"], "function": "__newdiag_diagnosis__",
+            "virtual": virtual,
         }, request, token)
         if self._is_cancelled(instance.id):
             return None, ("execution/terminated", "用户终止诊断", 1)
@@ -946,11 +953,43 @@ class Scheduler:
             token.updated_at = now_iso()
         db.flush()
 
+    def _flow_project(self, db, instance, binding):
+        """把发布时冻结的源码落到实例目录，拼出这次会话要用的「虚拟工程」。"""
+        if not binding.get("flowClass"):
+            return None
+        source = binding.get("source") or ""
+        module = str(binding.get("module") or "")
+        if not module:
+            raise RuntimeError("发布计划缺少类模块名，请重新发布")
+        directory = self._artifact_root(instance.id) / "_flowclass"
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / f"{module}.py"
+        if not target.is_file() or target.read_text(encoding="utf-8") != source:
+            target.write_text(source, encoding="utf-8")
+        paths: list[str] = []
+        for name in binding.get("projects") or []:
+            project = self._project(db, name)
+            if project is None:
+                raise RuntimeError(f"类定义引用的工程 {name} 未登记")
+            path = str(getattr(project, "path", "") or "")
+            if not path:
+                raise RuntimeError(f"工程 {name} 没有登记路径")
+            if path not in paths:
+                paths.append(path)
+        return {
+            "path": str(directory),
+            "module": module,
+            "factory": "",
+            "python": str(binding.get("runtime") or "") or None,
+            "paths": paths,
+        }
+
     def _invoke(self, db, instance, call: dict, args: dict, token):
         """调会话子进程；超时/崩溃重试一次。返回 (value, (code, message, attempts))。"""
         ref = str(call.get("project") or "")
         function = str(call.get("function") or "")
-        project = self._project(db, ref)
+        virtual = call.get("virtual")
+        project = SimpleNamespace(**virtual) if virtual else self._project(db, ref)
         if project is None:
             return None, (ERR_EXCEPTION, f"工程 {ref} 未登记，无法调用 {function}", 1)
         attempts = 0

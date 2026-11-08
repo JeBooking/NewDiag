@@ -16,10 +16,10 @@ from functools import wraps
 
 if __package__:
     from . import artifacts
-    from .node_sdk import json_value, presentation
+    from .node_sdk import json_value, presentation, save_file
 else:
     import artifacts
-    from node_sdk import json_value, presentation
+    from node_sdk import json_value, presentation, save_file
 
 logger = logging.getLogger(__name__)
 PROTOCOL = "diagnosis/v1"
@@ -37,6 +37,11 @@ class Diagnosis:
     """普通业务成员随对象保存；initialize 仅在诊断首次启动时执行。"""
 
     version = "1.0.0"
+
+    @property
+    def artifact_root(self):
+        """本次实例的产物目录：生成的类在这里写图片，平台自动收成附件。"""
+        return _context(self)["artifacts"]
 
     def initialize(self):
         pass
@@ -197,9 +202,18 @@ class ResourceCache:
 
 
 def normalize_result(value):
-    if not isinstance(value, dict) or "presentation" not in value:
-        raise ValueError("诊断方法须返回包含 presentation 的对象，可附 result、reason、data")
-    view = presentation(value["presentation"])
+    if not isinstance(value, dict):
+        raise ValueError("诊断方法须返回对象，可含 presentation、result、reason、figure、series、data")
+    value = dict(value)
+    extra = _materialize_blocks(value.pop("figure", None), value.pop("series", None))
+    if "presentation" in value:
+        view = presentation(value["presentation"])
+        if extra:
+            view = {"blocks": [*view["blocks"], *extra]}
+    elif extra:
+        view = presentation({"blocks": extra})
+    else:
+        view = presentation({"blocks": []})
     result = value.get("result")
     if result is True:
         result = "yes"
@@ -212,6 +226,27 @@ def normalize_result(value):
         raise ValueError("自动判断必须提供非空 reason")
     return json_value({"presentation": view, "result": result, "reason": reason,
                        "data": value.get("data")})
+
+
+def _materialize_blocks(figure, series):
+    """把方法返回的文件路径与序列换成展示块：图入库成附件，序列画成曲线。"""
+    blocks = []
+    if isinstance(series, dict) and isinstance(series.get("y"), (list, tuple)):
+        values = [float(item) for item in series["y"]]
+        if values:
+            block = {"type": "line", "values": values}
+            label = series.get("label") or series.get("metric")
+            if isinstance(label, str) and label:
+                block["label"] = label
+            blocks.append(block)
+    if isinstance(figure, str) and figure:
+        try:
+            with open(figure, "rb") as handle:
+                data = handle.read()
+        except OSError as exc:
+            raise ValueError(f"读取返回的图片失败：{figure}（{exc}）") from exc
+        blocks.insert(0, {"type": "image", "src": save_file(data)})
+    return blocks
 
 
 class DiagnosisRuntime:
@@ -236,7 +271,9 @@ class DiagnosisRuntime:
         if not is_diagnosis(cls):
             raise ValueError("流程入口必须为 Diagnosis 业务类")
         meta = describe_diagnosis(cls)
-        if meta != request["definition"] or request["version"] != cls.version:
+        # 生成的类随发布冻结，源码不会漂移，不需要再比对接口指纹
+        if not request.get("frozen") and (meta != request["definition"]
+                                          or request["version"] != cls.version):
             raise ValueError("诊断类接口或资源版本与发布计划不一致，请重新发布")
         root = request["artifactRoot"]
         reference = request.get("state")
@@ -258,6 +295,7 @@ class DiagnosisRuntime:
             else:
                 obj = cls(**(request.get("config") or {}))
             _CONTEXTS[id(obj)] = {
+                "artifacts": root,
                 "inputs": copy.deepcopy(inputs),
                 "data": SharedData(root, saved["data"] if saved else None),
                 "cache": ResourceCache(obj, root, {**identity, "inputs": inputs},

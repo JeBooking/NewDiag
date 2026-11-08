@@ -19,6 +19,7 @@ import BindingEditor from './BindingEditor.vue'
 import FunctionPipelineEditor from '@/components/panels/FunctionPipelineEditor.vue'
 import ParamValueInput from './ParamValueInput.vue'
 import DiagnosisMethodEditor from '@/components/panels/DiagnosisMethodEditor.vue'
+import FlowClassMethodEditor from '@/components/panels/FlowClassMethodEditor.vue'
 import { PARAM_TYPES, parameterType as normalizeType } from '@/domain/parameters'
 
 const props = defineProps<{
@@ -48,7 +49,10 @@ const outputs = computed(() => props.node.outputs ?? [])
 const outputDraft = ref('')
 
 const isStart = computed(() => props.node.kind === 'start')
-const allowsCustomInputs = computed(() => !!props.doc?.diagnosis || props.doc?.nodes.some((node) => node.pipeline))
+const allowsCustomInputs = computed(() => !!props.doc?.diagnosis
+  || !!props.doc?.flowClass
+  || props.doc?.nodes.some((node) => node.pipeline))
+const flowMethods = computed(() => props.doc?.flowClass?.methods ?? [])
 const inputName = ref('')
 const inputType = ref<ParamType>('text')
 const inputError = ref('')
@@ -73,6 +77,7 @@ const orderGroups = computed(() =>
 
 const codeHint = computed(() => {
   if (props.doc?.diagnosis) return '调用本次诊断对象的方法，共享初始化数据与按需缓存'
+  if (props.doc?.flowClass) return '调用流程类的方法，构造只执行一次，同构检查共用方法'
   // 能不能绑代码由 KIND_META 声明，别再按类型名判断，否则新增可编程类型时这里会拦错
   if (!KIND_META[props.node.kind].codeCapable) return '该类型由人工完成，不执行代码'
   if (props.node.kind === 'dataPreparation') return '获取、解析一次，供下游排查共享数据'
@@ -586,14 +591,21 @@ function addGlobalInput(): void {
       <div class="section-title">参数绑定</div>
       <div class="section-hint">{{ codeHint }}</div>
       <el-select
-        v-if="node.kind === 'investigation' && !doc?.diagnosis" :model-value="connectionMode" :disabled="readonly"
+        v-if="node.kind === 'investigation' && !doc?.diagnosis && !doc?.flowClass"
+        :model-value="connectionMode" :disabled="readonly"
         aria-label="排查接入方式" @change="changeConnectionMode"
       >
         <el-option label="分别选择四阶段函数" value="functions" />
         <el-option label="原有函数或适配器类" value="legacy" />
       </el-select>
+      <FlowClassMethodEditor
+        v-if="node.kind === 'investigation' && doc?.flowClass"
+        :methods="flowMethods" :value="node.method" :inputs="node.runtimeInputs" :readonly="readonly"
+        @update="emit('update', { method: $event, runtimeInputs: [], pipeline: undefined, binding: undefined })"
+        @update-inputs="patchRuntimeInputs"
+      />
       <DiagnosisMethodEditor
-        v-if="node.kind === 'investigation' && doc?.diagnosis"
+        v-else-if="node.kind === 'investigation' && doc?.diagnosis"
         :diagnosis="doc.diagnosis" :value="node.method" :inputs="node.runtimeInputs" :readonly="readonly"
         @update="emit('update', { method: $event, runtimeInputs: [], pipeline: undefined, binding: undefined })"
         @update-inputs="patchRuntimeInputs"

@@ -4,6 +4,8 @@
 
 2026-11-05：按用户确认新增 v1.11 诊断实例类协议，契约扩展已同步到 spec、domain/types.ts 和后端模型。
 新增 worker/diagnosis_sdk.py、examples/diagnosis-instance，由 lead 集成；旧接入协议保留兼容，无未登记设计偏差。
+2026-11-08：新增 v1.14 流程类（doc.flowClass）：作者只声明导入/构造/方法，发布时编译成 Python 类并冻结，
+执行复用 diagnosis/v1 运行时；外接工程零改动。契约见 spec 第 13 节、docs/flow-class.md 与 src/domain/types.ts。
 2026-11-05：按用户最新要求，v1.12 改为普通 Python 成员及对象整体保存恢复，不再强制 self.data。
 恢复范围及运行资源边界记入 docs/todo.md，本轮先按全部恢复处理。
 2026-11-05：按用户要求，v1.13 补齐启动文件上传、节点现场参数、数组／对象／JSON 输入。

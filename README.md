@@ -14,6 +14,8 @@
 其余资源首次访问时加载并缓存，人工等待后恢复已有数据。
 [完整实例示例](examples/diagnosis-instance/README.md)包含三份可导入流程；旧函数、四阶段及数据准备节点保持兼容。
 [文件上传与现场参数示例](examples/interactive-inputs/README.md)覆盖启动上传、到节点再填参／上传，以及原生数组、对象输入。
+[流程类示例](examples/flow-class/README.md)演示三个外接工程零改动接入：声明导入、构造与方法，发布时生成 Python 类，
+执行时一个 flow 就是一个实例；含 CLI 一键运行与从零开发新流程的手册。
 
 ## 快速开始
 

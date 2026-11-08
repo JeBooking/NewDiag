@@ -951,7 +951,51 @@ backend/
 
 ---
 
-## 13. 变更记录
+## 13. 流程类（v1.14）
+
+「一个 flow 就是一个类，一次执行就是它的一个实例」的落地方式：作者声明导入、构造和方法，
+发布时编译成真实的 Python 类，执行时复用 `diagnosis/v1` 的运行时。完整说明见
+[`docs/flow-class.md`](flow-class.md)，示例与手册见 [`examples/flow-class`](../examples/flow-class/README.md)。
+
+**doc**
+
+`doc.flowClass = {runtime?, imports[], initialize[], methods[]}`，与 `doc.diagnosis` 互斥。
+
+| 段 | 字段 | 含义 |
+|---|---|---|
+| imports | `alias` / `project` / `module` | 导入哪个工程的哪个模块，用什么别名 |
+| initialize | `name?` / `call` / `args?` | 构造过程，只跑一次；`name` 变成实例属性 |
+| methods | `name` / `params[]` / `body[]` / `returns` | 方法签名、有序调用、返回映射 |
+
+步骤参数是值表达式：`lit`、`input`、`param`、`var`（可带 `path`）、`file`、`artifactRoot`、
+`list`、`object`、`call`。排查节点用 `method` + `params` 调方法，`result` 决定出边。
+
+**plan**
+
+`plan.diagnosis` 额外冻结 `source`（生成的 Python 源码）、`module`、`projects`、`runtime`、
+`flowClass: true`。编译期把类当成虚拟工程 `@flow:Flow` 注入签名表，因此 `_compile_diagnosis`
+与 `_compile_method` 无需为它开分支。
+
+**发布期校验**
+
+用流程声明的 `runtime` 解释器起子进程，`sys.path` 加上所有被引工程，import 每个模块并校验
+别名根上的点分接口存在；缺依赖、别名拼错、接口不存在都拦在发布。
+
+**执行**
+
+一实例一个会话进程，`sys.path` 装全部工程；调度器把冻结源码写到
+`<artifactRoot>/_flowclass/<module>.py` 并 import。`initialize` 的产物存为实例属性，
+人工等待后按启动参数重放。方法返回的 `figure` 由运行时读取并入库成附件、生成 `image` 块，
+`series` 生成 `line` 块，不需要业务侧拼展示结构。
+
+**边界**
+
+方法体只支持直线调用（分支在图里）；只支持同步；不代渲染桌面窗口；一实例一个解释器，
+依赖必须能在同一个环境里 import。超出这些边界时用 `diagnosis/v1` 写类，两者不能在同一条流程混用。
+
+---
+
+## 14. 变更记录
 
 | 版本 | 内容 |
 |---|---|
@@ -971,3 +1015,4 @@ backend/
 | v1.11（2026-11-05） | 流程诊断类、实例方法、启动共享数据、按需资源缓存、人工等待对象恢复及按到访回退资源视图；保留旧协议 |
 | v1.12（2026-11-05） | 普通 Python 成员与业务对象整体快照，默认全部恢复，不再强制 self.data；恢复范围与运行资源边界移入 TODO |
 | v1.13（2026-11-05） | 启动上传文件并解析服务器路径、实例方法到节点现场填参／上传、数组与对象及通用 JSON 表单；旧启动参数绑定保持兼容 |
+| v1.14（2026-11-08） | 流程类：doc 声明导入/构造/方法，发布时生成 Python 类并冻结，执行复用诊断实例运行时；三工程零改动接入 |

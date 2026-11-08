@@ -9,6 +9,7 @@ import logging
 import json
 
 from . import rules
+from . import flowclass
 from app.worker.function_pipeline import STAGES, SOURCES, default_argument
 from app.worker.input_types import INPUT_TYPES, input_type
 
@@ -52,6 +53,7 @@ def validate_doc(
     issues: list[dict] = []
     if not isinstance(doc, dict):
         return [_issue(LEVEL_ERROR, "文档格式不正确")]
+    doc = _flow_doc(doc)
 
     raw_nodes = doc.get("nodes")
     raw_edges = doc.get("edges")
@@ -98,6 +100,8 @@ def validate_doc(
         _check_reachability(entry, nodes_by_id, outgoing, issues)
         _check_cycles(entry, outgoing, issues)
     start = StartParams(doc)
+    for message in _flow_class_issues(doc, start):
+        issues.append(_issue(LEVEL_ERROR if strict_binding else LEVEL_WARNING, message))
     _check_bindings(nodes_by_id, valid_edges, start, issues, functions, strict_binding)
     _, found = _compile_diagnosis(doc, nodes_by_id, valid_edges, start, functions)
     issues.extend({**issue, "level": LEVEL_WARNING} if not strict_binding else issue for issue in found)
@@ -201,6 +205,7 @@ def compile_doc(
 
     functions 为 probe_doc 的结果；给了签名就只为函数真实参数绑定。
     """
+    doc = _flow_doc(doc)
     issues = [
         i
         for i in validate_doc(doc, functions, require_start=require_start)
@@ -258,6 +263,19 @@ def compile_doc(
     }
     if doc.get("diagnosis"):
         plan["diagnosis"], _ = _compile_diagnosis(doc, nodes_by_id, valid_edges, start, functions)
+    if doc.get("flowClass") is not None:
+        spec = doc["flowClass"] if isinstance(doc["flowClass"], dict) else {}
+        try:
+            source = flowclass.generate(doc, start.items, name=str(doc.get("name") or ""))
+        except flowclass.FlowClassError as exc:
+            raise ValidationError([_issue(LEVEL_ERROR, str(exc))]) from exc
+        plan["diagnosis"].update({
+            "source": source,
+            "runtime": str(spec.get("runtime") or ""),
+            "projects": flowclass.project_names(doc),
+            "module": flowclass.module_name(flow_id),
+            "flowClass": True,
+        })
     return plan
 
 
@@ -609,6 +627,36 @@ def _check_bindings(
             if not strict_binding and issue.get("level") == LEVEL_ERROR:
                 issue = {**issue, "level": LEVEL_WARNING}
             issues.append(issue)
+
+
+def _flow_doc(doc: dict) -> dict:
+    """声明了类定义的流程，对编译器呈现为一个虚拟诊断类；doc 本身不改写。"""
+    if not isinstance(doc, dict) or doc.get("flowClass") is None:
+        return doc
+    if doc.get("diagnosis"):
+        return doc  # 两种入口不能并用，冲突由 _flow_class_issues 报
+    return {
+        **doc,
+        "diagnosis": {
+            "protocol": flowclass.PROTOCOL,
+            "project": flowclass.PROJECT,
+            "function": flowclass.CLASS,
+            "version": flowclass.VERSION,
+            "config": {},
+        },
+    }
+
+
+def _flow_class_issues(doc: dict, start: "StartParams") -> list[str]:
+    if doc.get("flowClass") is None:
+        return []
+    binding = doc.get("diagnosis") or {}
+    if binding.get("project") != flowclass.PROJECT:
+        return ["类定义与「诊断类」入口只能选一种，不能同时配置"]
+    try:
+        return flowclass.validate(doc, start.items)
+    except flowclass.FlowClassError as exc:
+        return [str(exc)]
 
 
 def _compile_diagnosis(doc, nodes, edges, start, functions):

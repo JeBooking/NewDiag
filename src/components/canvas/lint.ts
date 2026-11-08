@@ -134,12 +134,16 @@ export function lintDoc(
     || doc.diagnosis.protocol !== 'diagnosis/v1' || !doc.diagnosis.version)) {
     issues.push({ id: 'doc:diagnosis', level: 'error', message: '请在流程属性中选择完整的诊断业务类' })
   }
+  if (doc.flowClass && !(doc.flowClass.imports ?? []).length) {
+    issues.push({ id: 'doc:flow-class', level: 'error', message: '流程类至少需要一个工程导入' })
+  }
+  const hasClass = !!doc.diagnosis || !!doc.flowClass
   for (const node of nodes) {
-    if (node.method && (!doc.diagnosis || node.kind !== 'investigation' || node.binding || node.pipeline)) {
+    if (node.method && (!hasClass || node.kind !== 'investigation' || node.binding || node.pipeline)) {
       issues.push({ id: `node:${node.id}:method`, nodeId: node.id, level: 'error',
-        message: '实例方法需要流程诊断类，只能用于排查节点，不能混用其他绑定' })
+        message: '实例方法需要流程诊断类或流程类，只能用于排查节点，不能混用其他绑定' })
     }
-    if (doc.diagnosis && (node.binding || node.pipeline || node.kind === 'dataPreparation')) {
+    if (hasClass && (node.binding || node.pipeline || node.kind === 'dataPreparation')) {
       issues.push({ id: `node:${node.id}:diagnosis-conflict`, nodeId: node.id, level: 'error',
         message: '诊断类流程请使用实例方法；清除原有绑定或使用未配置诊断类的流程' })
     }

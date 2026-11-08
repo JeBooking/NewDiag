@@ -120,11 +120,73 @@ export interface DocEdge {
   order?: number
 }
 
+/**
+ * 流程类：一个 flow 就是一个类，一次执行就是它的一个实例。
+ * 发布时编译成 Python 源码并冻结，运行时交给 diagnosis/v1 的解释器执行。
+ */
+export interface FlowImport {
+  /** 源码里的导入别名，例如 dataclient */
+  alias: string
+  /** 已登记的工程名 */
+  project: string
+  /** 工程里的模块名，例如 dataclient、plot_window */
+  module: string
+}
+
+/** 步骤参数表达式；四种来源覆盖了取数、绘图、判断的全部用法 */
+export type FlowValue =
+  | { lit: unknown }
+  | { input: string }
+  | { param: string }
+  | { var: string; path?: string }
+  | { file: string }
+  | { artifactRoot: true }
+  | { list: FlowValue[] }
+  | { object: Record<string, FlowValue> }
+  | { call: string; args?: Record<string, FlowValue> }
+
+export interface FlowStep {
+  /** 保存返回值的名字；留空表示只调用不保存 */
+  name?: string
+  call: string
+  args?: Record<string, FlowValue>
+}
+
+export interface FlowParam {
+  name: string
+  type?: ParamType
+  default?: unknown
+}
+
+export interface FlowMethod {
+  name: string
+  params?: FlowParam[]
+  body: FlowStep[]
+  /** 字段路径；result 留空表示由人判断 */
+  returns?: {
+    result?: string
+    reason?: string
+    reasonFallback?: string
+    figure?: string
+    series?: string
+  }
+}
+
+export interface FlowClass {
+  /** 运行解释器；留空用平台解释器，缺依赖会在发布时被拦下 */
+  runtime?: string
+  imports: FlowImport[]
+  /** 构造过程，等价于 __init__ + initialize；启动参数在这里可见 */
+  initialize: FlowStep[]
+  methods: FlowMethod[]
+}
+
 export interface FlowDoc {
   format: 1
   name: string
   mode: FlowMode
   diagnosis?: NodeBinding
+  flowClass?: FlowClass
   nodes: DocNode[]
   edges: DocEdge[]
   /** 旧版全局启动字段；新文档改用 start 节点的 inputs，读取时兼容 */

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { FlowDetail, FlowMode, NodeBinding } from '@/domain/types'
+import type { FlowClass, FlowDetail, FlowMode, NodeBinding } from '@/domain/types'
 import BindingEditor from '@/components/panels/BindingEditor.vue'
+import FlowClassEditor from '@/components/panels/FlowClassEditor.vue'
 
 const props = defineProps<{
   flow: FlowDetail
@@ -9,12 +10,14 @@ const props = defineProps<{
   readonly?: boolean
   publishing?: boolean
   diagnosis?: NodeBinding
+  flowClass?: FlowClass
 }>()
 const emit = defineEmits<{
   (e: 'update-meta', patch: { name?: string; mode?: FlowMode }): void
   (e: 'update-snapshot-fields', value: string[]): void
   (e: 'publish'): void
   (e: 'update-diagnosis', value: NodeBinding | undefined): void
+  (e: 'update-flow-class', value: FlowClass | undefined): void
 }>()
 
 const draft = ref('')
@@ -110,6 +113,13 @@ function removeField(name: string): void {
     <div class="section-hint">
       并行：同组后继同时推进；串行：按出线顺序逐条尝试，遇到问题解决节点后由人决定结束或继续
     </div>
+
+    <div class="section-title">流程类</div>
+    <FlowClassEditor
+      :value="flowClass" :readonly="readonly"
+      @update="emit('update-flow-class', $event)"
+    />
+    <div class="section-hint">把流程声明成一个 Python 类：导入工程、构造一次、方法由排查节点调用。与下面的「诊断实例」二选一。</div>
 
     <div class="section-title">诊断实例</div>
     <BindingEditor

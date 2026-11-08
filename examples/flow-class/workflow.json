@@ -1,0 +1,406 @@
+{
+  "format": 1,
+  "name": "三工程流程类诊断（振动与温度）",
+  "mode": "serial",
+  "flowClass": {
+    "runtime": "D:\\FILE\\Projects\\PlotEngine\\.venv\\Scripts\\python.exe",
+    "imports": [
+      {
+        "alias": "dataclient",
+        "project": "MockDataService",
+        "module": "dataclient"
+      },
+      {
+        "alias": "dataset",
+        "project": "PlotEngine",
+        "module": "dataset"
+      },
+      {
+        "alias": "plot_window",
+        "project": "PlotEngine",
+        "module": "plot_window"
+      },
+      {
+        "alias": "judgekit",
+        "project": "JudgeEngine",
+        "module": "judgekit"
+      }
+    ],
+    "initialize": [
+      {
+        "name": "client",
+        "call": "dataclient.DataClient",
+        "args": {
+          "root": {
+            "artifactRoot": true
+          }
+        }
+      },
+      {
+        "name": "data_file",
+        "call": "client.fetch",
+        "args": {
+          "device_id": {
+            "input": "device"
+          },
+          "activity": {
+            "input": "activity"
+          },
+          "start_time": {
+            "input": "start_time"
+          },
+          "end_time": {
+            "input": "end_time"
+          }
+        }
+      },
+      {
+        "name": "data",
+        "call": "dataset.Dataset.load",
+        "args": {
+          "path": {
+            "var": "data_file"
+          }
+        }
+      }
+    ],
+    "methods": [
+      {
+        "name": "check_metric",
+        "params": [
+          {
+            "name": "metric",
+            "type": "text",
+            "default": "vibration"
+          },
+          {
+            "name": "peak",
+            "type": "number",
+            "default": 10.0
+          },
+          {
+            "name": "mean",
+            "type": "number",
+            "default": 40.0
+          },
+          {
+            "name": "trend",
+            "type": "number",
+            "default": 0.05
+          }
+        ],
+        "body": [
+          {
+            "name": "record",
+            "call": "data.get",
+            "args": {
+              "device": {
+                "input": "device"
+              },
+              "activity": {
+                "input": "activity"
+              }
+            }
+          },
+          {
+            "name": "item",
+            "call": "record.plot_series",
+            "args": {
+              "metric": {
+                "param": "metric"
+              }
+            }
+          },
+          {
+            "name": "figure",
+            "call": "plot_window.save_plot",
+            "args": {
+              "data": {
+                "var": "item"
+              },
+              "path": {
+                "file": "{metric}.png"
+              },
+              "title": {
+                "var": "item",
+                "path": "label"
+              },
+              "xlabel": {
+                "lit": "采样点"
+              },
+              "ylabel": {
+                "var": "item",
+                "path": "unit"
+              }
+            }
+          },
+          {
+            "name": "engine",
+            "call": "judgekit.JudgeEngine",
+            "args": {
+              "thresholds": {
+                "object": {
+                  "peak": {
+                    "param": "peak"
+                  },
+                  "mean": {
+                    "param": "mean"
+                  },
+                  "trend": {
+                    "param": "trend"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "name": "verdicts",
+            "call": "engine.judge_file",
+            "args": {
+              "path": {
+                "var": "data_file"
+              },
+              "metric": {
+                "param": "metric"
+              }
+            }
+          },
+          {
+            "name": "summary",
+            "call": "engine.summary",
+            "args": {
+              "verdicts": {
+                "var": "verdicts"
+              }
+            }
+          }
+        ],
+        "returns": {
+          "result": "summary.overall",
+          "reason": "summary.reasons.0",
+          "reasonFallback": "三个规则均未触发",
+          "figure": "figure",
+          "series": "item"
+        }
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始",
+      "detail": "取数与判断的参数在这里声明一次",
+      "position": {
+        "x": 0,
+        "y": 160
+      },
+      "inputs": [
+        {
+          "name": "device",
+          "scope": "global",
+          "type": "text",
+          "default": "D001"
+        },
+        {
+          "name": "activity",
+          "scope": "global",
+          "type": "text",
+          "default": "满载"
+        },
+        {
+          "name": "start_time",
+          "scope": "global",
+          "type": "text",
+          "default": "2026-11-05 08:00"
+        },
+        {
+          "name": "end_time",
+          "scope": "global",
+          "type": "text",
+          "default": "2026-11-05 10:00"
+        }
+      ]
+    },
+    {
+      "id": "vibration",
+      "kind": "investigation",
+      "title": "振动是否超标",
+      "detail": "对满载工况的振动曲线做峰值判断",
+      "position": {
+        "x": 260,
+        "y": 160
+      },
+      "method": "check_metric",
+      "params": {
+        "metric": {
+          "lit": "vibration"
+        },
+        "peak": {
+          "lit": 12
+        }
+      },
+      "fields": {
+        "observation": "振动曲线峰值",
+        "acquisition": "MockDataService 取数，PlotEngine 出图",
+        "assessment": "峰值超过 12 mm/s 判为异常"
+      }
+    },
+    {
+      "id": "temperature",
+      "kind": "investigation",
+      "title": "温度是否偏高",
+      "detail": "振动异常时再看同一份数据的温度均值",
+      "position": {
+        "x": 560,
+        "y": 60
+      },
+      "method": "check_metric",
+      "params": {
+        "metric": {
+          "lit": "temperature"
+        },
+        "peak": {
+          "lit": 40
+        },
+        "mean": {
+          "lit": 35
+        },
+        "trend": {
+          "lit": 0.2
+        }
+      },
+      "fields": {
+        "observation": "温度曲线均值",
+        "acquisition": "复用同一份数据文件",
+        "assessment": "峰值 40、均值 35、斜率 0.2 任一超出判为偏高"
+      }
+    },
+    {
+      "id": "normal",
+      "kind": "conclusion",
+      "title": "设备正常",
+      "detail": "振动未超标，无需继续排查",
+      "position": {
+        "x": 560,
+        "y": 280
+      }
+    },
+    {
+      "id": "suspect",
+      "kind": "conclusion",
+      "title": "疑似轴承磨损",
+      "detail": "振动超标但温度正常，先按机械磨损处理",
+      "position": {
+        "x": 860,
+        "y": 60
+      }
+    },
+    {
+      "id": "both",
+      "kind": "conclusion",
+      "title": "振动与温度同时异常",
+      "detail": "两项指标同时超限，超出本流程处置范围",
+      "position": {
+        "x": 860,
+        "y": 200
+      }
+    },
+    {
+      "id": "fix",
+      "kind": "remediation",
+      "title": "停机检查轴承",
+      "detail": "人工执行：停机、拆检、记录结果",
+      "position": {
+        "x": 1140,
+        "y": 60
+      }
+    },
+    {
+      "id": "done",
+      "kind": "problemSolved",
+      "title": "异常已处理",
+      "detail": "本流程结束",
+      "position": {
+        "x": 1400,
+        "y": 160
+      }
+    },
+    {
+      "id": "ok_fix",
+      "kind": "remediation",
+      "title": "确认无需处理",
+      "detail": "人工确认设备状态并归档",
+      "position": {
+        "x": 860,
+        "y": 280
+      }
+    },
+    {
+      "id": "stop",
+      "kind": "escalation",
+      "title": "上升处理",
+      "detail": "交由专业诊断流程",
+      "position": {
+        "x": 1140,
+        "y": 200
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "start",
+      "to": "vibration"
+    },
+    {
+      "id": "e2",
+      "from": "vibration",
+      "to": "temperature",
+      "branch": "yes"
+    },
+    {
+      "id": "e3",
+      "from": "vibration",
+      "to": "normal",
+      "branch": "no"
+    },
+    {
+      "id": "e4",
+      "from": "temperature",
+      "to": "suspect",
+      "branch": "no"
+    },
+    {
+      "id": "e5",
+      "from": "temperature",
+      "to": "both",
+      "branch": "yes"
+    },
+    {
+      "id": "e7",
+      "from": "suspect",
+      "to": "fix"
+    },
+    {
+      "id": "e8",
+      "from": "fix",
+      "to": "done"
+    },
+    {
+      "id": "e9",
+      "from": "both",
+      "to": "stop"
+    },
+    {
+      "id": "e6",
+      "from": "normal",
+      "to": "ok_fix"
+    },
+    {
+      "id": "e10",
+      "from": "ok_fix",
+      "to": "done"
+    }
+  ]
+}
