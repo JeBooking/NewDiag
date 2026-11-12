@@ -1517,7 +1517,8 @@ class Scheduler:
         revision = db.get(models.Revision, release.revision_id)
         if revision is None:
             return {}
-        doc = _loads(revision.json) or {}
+        from app.services.flow_format import expand
+        doc = expand(_loads(revision.json) or {})
         for node in doc.get("nodes") or []:
             if node.get("id") == node_id:
                 return node

@@ -46,11 +46,6 @@ function commitName(): void {
   emit('update-meta', { name: name.value.trim() })
 }
 
-function changeMode(value: unknown): void {
-  const mode = value === 'serial' ? 'serial' : 'parallel'
-  if (mode !== props.flow.mode) emit('update-meta', { mode })
-}
-
 function addFields(raw: string): void {
   const items = raw
     .split(/[,，\s]+/)
@@ -97,19 +92,6 @@ function removeField(name: string): void {
       @blur="commitName"
       @keyup.enter="commitName"
     />
-
-    <label class="label">执行模式</label>
-    <el-radio-group
-      :model-value="flow.mode"
-      :disabled="readonly"
-      @update:model-value="changeMode"
-    >
-      <el-radio-button value="parallel">并行</el-radio-button>
-      <el-radio-button value="serial">串行</el-radio-button>
-    </el-radio-group>
-    <div class="section-hint">
-      并行：同组后继同时推进；串行：按出线顺序逐条尝试，遇到问题解决节点后由人决定结束或继续
-    </div>
 
     <div class="section-title">诊断实例</div>
     <BindingEditor

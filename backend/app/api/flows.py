@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.api import folders
 from app.db import get_db, new_id, now_iso
 from app.models import FileBlob, Flow, Folder, Instance, Release, Revision
+from app.services.flow_format import compact, expand
 from app.services import packages, storage
 from app.schemas import (
     CommitResult,
@@ -98,11 +99,18 @@ def revision_doc(revision: Revision | None) -> dict:
     if revision is None or not revision.json:
         return {}
     try:
-        doc = json.loads(revision.json)
-    except ValueError:
-        logger.warning("revision %s 的 json 无法解析", revision.id)
-        return {}
+        doc = expand(json.loads(revision.json))
+    except ValueError as exc:
+        logger.warning("revision %s 的文档无法读取：%s", revision.id, exc)
+        raise HTTPException(status_code=409, detail=f"流程文档无法读取：{exc}") from exc
     return doc if isinstance(doc, dict) else {}
+
+
+def submitted_doc(value: dict) -> dict:
+    try:
+        return expand(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def current_revision(db: Session, flow: Flow) -> Revision | None:
@@ -313,7 +321,7 @@ def create_flow(payload: FlowCreate, db: Session = Depends(get_db)) -> FlowDetai
     revision = Revision(
         id=new_id(),
         flow_id=flow.id,
-        json=json.dumps(doc, ensure_ascii=False),
+        json=json.dumps(compact(doc), ensure_ascii=False),
         status="committed",
         author=LOCAL_ACTOR,
         created_at=stamp,
@@ -333,7 +341,7 @@ def import_flow(payload: ImportFlowIn, db: Session = Depends(get_db)) -> FlowDet
 
     绑定问题按半成品放行（同 commit），发布时才强制校验。
     """
-    doc = payload.doc
+    doc = submitted_doc(payload.doc)
     # 导入同保存：问题只提示，不阻断
     collect_issues(doc, strict_binding=False)
 
@@ -353,7 +361,7 @@ def import_flow(payload: ImportFlowIn, db: Session = Depends(get_db)) -> FlowDet
     revision = Revision(
         id=new_id(),
         flow_id=flow.id,
-        json=json.dumps(doc, ensure_ascii=False),
+        json=json.dumps(compact(doc), ensure_ascii=False),
         status="committed",
         author=LOCAL_ACTOR,
         created_at=stamp,
@@ -480,7 +488,7 @@ def export_flow(
     manifest = {
         "format": 1,
         "kind": packages.PACKAGE_KIND,
-        "flow": {"id": flow.id, "name": flow.name, "mode": flow.mode},
+        "flow": {"id": flow.id, "name": flow.name},
         "version": version,
         "exportedAt": now_iso(),
         "docFile": packages.DOC_NAME,
@@ -493,7 +501,7 @@ def export_flow(
         except ValueError:
             logger.warning("发布版本 %s 的签名表无法解析，跳过", release.id)
 
-    payload = packages.build_package(doc, manifest, attachments)
+    payload = packages.build_package(compact(doc), manifest, attachments)
     filename = f"{packages.safe_name(flow.name, 'flow')}-{label}.zip"
     ascii_name = f"flow-{label}.zip"
     headers = {
@@ -516,6 +524,7 @@ async def import_package(file: UploadFile = File(...), db: Session = Depends(get
         raise HTTPException(status_code=400, detail="流程包为空")
     try:
         doc, manifest, files = packages.read_package(data)
+        doc = expand(doc)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not isinstance(doc.get("nodes"), list):
@@ -585,7 +594,7 @@ async def import_package(file: UploadFile = File(...), db: Session = Depends(get
     revision = Revision(
         id=new_id(),
         flow_id=flow.id,
-        json=json.dumps(doc, ensure_ascii=False),
+        json=json.dumps(compact(doc), ensure_ascii=False),
         status="committed",
         author=LOCAL_ACTOR,
         created_at=stamp,
@@ -651,7 +660,7 @@ def patch_flow(flow_id: str, payload: FlowPatch, db: Session = Depends(get_db)) 
         if working is not None:
             doc = revision_doc(working)
             doc["mode"] = payload.mode
-            working.json = json.dumps(doc, ensure_ascii=False)
+            working.json = json.dumps(compact(doc), ensure_ascii=False)
     # 显式传 folderId: null 才是「移到未分类」，不传表示不动
     if "folder_id" in payload.model_fields_set:
         require_folder(db, payload.folder_id)
@@ -698,7 +707,7 @@ def save_working(
 ) -> SavedAt:
     flow = get_flow_or_404(db, flow_id)
     working = require_lock(db, flow)
-    working.json = json.dumps(payload.doc, ensure_ascii=False)
+    working.json = json.dumps(compact(submitted_doc(payload.doc)), ensure_ascii=False)
     stamp = now_iso()
     flow.updated_at = stamp
     db.commit()
@@ -713,7 +722,7 @@ def commit(
     working = require_lock(db, flow)
     # 前端可能带着尚未暂存的 doc 直接保存，用它覆盖草稿，避免丢最后 2 秒的编辑
     if payload is not None:
-        working.json = json.dumps(payload.doc, ensure_ascii=False)
+        working.json = json.dumps(compact(submitted_doc(payload.doc)), ensure_ascii=False)
     return commit_working(db, flow, working)
 
 
@@ -748,7 +757,7 @@ def probe_flow(flow_id: str, payload: ProbeIn, db: Session = Depends(get_db)) ->
     if probe_doc is None:
         raise HTTPException(status_code=503, detail="编译引擎尚未就绪")
     try:
-        return probe_doc(payload.doc) or {}
+        return probe_doc(submitted_doc(payload.doc)) or {}
     except Exception as exc:  # 探针本身异常也不能让设计页 500
         logger.warning("探测失败（flow=%s）：%s", flow_id, exc)
         raise HTTPException(

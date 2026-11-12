@@ -123,12 +123,31 @@ export interface DocEdge {
 export interface FlowDoc {
   format: 1
   name: string
-  mode: FlowMode
+  mode?: FlowMode
   diagnosis?: NodeBinding
   nodes: DocNode[]
   edges: DocEdge[]
   /** 旧版全局启动字段；新文档改用 start 节点的 inputs，读取时兼容 */
   snapshotFields?: string[]
+}
+
+type BindingFields = 'binding' | 'pipeline' | 'method' | 'runtimeInputs' | 'params' | 'outputs'
+
+/** 持久化与导出格式；编辑器使用 FlowDoc 投影，运行配置保存在实例中。 */
+export interface StoredFlow {
+  format: 2
+  flow: Omit<FlowDoc, 'nodes' | 'mode' | 'diagnosis'> & {
+    nodes: Omit<DocNode, BindingFields | 'position'>[]
+  }
+  bindings: {
+    format: 1
+    diagnosis?: NodeBinding
+    nodes: Record<string, Pick<DocNode, BindingFields>>
+  }
+  presentation: {
+    format: number
+    nodes?: Record<string, { position: DocNode['position'] }>
+  }
 }
 
 /** 流程目录，树形；parentId 为空表示根目录 */
@@ -338,6 +357,7 @@ export interface InstanceSummary {
   startedAt: string
   endedAt?: string
   startedBy: string
+  runtime?: { mode: FlowMode; maxParallel: number; engine?: string }
 }
 
 export interface InstanceDetail extends InstanceSummary {

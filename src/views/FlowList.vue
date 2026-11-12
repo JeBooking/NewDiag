@@ -6,7 +6,7 @@ import type { UploadFile } from 'element-plus'
 import { Folder, Search } from '@element-plus/icons-vue'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import { ensureLayout } from '@/components/canvas/autolayout'
-import type { FlowDoc, FlowMode, FlowSummary, FolderNode, InstanceStatus } from '@/domain/types'
+import type { FlowDoc, StoredFlow, FlowSummary, FolderNode, InstanceStatus } from '@/domain/types'
 import { errorText } from '@/services/api'
 import { createFolder, listFolders, removeFolder, updateFolder } from '@/services/folders'
 import { downloadFile } from '@/services/download'
@@ -48,10 +48,9 @@ const importText = ref('')
 /** 选中的 .zip 包；和粘贴 JSON 互斥，有它就忽略 textarea */
 const importFile = ref<File | null>(null)
 const importing = ref(false)
-const form = ref<{ name: string; description: string; mode: FlowMode }>({
+const form = ref<{ name: string; description: string }>({
   name: '',
   description: '',
-  mode: 'parallel',
 })
 
 const moveVisible = ref(false)
@@ -241,7 +240,7 @@ async function deleteFolder(node: TreeItem): Promise<void> {
 }
 
 function openCreate(): void {
-  form.value = { name: '', description: '', mode: 'parallel' }
+  form.value = { name: '', description: '' }
   createVisible.value = true
 }
 
@@ -256,7 +255,6 @@ async function submitCreate(): Promise<void> {
     const created = await store.create({
       name,
       description: form.value.description.trim() || undefined,
-      mode: form.value.mode,
     })
     createVisible.value = false
     ElMessage.success('流程已创建')
@@ -318,15 +316,14 @@ async function submitImport(): Promise<void> {
     ElMessage.error('流程文档必须是 JSON 对象')
     return
   }
-  const record = doc as FlowDoc
-  if (!Array.isArray(record.nodes)) {
+  const record = doc as FlowDoc | StoredFlow
+  if (record.format !== 2 && !Array.isArray(record.nodes)) {
     ElMessage.error('流程文档缺少 nodes 数组')
     return
   }
   importing.value = true
   try {
-    // 后端原样存 JSON，缺坐标的文档一打开设计页就崩，所以补好坐标再提交
-    const created = await importFlow(ensureLayout(record).doc)
+    const created = await importFlow(record.format === 2 ? record : ensureLayout(record).doc)
     importVisible.value = false
     ElMessage.success('流程已导入')
     await reload()
@@ -504,13 +501,6 @@ function folderNameOf(row: FlowSummary): string | null {
                 </div>
               </template>
             </el-table-column>
-            <el-table-column label="模式" width="90">
-              <template #default="{ row }">
-                <el-tag size="small" effect="plain">
-                  {{ row.mode === 'serial' ? '串行' : '并行' }}
-                </el-tag>
-              </template>
-            </el-table-column>
             <el-table-column label="版本数" width="90">
               <template #default="{ row }">{{ row.releaseCount }}</template>
             </el-table-column>
@@ -595,12 +585,6 @@ function folderNameOf(row: FlowSummary): string | null {
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" :rows="2" maxlength="200" />
-        </el-form-item>
-        <el-form-item label="执行模式">
-          <el-radio-group v-model="form.mode">
-            <el-radio-button value="parallel">并行</el-radio-button>
-            <el-radio-button value="serial">串行</el-radio-button>
-          </el-radio-group>
         </el-form-item>
       </el-form>
       <template #footer>

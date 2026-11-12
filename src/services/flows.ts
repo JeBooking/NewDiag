@@ -1,6 +1,7 @@
 import type {
   FlowDetail,
   FlowDoc,
+  StoredFlow,
   FlowMode,
   FlowSummary,
   InstanceSummary,
@@ -56,6 +57,7 @@ export interface PublishResponse {
 export interface StartInstancePayload {
   releaseId: string
   input?: Record<string, unknown>
+  runtime?: { mode: 'serial' | 'parallel'; maxParallel: number }
 }
 
 export function listFlows(filter: ListFlowsFilter = {}): Promise<FlowSummary[]> {
@@ -144,7 +146,7 @@ export function startInstance(flowId: string, payload: StartInstancePayload): Pr
   })
 }
 
-export function importFlow(doc: FlowDoc): Promise<FlowDetail> {
+export function importFlow(doc: FlowDoc | StoredFlow): Promise<FlowDetail> {
   return request<FlowDetail>('/flows/import', {
     method: 'POST',
     body: JSON.stringify({ doc }),
