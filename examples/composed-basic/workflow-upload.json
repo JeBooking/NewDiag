@@ -1,0 +1,372 @@
+{
+  "format": 1,
+  "name": "普通工程组合接入（上传文件）",
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始",
+      "detail": "开始",
+      "position": {
+        "x": 0,
+        "y": 120
+      },
+      "inputs": [
+        {
+          "name": "source_file",
+          "scope": "global",
+          "type": "file"
+        },
+        {
+          "name": "limit",
+          "scope": "global",
+          "type": "number",
+          "default": 5
+        }
+      ]
+    },
+    {
+      "id": "voltage",
+      "kind": "investigation",
+      "title": "首次检查",
+      "detail": "首次检查",
+      "position": {
+        "x": 260,
+        "y": 120
+      },
+      "fields": {
+        "observation": "观察同一份解析结果",
+        "acquisition": "固定资源 dataset",
+        "assessment": "由原判断模块计算或人工选择"
+      },
+      "operation": "inspect",
+      "operationArguments": {
+        "scale": {
+          "lit": 1
+        }
+      }
+    },
+    {
+      "id": "action",
+      "kind": "investigationAction",
+      "title": "请现场确认设备状态，完成后继续",
+      "detail": "请现场确认设备状态，完成后继续",
+      "position": {
+        "x": 520,
+        "y": 120
+      }
+    },
+    {
+      "id": "waveform",
+      "kind": "investigation",
+      "title": "复用固定资源",
+      "detail": "复用固定资源",
+      "position": {
+        "x": 780,
+        "y": 120
+      },
+      "fields": {
+        "observation": "观察同一份解析结果",
+        "acquisition": "固定资源 dataset",
+        "assessment": "由原判断模块计算或人工选择"
+      },
+      "operation": "inspect",
+      "operationArguments": {
+        "scale": {
+          "lit": 1
+        }
+      }
+    },
+    {
+      "id": "review",
+      "kind": "investigation",
+      "title": "人工判断",
+      "detail": "人工判断",
+      "position": {
+        "x": 1040,
+        "y": 120
+      },
+      "fields": {
+        "observation": "观察同一份解析结果",
+        "acquisition": "固定资源 dataset",
+        "assessment": "由原判断模块计算或人工选择"
+      },
+      "operation": "review",
+      "operationArguments": {
+        "scale": {
+          "lit": 1
+        }
+      }
+    },
+    {
+      "id": "confirm",
+      "kind": "investigation",
+      "title": "现场填写倍率后检查",
+      "detail": "现场填写倍率后检查",
+      "position": {
+        "x": 1300,
+        "y": 120
+      },
+      "fields": {
+        "observation": "观察同一份解析结果",
+        "acquisition": "固定资源 dataset",
+        "assessment": "由原判断模块计算或人工选择"
+      },
+      "operation": "inspect",
+      "operationArguments": {},
+      "runtimeInputs": [
+        {
+          "name": "scale",
+          "type": "number",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "end",
+      "kind": "escalation",
+      "title": "示例诊断结束",
+      "detail": "示例诊断结束",
+      "position": {
+        "x": 1560,
+        "y": 120
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "s",
+      "from": "start",
+      "to": "voltage"
+    },
+    {
+      "id": "v-y",
+      "from": "voltage",
+      "to": "action",
+      "branch": "yes"
+    },
+    {
+      "id": "v-n",
+      "from": "voltage",
+      "to": "end",
+      "branch": "no"
+    },
+    {
+      "id": "a",
+      "from": "action",
+      "to": "waveform"
+    },
+    {
+      "id": "waveform-yes",
+      "from": "waveform",
+      "to": "review",
+      "branch": "yes"
+    },
+    {
+      "id": "waveform-no",
+      "from": "waveform",
+      "to": "review",
+      "branch": "no"
+    },
+    {
+      "id": "review-yes",
+      "from": "review",
+      "to": "confirm",
+      "branch": "yes"
+    },
+    {
+      "id": "review-no",
+      "from": "review",
+      "to": "confirm",
+      "branch": "no"
+    },
+    {
+      "id": "confirm-yes",
+      "from": "confirm",
+      "to": "end",
+      "branch": "yes"
+    },
+    {
+      "id": "confirm-no",
+      "from": "confirm",
+      "to": "end",
+      "branch": "no"
+    }
+  ],
+  "composition": {
+    "objects": [
+      {
+        "id": "rules",
+        "project": "组合判断示例",
+        "module": "checks",
+        "function": "create_rules",
+        "arguments": {
+          "limit": {
+            "source": "input",
+            "name": "limit"
+          }
+        }
+      }
+    ],
+    "resources": [
+      {
+        "id": "dataset",
+        "trigger": "startup",
+        "calls": [
+          {
+            "id": "loaded",
+            "project": "组合数据示例",
+            "module": "records",
+            "function": "Dataset.from_file",
+            "arguments": {
+              "path": {
+                "source": "input",
+                "name": "source_file",
+                "file": true
+              }
+            },
+            "output": "object"
+          }
+        ],
+        "result": {
+          "source": "value",
+          "name": "loaded"
+        }
+      }
+    ],
+    "operations": [
+      {
+        "id": "inspect",
+        "parameters": [
+          "scale"
+        ],
+        "calls": [
+          {
+            "id": "curve",
+            "project": "组合数据示例",
+            "module": "records",
+            "interface": "Dataset.series",
+            "function": "series",
+            "target": {
+              "source": "resource",
+              "name": "dataset"
+            },
+            "arguments": {
+              "scale": {
+                "source": "parameter",
+                "name": "scale"
+              }
+            }
+          },
+          {
+            "id": "verdict",
+            "project": "组合判断示例",
+            "module": "checks",
+            "interface": "ThresholdRules.evaluate",
+            "function": "evaluate",
+            "target": {
+              "source": "object",
+              "name": "rules"
+            },
+            "arguments": {
+              "samples": {
+                "source": "value",
+                "name": "curve"
+              }
+            },
+            "output": "object"
+          }
+        ],
+        "presentation": [
+          {
+            "type": "line",
+            "value": {
+              "source": "value",
+              "name": "curve"
+            }
+          },
+          {
+            "type": "text",
+            "value": {
+              "source": "value",
+              "name": "verdict",
+              "path": "explanation"
+            }
+          }
+        ],
+        "decision": {
+          "result": {
+            "source": "value",
+            "name": "verdict",
+            "path": "exceeded"
+          },
+          "reason": {
+            "source": "value",
+            "name": "verdict",
+            "path": "explanation"
+          }
+        }
+      },
+      {
+        "id": "review",
+        "parameters": [
+          "scale"
+        ],
+        "calls": [
+          {
+            "id": "curve",
+            "project": "组合数据示例",
+            "module": "records",
+            "interface": "Dataset.series",
+            "function": "series",
+            "target": {
+              "source": "resource",
+              "name": "dataset"
+            },
+            "arguments": {
+              "scale": {
+                "source": "parameter",
+                "name": "scale"
+              }
+            }
+          },
+          {
+            "id": "verdict",
+            "project": "组合判断示例",
+            "module": "checks",
+            "interface": "ThresholdRules.evaluate",
+            "function": "evaluate",
+            "target": {
+              "source": "object",
+              "name": "rules"
+            },
+            "arguments": {
+              "samples": {
+                "source": "value",
+                "name": "curve"
+              }
+            },
+            "output": "object"
+          }
+        ],
+        "presentation": [
+          {
+            "type": "line",
+            "value": {
+              "source": "value",
+              "name": "curve"
+            }
+          },
+          {
+            "type": "text",
+            "value": {
+              "source": "value",
+              "name": "verdict",
+              "path": "explanation"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
