@@ -276,6 +276,7 @@ if (await portInUse(WEB_PORT)) {
 console.log(`[dev] 后端 http://127.0.0.1:${BACKEND_PORT}   前端 http://127.0.0.1:${WEB_PORT}   Ctrl+C 停止`)
 
 startBackend()
-start('前端', process.execPath, [viteBin], { cwd: projectRoot })
+const webArgs = process.argv.includes('--open') ? [viteBin, '--open'] : [viteBin]
+start('前端', process.execPath, webArgs, { cwd: projectRoot })
 watchBackendSource()
 startMonitor()
