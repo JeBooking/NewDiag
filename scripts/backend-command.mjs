@@ -1,10 +1,7 @@
-import { join } from 'node:path'
-
-export function backendArgs(backendDir, port = 8000) {
-  // 执行产物包含 Python 源码；监控整个 backend 会把生成代码当成平台更新。
+export function backendArgs(_backendDir, port = 8000) {
+  // 重启由开发启动器统一管理，避免 Windows 控制台信号传播及长连接阻塞退出。
   return [
-    '-m', 'uvicorn', 'app.main:app', '--reload',
-    '--reload-dir', join(backendDir, 'app'),
+    '-m', 'uvicorn', 'app.main:app',
     '--port', String(port),
   ]
 }
