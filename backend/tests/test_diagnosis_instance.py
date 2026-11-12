@@ -36,7 +36,8 @@ def runtime(tmp_path, monkeypatch):
     db.init_db()
     for path in EXAMPLE.glob("*.json"):
         shutil.copyfile(path, tmp_path / path.name)
-    source = (EXAMPLE / "diagnosis.py").read_text(encoding="utf-8")
+    # 旧引擎的可变成员兼容契约独立于已迁移为 Data 的新接入示例。
+    source = (Path(__file__).parent / "fixtures" / "legacy_diagnosis.py").read_text(encoding="utf-8")
     source = source.replace('logger = logging.getLogger(__name__)',
                             'logger = logging.getLogger(__name__)\n'
                             f'logger.addHandler(logging.FileHandler({str(tmp_path / "calls.log")!r}, encoding="utf-8"))\n'
