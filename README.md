@@ -15,6 +15,7 @@
 开发新诊断类的完整步骤、接口和故障处理，见 [诊断类开发手册](docs/diagnosis-development-guide.md)。
 默认通过[通用组合接入](docs/composition-integration.md)配置原工程的对象、资源和操作，由平台生成串联代码，无需继承诊断基类。
 [免 SDK 示例](examples/composed-basic/README.md)提供两工程组合、按需资源与文件上传流程。
+[代码导出独立运行示例](examples/code-export-standalone/README.md)无需第三方依赖、资源文件或输入，可用来查看导出代码并在本地直接运行。
 业务诊断类仍可选，一次执行创建一个逻辑对象：启动准备主要数据，节点调用实例方法，
 其余资源首次访问时加载并缓存。新实例生成 Python 执行，人工等待期间进程保持存活。
 大数据放在模块自有的 `diagnosis_sdk.Data` 中，成员首次赋值后固定，后续节点只保存新增成员及引用。
