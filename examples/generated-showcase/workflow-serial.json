@@ -1,0 +1,219 @@
+{
+  "format": 1,
+  "name": "泵组串行共享数据示例",
+  "mode": "serial",
+  "diagnosis": {
+    "project": "泵组诊断示例",
+    "function": "PumpDiagnosis",
+    "protocol": "diagnosis/v1",
+    "version": "1.0.0",
+    "config": {
+      "discharge_limit": 1.8,
+      "vibration_limit": 4.5,
+      "bearing_limit": 80.0
+    }
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始",
+      "detail": "开始",
+      "position": {
+        "x": 0,
+        "y": 160
+      },
+      "inputs": [
+        {
+          "name": "unit_id",
+          "scope": "global",
+          "type": "text",
+          "default": "pump-01"
+        },
+        {
+          "name": "time_point",
+          "scope": "global",
+          "type": "datetime",
+          "default": "2026-11-12T09:00:00+08:00"
+        }
+      ]
+    },
+    {
+      "id": "vibe",
+      "kind": "investigation",
+      "title": "振动趋势（串行先跑）",
+      "detail": "振动趋势（串行先跑）",
+      "position": {
+        "x": 280,
+        "y": 60
+      },
+      "method": "check_vibration",
+      "fields": {
+        "observation": "读取示例数据并展示",
+        "acquisition": "诊断类共享实例数据",
+        "assessment": "业务方法自动判断或人工确认"
+      }
+    },
+    {
+      "id": "action",
+      "kind": "investigationAction",
+      "title": "现场复测振动，完成后继续",
+      "detail": "现场复测振动，完成后继续",
+      "position": {
+        "x": 560,
+        "y": 60
+      }
+    },
+    {
+      "id": "recheck",
+      "kind": "investigation",
+      "title": "等待后复用振动缓存",
+      "detail": "等待后复用振动缓存",
+      "position": {
+        "x": 840,
+        "y": 60
+      },
+      "method": "confirm_vibration",
+      "fields": {
+        "observation": "读取示例数据并展示",
+        "acquisition": "诊断类共享实例数据",
+        "assessment": "业务方法自动判断或人工确认"
+      }
+    },
+    {
+      "id": "bearing",
+      "kind": "investigation",
+      "title": "轴承分支（串行共享已取得数据）",
+      "detail": "轴承分支（串行共享已取得数据）",
+      "position": {
+        "x": 280,
+        "y": 300
+      },
+      "method": "check_bearing",
+      "fields": {
+        "observation": "读取示例数据并展示",
+        "acquisition": "诊断类共享实例数据",
+        "assessment": "业务方法自动判断或人工确认"
+      }
+    },
+    {
+      "id": "review",
+      "kind": "investigation",
+      "title": "人工判断轴承是否异常",
+      "detail": "人工判断轴承是否异常",
+      "position": {
+        "x": 560,
+        "y": 300
+      },
+      "method": "review_bearing",
+      "fields": {
+        "observation": "读取示例数据并展示",
+        "acquisition": "诊断类共享实例数据",
+        "assessment": "业务方法自动判断或人工确认"
+      }
+    },
+    {
+      "id": "confirm",
+      "kind": "investigation",
+      "title": "判断后复用轴承缓存",
+      "detail": "判断后复用轴承缓存",
+      "position": {
+        "x": 840,
+        "y": 300
+      },
+      "method": "confirm_bearing",
+      "fields": {
+        "observation": "读取示例数据并展示",
+        "acquisition": "诊断类共享实例数据",
+        "assessment": "业务方法自动判断或人工确认"
+      }
+    },
+    {
+      "id": "end",
+      "kind": "escalation",
+      "title": "串行示例结束",
+      "detail": "串行示例结束",
+      "position": {
+        "x": 1120,
+        "y": 180
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "s-vibe",
+      "from": "start",
+      "to": "vibe"
+    },
+    {
+      "id": "s-bearing",
+      "from": "start",
+      "to": "bearing"
+    },
+    {
+      "id": "vibe-yes",
+      "from": "vibe",
+      "to": "action",
+      "branch": "yes"
+    },
+    {
+      "id": "vibe-no",
+      "from": "vibe",
+      "to": "end",
+      "branch": "no"
+    },
+    {
+      "id": "action-recheck",
+      "from": "action",
+      "to": "recheck"
+    },
+    {
+      "id": "recheck-yes",
+      "from": "recheck",
+      "to": "end",
+      "branch": "yes"
+    },
+    {
+      "id": "recheck-no",
+      "from": "recheck",
+      "to": "end",
+      "branch": "no"
+    },
+    {
+      "id": "bearing-review",
+      "from": "bearing",
+      "to": "review",
+      "branch": "yes"
+    },
+    {
+      "id": "bearing-no",
+      "from": "bearing",
+      "to": "end",
+      "branch": "no"
+    },
+    {
+      "id": "review-confirm",
+      "from": "review",
+      "to": "confirm",
+      "branch": "yes"
+    },
+    {
+      "id": "review-no",
+      "from": "review",
+      "to": "end",
+      "branch": "no"
+    },
+    {
+      "id": "confirm-yes",
+      "from": "confirm",
+      "to": "end",
+      "branch": "yes"
+    },
+    {
+      "id": "confirm-no",
+      "from": "confirm",
+      "to": "end",
+      "branch": "no"
+    }
+  ]
+}

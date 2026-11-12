@@ -1,0 +1,17 @@
+[
+  {
+    "unit_id": "pump-01",
+    "time_point": "2026-11-12T09:00:00+08:00",
+    "vibration_rms": 3.9,
+    "bearing_temp": 74.2,
+    "discharge_pressure": 1.92,
+    "flow_rate": 42.5
+  },
+  {
+    "unit_id": "pump-02",
+    "time_point": "2026-11-12T09:00:00+08:00",
+    "vibration_rms": 5.8,
+    "bearing_temp": 88.4,
+    "flow_rate": 38.1
+  }
+]

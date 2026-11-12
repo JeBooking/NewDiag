@@ -1,0 +1,211 @@
+{
+  "format": 1,
+  "name": "泵组回退复用示例",
+  "mode": "parallel",
+  "diagnosis": {
+    "project": "泵组诊断示例",
+    "function": "PumpDiagnosis",
+    "protocol": "diagnosis/v1",
+    "version": "1.0.0",
+    "config": {
+      "discharge_limit": 1.8,
+      "vibration_limit": 4.5,
+      "bearing_limit": 80.0
+    }
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始",
+      "detail": "开始",
+      "position": {
+        "x": 0,
+        "y": 160
+      },
+      "inputs": [
+        {
+          "name": "unit_id",
+          "scope": "global",
+          "type": "text",
+          "default": "pump-01"
+        },
+        {
+          "name": "time_point",
+          "scope": "global",
+          "type": "datetime",
+          "default": "2026-11-12T09:00:00+08:00"
+        }
+      ]
+    },
+    {
+      "id": "bearing",
+      "kind": "investigation",
+      "title": "轴承多频段频谱",
+      "detail": "轴承多频段频谱",
+      "position": {
+        "x": 280,
+        "y": 160
+      },
+      "method": "check_bearing",
+      "fields": {
+        "observation": "读取示例数据并展示",
+        "acquisition": "诊断类共享实例数据",
+        "assessment": "业务方法自动判断或人工确认"
+      }
+    },
+    {
+      "id": "review",
+      "kind": "investigation",
+      "title": "人工判断轴承是否异常（回退目标）",
+      "detail": "人工判断轴承是否异常（回退目标）",
+      "position": {
+        "x": 560,
+        "y": 160
+      },
+      "method": "review_bearing",
+      "fields": {
+        "observation": "读取示例数据并展示",
+        "acquisition": "诊断类共享实例数据",
+        "assessment": "业务方法自动判断或人工确认"
+      }
+    },
+    {
+      "id": "verify",
+      "kind": "investigation",
+      "title": "判断后复用缓存",
+      "detail": "判断后复用缓存",
+      "position": {
+        "x": 840,
+        "y": 160
+      },
+      "method": "confirm_bearing",
+      "fields": {
+        "observation": "读取示例数据并展示",
+        "acquisition": "诊断类共享实例数据",
+        "assessment": "业务方法自动判断或人工确认"
+      }
+    },
+    {
+      "id": "conclusion",
+      "kind": "conclusion",
+      "title": "排查结论",
+      "detail": "排查结论",
+      "position": {
+        "x": 1120,
+        "y": 160
+      }
+    },
+    {
+      "id": "fix",
+      "kind": "remediation",
+      "title": "处置措施：现场确认后复位",
+      "detail": "处置措施：现场确认后复位",
+      "position": {
+        "x": 1380,
+        "y": 160
+      }
+    },
+    {
+      "id": "end_ok",
+      "kind": "problemSolved",
+      "title": "问题解决",
+      "detail": "问题解决",
+      "position": {
+        "x": 1640,
+        "y": 160
+      }
+    },
+    {
+      "id": "end_escalate",
+      "kind": "escalation",
+      "title": "上升处理",
+      "detail": "上升处理",
+      "position": {
+        "x": 1120,
+        "y": 360
+      }
+    },
+    {
+      "id": "fallback",
+      "kind": "investigation",
+      "title": "改判后复查缓存数据",
+      "detail": "改判后复查缓存数据",
+      "position": {
+        "x": 840,
+        "y": 380
+      },
+      "method": "confirm_bearing",
+      "fields": {
+        "observation": "读取示例数据并展示",
+        "acquisition": "诊断类共享实例数据",
+        "assessment": "业务方法自动判断或人工确认"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "s-bearing",
+      "from": "start",
+      "to": "bearing"
+    },
+    {
+      "id": "bearing-review",
+      "from": "bearing",
+      "to": "review",
+      "branch": "yes"
+    },
+    {
+      "id": "bearing-no",
+      "from": "bearing",
+      "to": "end_escalate",
+      "branch": "no"
+    },
+    {
+      "id": "review-verify",
+      "from": "review",
+      "to": "verify",
+      "branch": "yes"
+    },
+    {
+      "id": "review-no",
+      "from": "review",
+      "to": "fallback",
+      "branch": "no"
+    },
+    {
+      "id": "verify-conclusion",
+      "from": "verify",
+      "to": "conclusion",
+      "branch": "yes"
+    },
+    {
+      "id": "verify-no",
+      "from": "verify",
+      "to": "end_escalate",
+      "branch": "no"
+    },
+    {
+      "id": "conclusion-fix",
+      "from": "conclusion",
+      "to": "fix"
+    },
+    {
+      "id": "fix-end",
+      "from": "fix",
+      "to": "end_ok"
+    },
+    {
+      "id": "fallback-yes",
+      "from": "fallback",
+      "to": "end_escalate",
+      "branch": "yes"
+    },
+    {
+      "id": "fallback-no",
+      "from": "fallback",
+      "to": "end_escalate",
+      "branch": "no"
+    }
+  ]
+}
