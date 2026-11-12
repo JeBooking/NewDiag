@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
+from starlette.background import BackgroundTask
 
 from app.db import SessionLocal, get_db, new_id, now_iso
 from app.logging_setup import brief
@@ -313,6 +314,27 @@ def terminate_instance(instance_id: str, db: Session = Depends(get_db)) -> Insta
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.expire_all()
     return instance_payload(db, get_instance_or_404(db, instance_id))
+
+
+@router.get('/instances/{instance_id}/code-export')
+def export_code(instance_id: str, db: Session = Depends(get_db)) -> StreamingResponse:
+    from app.services.code_export import build_code_export
+
+    instance = get_instance_or_404(db, instance_id)
+    if json.loads(instance.runtime_json or '{}').get('engine') != 'python/v1':
+        raise HTTPException(status_code=409, detail='该实例未使用生成 Python 执行，无法导出代码')
+    release = db.get(Release, instance.release_id)
+    if release is None:
+        raise HTTPException(status_code=409, detail='实例的发布版本不存在')
+    try:
+        archive = build_code_export(instance.id, release_inputs(release))
+    except (ValueError, OSError) as exc:
+        logger.warning('导出实例代码失败 instance=%s error=%s', instance.id, exc)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    logger.info('导出实例代码 instance=%s', instance.id)
+    return StreamingResponse(iter(lambda: archive.read(64 * 1024), b''), media_type='application/zip',
+        headers={'Content-Disposition': f'attachment; filename="diagnosis-{instance.id}-code.zip"'},
+        background=BackgroundTask(archive.close))
 
 
 @router.post("/instances/{instance_id}/reviews/{review_id}", response_model=InstanceDetail)

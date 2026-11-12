@@ -391,6 +391,31 @@ def test_project_registration_and_discovery(client):
     assert client.get("/api/projects/missing/functions").status_code == 404
 
 
+def test_instance_code_export(client):
+    import io
+    import json
+    import zipfile
+
+    assert client.get('/api/instances/missing/code-export').status_code == 404
+    flow_id, release = seed_published(client, valid_doc())
+    started = client.post(f'/api/flows/{flow_id}/instances', json={
+        'releaseId': release['id'], 'input': {'voltage': 230},
+    })
+    assert started.status_code == 200, started.text
+    instance_id = started.json()['id']
+    exported = client.get(f'/api/instances/{instance_id}/code-export')
+    assert exported.status_code == 200, exported.text
+    assert exported.headers['content-type'] == 'application/zip'
+    assert 'code.zip' in exported.headers['content-disposition']
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        assert 'flow.py' in archive.namelist()
+        assert 'runtime/generated_runtime.py' in archive.namelist()
+        assert 'runtime/terminal_runner.py' in archive.namelist()
+        assert json.loads(archive.read('configuration.json'))['input']['global']['voltage'] is None
+        assert not any(name.endswith('.pkl') or name.startswith('branches/') for name in archive.namelist())
+    client.post(f'/api/instances/{instance_id}/terminate').raise_for_status()
+
+
 def test_plain_class_project_catalog(client):
     project_dir = BACKEND_DIR.parent / 'examples' / 'composed-basic' / 'data_tools'
     created = client.post('/api/projects', json={
