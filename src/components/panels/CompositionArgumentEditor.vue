@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { Composition, CompositionArgument } from '@/domain/types'
 
 const props = defineProps<{
@@ -20,6 +20,15 @@ const name = computed(() => props.value && 'source' in props.value ? props.value
 const path = computed(() => props.value && 'source' in props.value ? props.value.path ?? '' : '')
 const literal = computed(() => props.value && 'lit' in props.value
   ? JSON.stringify(props.value.lit) : 'null')
+const literalDraft = ref('')
+watch(literal, (value) => {
+  // 编辑中的 JSON 可能暂时不完整；父级回写相同值时保留用户的文本格式。
+  try {
+    if (JSON.stringify(JSON.parse(literalDraft.value)) === value) return
+  } catch { /* 外部值改变时用新值替换未完成的文本。 */ }
+  literalDraft.value = value ?? 'null'
+  failure.value = ''
+}, { immediate: true })
 const candidates = computed(() => mode.value === 'object' ? props.composition.objects.map((item) => item.id)
   : mode.value === 'resource' ? props.composition.resources.map((item) => item.id) : props.values ?? [])
 const parameters = computed(() => props.value && 'source' in props.value ? props.value.arguments ?? {} : {})
@@ -41,8 +50,10 @@ function removeField(name: string): void {
 
 function changeMode(value: string): void {
   failure.value = ''
-  if (value === 'lit') emit('update', { lit: null })
-  else if (value === 'items') emit('update', { items: [] })
+  if (value === 'lit') {
+    literalDraft.value = 'null'
+    emit('update', { lit: null })
+  } else if (value === 'items') emit('update', { items: [] })
   else if (value === 'fields') emit('update', { fields: {} })
   else if (value === 'directory' || value === 'file') emit('update', { system: value })
   else emit('update', { source: value as 'input', name: '' })
@@ -51,10 +62,11 @@ function patch(value: { name?: string; path?: string; file?: boolean; arguments?
   if (props.value && 'source' in props.value) emit('update', { ...props.value, ...value })
 }
 function changeLiteral(value: string): void {
+  literalDraft.value = value
   try {
     emit('update', { lit: JSON.parse(value) as unknown })
     failure.value = ''
-  } catch { failure.value = '固定值需为合法 JSON：数字、true、"文本"、数组或对象' }
+  } catch { failure.value = '请输入合法 JSON：数字、true、"文本"、数组或对象；当前修改尚未保存' }
 }
 function addParameter(): void {
   const key = parameterName.value.trim()
@@ -112,8 +124,9 @@ function addParameter(): void {
         <el-button @click="addField">添加字段</el-button>
       </div>
     </template>
-    <el-input v-if="mode === 'lit'" :model-value="literal" :disabled="readonly"
-      aria-label="固定参数值" placeholder='例如 12、"vibration"、{"peak":12}' @change="changeLiteral" />
+    <el-input v-if="mode === 'lit'" :model-value="literalDraft" :disabled="readonly"
+      :aria-invalid="!!failure" aria-label="固定参数值"
+      placeholder='例如 12、"vibration"、{"peak":12}' @update:model-value="changeLiteral" />
     <p v-if="failure" role="alert" class="error">{{ failure }}</p>
     <template v-if="mode === 'resource'">
       <div v-for="(argument, key) in parameters" :key="key" class="nested">

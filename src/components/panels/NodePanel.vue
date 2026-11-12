@@ -640,7 +640,8 @@ function addGlobalInput(): void {
             :disabled="readonly" :aria-label="`${name} 输入类型`" @change="setOperationType(name, $event)">
             <el-option v-for="option in PARAM_TYPES" :key="option.value" :label="option.label" :value="option.value" />
           </el-select>
-          <CompositionArgumentEditor v-else :value="node.operationArguments?.[name]" :composition="doc.composition"
+          <CompositionArgumentEditor v-else :key="`${node.id}:${name}`"
+            :value="node.operationArguments?.[name]" :composition="doc.composition"
             :readonly="readonly" @update="setOperationArgument(name, $event)" />
         </div>
       </template>
