@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 
-NODE_BINDINGS = ("binding", "pipeline", "method", "runtimeInputs", "params", "outputs")
+NODE_BINDINGS = ("binding", "pipeline", "method", "runtimeInputs", "params", "outputs", "operation", "operationArguments")
 
 
 def expand(value):
@@ -31,6 +31,8 @@ def expand(value):
     result.pop("mode", None)
     if bindings.get("diagnosis"):
         result["diagnosis"] = bindings["diagnosis"]
+    if bindings.get("composition") is not None:
+        result["composition"] = bindings["composition"]
     positions = presentation.get("nodes", {}) if isinstance(presentation, dict) and presentation.get("format") == 1 else {}
     if not isinstance(positions, dict):
         positions = {}
@@ -55,6 +57,8 @@ def compact(value):
     bindings = {"format": 1, "nodes": {}}
     if doc.get("diagnosis"):
         bindings["diagnosis"] = doc.pop("diagnosis")
+    if doc.get("composition") is not None:
+        bindings["composition"] = doc.pop("composition")
     presentation = {"format": 1, "nodes": {}}
     for node in doc.get("nodes", []):
         if not isinstance(node, dict) or not isinstance(node.get("id"), str):

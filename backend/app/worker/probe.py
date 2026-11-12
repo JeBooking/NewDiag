@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import hashlib
 import json
 import sys
 import traceback
@@ -67,6 +68,9 @@ def _discover(config: dict) -> list[dict]:
         raise ValueError("module 为空")
     module = importlib.import_module(module_name)
 
+    if config.get('catalog'):
+        return _catalog(module)
+
     if not factory_name:
         return _module_functions(module)
 
@@ -105,6 +109,27 @@ def _module_functions(module) -> list[dict]:
         if callable(obj) and not inspect.isclass(obj):
             result.append(_describe(name, obj))
     result.sort(key=lambda item: item["name"])
+    return result
+
+
+def _catalog(module):
+    names = getattr(module, '__all__', None)
+    if names is None:
+        names = [name for name, value in vars(module).items()
+                 if not name.startswith('_') and getattr(value, '__module__', None) == module.__name__]
+    result = []
+    for name in names:
+        value = getattr(module, name, None)
+        if not callable(value) or isinstance(value, type) and issubclass(value, BaseException):
+            continue
+        entry = _describe(name, value)
+        entry['kind'] = 'constructor' if inspect.isclass(value) else 'function'
+        result.append(entry)
+        if inspect.isclass(value):
+            for method in _class_functions(value):
+                descriptor = inspect.getattr_static(value, method['name'])
+                kind = 'static_method' if isinstance(descriptor, staticmethod) else ('class_method' if isinstance(descriptor, classmethod) else 'instance_method')
+                result.append({**method, 'name': name + '.' + method['name'], 'kind': kind})
     return result
 
 
@@ -188,7 +213,15 @@ def _describe(name: str, func) -> dict:
     elif any(p.kind in (*SKIP_PARAM_KINDS, inspect.Parameter.POSITIONAL_ONLY)
              for p in signature.parameters.values()):
         pipeline_error = "四阶段函数参数必须显式命名且支持关键字传参，不支持 *args、**kwargs 或位置专用参数"
+    try:
+        fingerprint = hashlib.sha256(inspect.getsource(func).encode('utf-8')).hexdigest()
+    except (OSError, TypeError):
+        fingerprint = ''
     return {"name": name, "params": params, "returns": _type_name(signature.return_annotation),
+            'doc': inspect.getdoc(func) or '', 'fingerprint': fingerprint,
+            'compositionError': '接口必须同步且支持关键字参数' if inspect.iscoroutinefunction(func)
+                or any(p.kind == p.POSITIONAL_ONLY for p in signature.parameters.values()) else None,
+            'variadicKeywords': any(p.kind == p.VAR_KEYWORD for p in signature.parameters.values()),
             "pipelineError": pipeline_error}
 
 

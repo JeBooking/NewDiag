@@ -24,12 +24,14 @@ from contextlib import redirect_stdout
 
 if __package__:
     from . import artifacts, node_sdk, diagnosis_sdk
+    from .composition import CompositionRuntime
     sys.modules.setdefault("node_sdk", node_sdk)
     sys.modules.setdefault("diagnosis_sdk", diagnosis_sdk)
 else:
     import artifacts
     import node_sdk
     import diagnosis_sdk
+    from composition import CompositionRuntime
 
 execute_adapter = node_sdk.execute_adapter
 is_adapter = node_sdk.is_adapter
@@ -50,6 +52,7 @@ def main() -> int:
     with redirect_stdout(sys.stderr):
         target = _bootstrap(config)
     diagnosis = diagnosis_sdk.DiagnosisRuntime()
+    composition = CompositionRuntime()
 
     for line in sys.stdin:
         line = line.strip()
@@ -72,7 +75,9 @@ def main() -> int:
                 raise ValueError("args 必须是对象")
             node_sdk.configure_files(args.get("fileRoot"))
             with redirect_stdout(sys.stderr):
-                if function_name == "__newdiag_diagnosis__":
+                if function_name == '__newdiag_composition__':
+                    value = composition.execute(target, args)
+                elif function_name == "__newdiag_diagnosis__":
                     value = diagnosis.execute(target, args)
                 elif function_name == "__newdiag_pipeline__":
                     cls = _resolve_callable(target, args["adapter"])
@@ -110,6 +115,7 @@ def main() -> int:
                 response["files"] = files
             _write(response)
         except BaseException:  # noqa: BLE001 - 业务异常不能带崩子进程
+            composition.reference = object()
             _write({"id": request_id, "ok": False, "error": traceback.format_exc()})
     return 0
 

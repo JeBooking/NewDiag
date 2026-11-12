@@ -92,6 +92,47 @@ export type ParamSource =
   | { snapshot: string }
   | { run: string; path: string }
 
+export type CompositionArgument =
+  | { lit: unknown }
+  | { source: 'input' | 'parameter' | 'value' | 'object' | 'resource' | 'node'; name: string;
+      path?: string; file?: boolean; arguments?: Record<string, CompositionArgument> }
+  | { system: 'directory' | 'file' }
+  | { items: CompositionArgument[] }
+  | { fields: Record<string, CompositionArgument> }
+
+export interface CompositionCall {
+  id: string
+  project: string
+  module?: string
+  function: string
+  interface?: string
+  target?: CompositionArgument
+  arguments: Record<string, CompositionArgument>
+  output?: 'value' | 'object' | 'file' | 'image'
+}
+
+export interface CompositionResource {
+  id: string
+  trigger: 'startup' | 'lazy'
+  defaults?: Record<string, unknown>
+  calls: CompositionCall[]
+  result: CompositionArgument
+}
+
+export interface CompositionOperation {
+  id: string
+  parameters?: string[]
+  calls: CompositionCall[]
+  presentation: { type: 'image' | 'text' | 'line' | 'metrics' | 'table'; value: CompositionArgument }[]
+  decision?: { result: CompositionArgument; reason: CompositionArgument; normalReason?: string }
+}
+
+export interface Composition {
+  objects: CompositionCall[]
+  resources: CompositionResource[]
+  operations: CompositionOperation[]
+}
+
 export interface DocNode {
   id: string
   kind: NodeKind
@@ -102,6 +143,8 @@ export interface DocNode {
   binding?: NodeBinding
   pipeline?: FunctionPipeline
   method?: string
+  operation?: string
+  operationArguments?: Record<string, CompositionArgument>
   runtimeInputs?: ManualField[]
   /** 该节点返回结构里的字段名，供下游绑定 */
   outputs?: string[]
@@ -125,23 +168,25 @@ export interface FlowDoc {
   name: string
   mode?: FlowMode
   diagnosis?: NodeBinding
+  composition?: Composition
   nodes: DocNode[]
   edges: DocEdge[]
   /** 旧版全局启动字段；新文档改用 start 节点的 inputs，读取时兼容 */
   snapshotFields?: string[]
 }
 
-type BindingFields = 'binding' | 'pipeline' | 'method' | 'runtimeInputs' | 'params' | 'outputs'
+type BindingFields = 'binding' | 'pipeline' | 'method' | 'runtimeInputs' | 'params' | 'outputs' | 'operation' | 'operationArguments'
 
 /** 持久化与导出格式；编辑器使用 FlowDoc 投影，运行配置保存在实例中。 */
 export interface StoredFlow {
   format: 2
-  flow: Omit<FlowDoc, 'nodes' | 'mode' | 'diagnosis'> & {
+  flow: Omit<FlowDoc, 'nodes' | 'mode' | 'diagnosis' | 'composition'> & {
     nodes: Omit<DocNode, BindingFields | 'position'>[]
   }
   bindings: {
     format: 1
     diagnosis?: NodeBinding
+  composition?: Composition
     nodes: Record<string, Pick<DocNode, BindingFields>>
   }
   presentation: {
@@ -204,6 +249,9 @@ export interface PlanCall {
 export interface PlanStep {
   kind: NodeKind
   call?: PlanCall
+  compositionOperation?: string
+  operationInputs?: ManualField[]
+  operationArguments?: Record<string, CompositionArgument>
   diagnosisMethod?: { name: string; args: Record<string, ArgExpr>; inputs?: ManualField[] }
   pipeline?: FunctionPipeline & { args: Record<string, ArgExpr> }
   human?: boolean
@@ -220,6 +268,7 @@ export interface Plan {
   entry: string
   steps: Record<string, PlanStep>
   signature: Record<string, string>
+  composition?: Composition
   diagnosis?: NodeBinding & {
     args: Record<string, ArgExpr>
     definition: Record<string, unknown>

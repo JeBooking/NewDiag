@@ -446,7 +446,13 @@ class GeneratedRunner(Scheduler):
             state = json.loads(saved.read_text(encoding="utf-8"))
             data_file = saved.with_name(f"{state.get('branch', selected.id)}.data.json")
             if data_file.is_file():
-                state["states"] = json.loads(data_file.read_text(encoding="utf-8"))
+                latest = json.loads(data_file.read_text(encoding="utf-8"))
+                if plan.get('composition') is not None:
+                    from app.services.composition import rollback_state
+                    configuration = json.loads((self._directory(instance_id) / 'configuration.json').read_text(encoding='utf-8'))
+                    latest['$composition'] = rollback_state(configuration['artifactRoot'],
+                        state.get('states', {}).get('$composition'), latest.get('$composition'))
+                state["states"] = latest
             retained, cursor = set(), selected
             by_id = {item.id: item for item in tokens}
             while cursor and cursor.id not in retained:

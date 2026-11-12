@@ -106,7 +106,7 @@ def load(root, reference):
     return value
 
 
-def save_python(root, value):
+def save_python(root, value, *, fixed=None):
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     identifier = uuid.uuid4().hex
@@ -115,6 +115,7 @@ def save_python(root, value):
     with (pending / "object.pkl").open("wb") as target:
         writer = _DataPickler(target, protocol=pickle.HIGHEST_PROTOCOL)
         writer.root = root
+        writer.fixed = fixed or {}
         writer.dump(value)
     digest = _python_digest(pending / "object.pkl")
     (pending / "object.json").write_text(json.dumps({
@@ -125,7 +126,7 @@ def save_python(root, value):
     return {"$artifact": identifier, "path": []}
 
 
-def load_python(root, reference):
+def load_python(root, reference, *, cache=None):
     directory = _directory(root, reference)
     if reference["path"]:
         raise ValueError("Python 对象快照不支持 JSON 字段路径")
@@ -140,6 +141,7 @@ def load_python(root, reference):
             reader = _DataUnpickler(source)
             reader.root = Path(root).resolve()
             reader.objects = {}
+            reader.fixed = cache if cache is not None else {}
             value = reader.load()
     except Exception as exc:
         raise ValueError(f"Python 对象快照缺失、损坏或无法恢复：{exc}") from exc
@@ -149,6 +151,9 @@ def load_python(root, reference):
 
 class _DataPickler(pickle.Pickler):
     def persistent_id(self, value):
+        saved = self.fixed.get(id(value))
+        if saved is not None and saved[0] is value:
+            return ('newdiag-fixed/v1', saved[1]['$artifact'], saved[1])
         if isinstance(value, Data):
             return ("newdiag-data/v1", id(value), value.export(self.root, save_python))
         return None
@@ -157,6 +162,10 @@ class _DataPickler(pickle.Pickler):
 class _DataUnpickler(pickle.Unpickler):
     def persistent_load(self, identity):
         kind, key, references = identity
+        if kind == 'newdiag-fixed/v1':
+            if key not in self.fixed:
+                self.fixed[key] = load_python(self.root, references, cache=self.fixed)
+            return self.fixed[key]
         if kind != "newdiag-data/v1":
             raise pickle.UnpicklingError("未知数据引用协议")
         if key not in self.objects:

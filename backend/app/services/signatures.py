@@ -29,6 +29,9 @@ def probe_doc(doc: dict) -> dict:
     返回 {工程:函数: [{"name","type","required","default"}...]}；
     单个工程探测失败时该工程记 {"error": "..."}，函数不存在时该函数记 {"error": "..."}。
     """
+    if doc.get('composition') is not None:
+        from .composition import probe_configuration
+        return probe_configuration(doc['composition'])
     result: dict[str, object] = {}
     cache: dict[str, tuple[list[dict] | None, str]] = {}
     started = time.perf_counter()
@@ -91,6 +94,9 @@ def probe_doc(doc: dict) -> dict:
 
 
 def _document_bindings(doc):
+    if isinstance(doc.get('composition'), dict):
+        from .composition import calls_in
+        yield from calls_in(doc['composition'])
     diagnosis = doc.get("diagnosis")
     if isinstance(diagnosis, dict):
         yield diagnosis
@@ -151,6 +157,11 @@ def collect_signatures(
     probed 传 probe_doc 的结果时复用参数表，不再起子进程。
     取不到的项目记空字符串，不抛异常——发布/启动不应被工程环境问题整死。
     """
+    if plan.get('composition') is not None:
+        from .composition import probe_configuration
+        values = probed if probed is not None else probe_configuration(plan['composition'])
+        return {key: _hash_params(key, value) if isinstance(value, list) else ''
+                for key, value in values.items()}
     result: dict[str, str] = {}
     projects: dict[str, object] = {}
     for key in _plan_keys(plan):

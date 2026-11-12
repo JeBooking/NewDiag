@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import artifacts, diagnosis_sdk, node_sdk
 from .function_pipeline import execute_pipeline
+from .composition_runtime import CompositionRuntime
 
 sys.modules.setdefault("diagnosis_sdk", diagnosis_sdk)
 sys.modules.setdefault("node_sdk", node_sdk)
@@ -203,6 +204,8 @@ class Context:
                        "attachments": meta.get("attachments", []), "nodeKind": step["kind"]}
         if step.get("terminal"):
             self.branch = "default"
+        elif self.config.get("composition") is not None and (step["kind"] == "start" or step.get("compositionOperation")):
+            self.branch = self.composition(step)
         elif step["kind"] == "start" and self.config.get("diagnosis"):
             self.branch = self.diagnosis(step, initialize=True)
         elif step.get("diagnosisMethod"):
@@ -269,6 +272,35 @@ class Context:
             answer = self.ask({**self.prompt, "type": "judgment", "presentation": value["presentation"],
                                "pipeline": {"inputs": self.arguments}})
             value.update(result=answer["result"], reason=answer.get("reason", "人工判断"))
+        self.output = value
+        return self.decision(value)
+
+    def composition(self, step):
+        def invoke(project, request):
+            return self.invoke(project, '__newdiag_composition__', {**request, 'fileRoot': self.config['fileRoot']})
+        runtime = CompositionRuntime(self.config['composition'], self.root, invoke,
+                                     self.states.get('$composition'))
+        runtime.inputs = self.config['input'].get('global', self.config['input'])
+        runtime.file_root = Path(self.config['fileRoot'])
+        runtime.history = self.history
+        try:
+            self.arguments = {name: runtime.resolve(value, {})
+                              for name, value in step.get('operationArguments', {}).items()}
+            def execute(answer=None):
+                if answer:
+                    self.arguments.update(answer['data'])
+                return runtime.execute(runtime.inputs, step.get('compositionOperation'), self.arguments)
+            fields = step.get('operationInputs', [])
+            value = self.human_step({**self.prompt, 'type': 'parameters', 'fields': fields}, execute) if fields else execute()
+        finally:
+            self.states['$composition'] = runtime.save()
+        if step['kind'] == 'start':
+            self.output = {'initialized': True}
+            return 'default'
+        self.evidence = {'presentation': value['presentation'], 'composition': {'stages': runtime.stages}}
+        if value.get('result') is None:
+            answer = self.ask({**self.prompt, 'type': 'judgment', 'presentation': value['presentation']})
+            value.update(result=answer['result'], reason=answer.get('reason', '人工判断'))
         self.output = value
         return self.decision(value)
 

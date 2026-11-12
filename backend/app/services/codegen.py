@@ -76,6 +76,9 @@ def prepare(db, instance, release, runtime):
         logger.info("实例 %s 接口探测：工程=%s 源=%s 副本=%s module=%s python=%s",
                     instance.id, name, source, target, project.module, project.python or "后端默认")
         from types import SimpleNamespace
+        if doc.get('composition') is not None:
+            projects[name] = {**project_copy, 'factory': ''}
+            continue
         discovered, error = _probe_project(SimpleNamespace(**project_copy))
         if discovered is None:
             raise ValueError(
@@ -89,6 +92,15 @@ def prepare(db, instance, release, runtime):
                     if candidate.get("protocol"):
                         candidate["version"] = item.get("version", candidate.get("version"))
         projects[name] = project_copy
+    if doc.get('composition') is not None:
+        from .composition import probe_configuration
+        from types import SimpleNamespace
+        signatures = probe_configuration(doc['composition'], {
+            name: SimpleNamespace(**spec) for name, spec in projects.items()
+        })
+        errors = [f"{name}: {entry['error']}" for name, entry in signatures.items() if isinstance(entry, dict)]
+        if errors:
+            raise ValueError('组合接口探测失败：' + '；'.join(errors))
     plan = compile_doc(doc, instance.flow_id, release.version_no, functions=signatures)
     # 发布时的 plan 是派生产物，不能让旧编译器的内部格式成为 flow 升级的前提。
     plan["mode"] = runtime["mode"]
@@ -97,7 +109,7 @@ def prepare(db, instance, release, runtime):
     (directory / "flow.py").write_text(generate(plan), encoding="utf-8")
     snapshot = db.get(models.Snapshot, instance.snapshot_id)
     configuration = {
-        "projects": projects, "diagnosis": plan.get("diagnosis"), "runtime": runtime,
+        "projects": projects, "diagnosis": plan.get("diagnosis"), "composition": plan.get("composition"), "runtime": runtime,
         "input": json.loads(snapshot.payload_json) if snapshot else {},
         "artifactRoot": str(data_dir() / "artifacts" / hashlib.sha256(instance.id.encode()).hexdigest()),
         "fileRoot": str(data_dir() / "files"),

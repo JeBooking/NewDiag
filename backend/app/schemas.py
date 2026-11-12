@@ -295,6 +295,11 @@ class ProjectParam(ApiModel):
 
 class ProjectFunction(ApiModel):
     name: str
+    doc: str | None = None
+    kind: str | None = None
+    fingerprint: str | None = None
+    variadic_keywords: bool = False
+    composition_error: str | None = None
     params: list[ProjectParam] = Field(default_factory=list)
     returns: str | None = None
     protocol: str | None = None

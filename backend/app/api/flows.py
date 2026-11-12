@@ -64,21 +64,13 @@ def empty_doc(name: str, mode: str = "parallel") -> dict:
 def instance_doc(name: str, mode: str = "parallel") -> dict:
     """新建流程用的诊断实例模板：骨架齐全、没有业务内容。
 
-    工程 / 类 / 版本留空，由用户在「流程属性 → 诊断实例」里选中；
-    直接抄示例里的业务类名会生成指向不存在工程的假绑定，发布必然失败。
-    config 为空对象：初始化参数由选中的诊断类带出，模板不预设业务参数。
+    组合配置留空，由编排团队选择原工程接口；模板不预设业务对象或启动参数。
     """
     return {
         "format": 1,
         "name": name,
         "mode": mode,
-        "diagnosis": {
-            "project": "",
-            "function": "",
-            "protocol": "diagnosis/v1",
-            "version": "",
-            "config": {},
-        },
+        'composition': {'objects': [], 'resources': [], 'operations': []},
         "nodes": [],
         "edges": [],
     }
@@ -396,9 +388,20 @@ def _attachment_refs(doc: dict):
 
 
 def _bindings(doc: dict) -> list[dict]:
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     result: list[dict] = []
     bindings = [doc.get("diagnosis")]
+    composition = doc.get('composition')
+    if isinstance(composition, dict):
+        objects = composition.get('objects', [])
+        if isinstance(objects, list):
+            bindings.extend(objects)
+        for name in ('resources', 'operations'):
+            groups = composition.get(name, [])
+            if isinstance(groups, list):
+                for group in groups:
+                    if isinstance(group, dict) and isinstance(group.get('calls'), list):
+                        bindings.extend(group['calls'])
     for node in doc.get("nodes") or []:
         if not isinstance(node, dict):
             continue
@@ -411,11 +414,12 @@ def _bindings(doc: dict) -> list[dict]:
         if not isinstance(binding, dict):
             continue
         project = str(binding.get("project") or "")
-        function = str(binding.get("function") or "")
-        if not project or not function or (project, function) in seen:
+        function = str(binding.get('interface') or binding.get("function") or "")
+        module = str(binding.get('module') or '')
+        if not project or not function or (project, module, function) in seen:
             continue
-        seen.add((project, function))
-        result.append({"project": project, "function": function})
+        seen.add((project, module, function))
+        result.append({"project": project, "function": function, **({'module': module} if module else {})})
     return result
 
 
