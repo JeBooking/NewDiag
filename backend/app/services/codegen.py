@@ -67,13 +67,22 @@ def prepare(db, instance, release, runtime):
                 name for name in names if (Path(path) / name).resolve() == storage
             }
 
-        shutil.copytree(source, target, ignore=ignore)
+        try:
+            # 同一实例重试 / 重启后继续时目标目录已存在，不能让复制本身成为失败原因。
+            shutil.copytree(source, target, ignore=ignore, dirs_exist_ok=True)
+        except Exception as exc:  # noqa: BLE001 - 包装后带出源与目标，否则只能看到 WinError
+            raise ValueError(
+                f"复制工程 {name} 失败（源 {source} → 目标 {target}）：{exc}"
+            ) from exc
         project_copy = {"name": name, "path": str(target), "module": project.module,
                         "factory": project.factory, "python": project.python}
         from types import SimpleNamespace
         discovered, error = _probe_project(SimpleNamespace(**project_copy))
         if discovered is None:
-            raise ValueError(f"模块 {name} 探测失败：{error}")
+            raise ValueError(
+                f"模块 {name} 探测失败（复制后目录 {target}，module={project.module}，"
+                f"解释器={project.python or '后端默认'}）：{error}"
+            )
         for item in expanded_functions(discovered):
             signatures[f"{name}:{item['name']}"] = _param_list(item)
             for candidate in _document_bindings(doc):
@@ -85,7 +94,10 @@ def prepare(db, instance, release, runtime):
     # 发布时的 plan 是派生产物，不能让旧编译器的内部格式成为 flow 升级的前提。
     plan["mode"] = runtime["mode"]
     package = Path(__file__).resolve().parents[1] / "worker"
-    shutil.copytree(package, directory / "runtime", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(
+        package, directory / "runtime", ignore=shutil.ignore_patterns("__pycache__"),
+        dirs_exist_ok=True,
+    )
     (directory / "flow.py").write_text(generate(plan), encoding="utf-8")
     snapshot = db.get(models.Snapshot, instance.snapshot_id)
     configuration = {
