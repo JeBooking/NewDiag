@@ -82,7 +82,8 @@ def _materialize(value):
         raise ValueError(
             f"展示数据不支持 {type(value).__name__}，请先转换为 bytes"
         )
-    if isinstance(value, dict):
+    from collections.abc import Mapping
+    if isinstance(value, Mapping):
         return {key: _materialize(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_materialize(item) for item in value]

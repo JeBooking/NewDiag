@@ -13,6 +13,11 @@ import uuid
 from pathlib import Path
 from contextlib import closing
 
+if __package__:
+    from .data_store import Data
+else:
+    from data_store import Data
+
 logger = logging.getLogger(__name__)
 _ID = re.compile(r"^[0-9a-f]{32}$")
 
@@ -108,7 +113,9 @@ def save_python(root, value):
     pending = root / (identifier + ".part")
     pending.mkdir()
     with (pending / "object.pkl").open("wb") as target:
-        pickle.dump(value, target, protocol=pickle.HIGHEST_PROTOCOL)
+        writer = _DataPickler(target, protocol=pickle.HIGHEST_PROTOCOL)
+        writer.root = root
+        writer.dump(value)
     digest = _python_digest(pending / "object.pkl")
     (pending / "object.json").write_text(json.dumps({
         "format": "python-pickle/v1", "sha256": digest,
@@ -130,11 +137,31 @@ def load_python(root, reference):
             raise ValueError("对象快照校验不一致")
         # 只恢复本实例业务进程生成的产物，不把上传附件当作 Python 快照读取。
         with target.open("rb") as source:
-            value = pickle.load(source)
+            reader = _DataUnpickler(source)
+            reader.root = Path(root).resolve()
+            reader.objects = {}
+            value = reader.load()
     except Exception as exc:
         raise ValueError(f"Python 对象快照缺失、损坏或无法恢复：{exc}") from exc
     logger.info("Python 对象快照恢复 id=%s", reference["$artifact"])
     return value
+
+
+class _DataPickler(pickle.Pickler):
+    def persistent_id(self, value):
+        if isinstance(value, Data):
+            return ("newdiag-data/v1", id(value), value.export(self.root, save_python))
+        return None
+
+
+class _DataUnpickler(pickle.Unpickler):
+    def persistent_load(self, identity):
+        kind, key, references = identity
+        if kind != "newdiag-data/v1":
+            raise pickle.UnpicklingError("未知数据引用协议")
+        if key not in self.objects:
+            self.objects[key] = Data.restore(self.root, references, load_python)
+        return self.objects[key]
 
 
 def _python_digest(path):

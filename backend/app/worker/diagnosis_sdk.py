@@ -15,6 +15,11 @@ from concurrent.futures import Future
 from functools import wraps
 
 if __package__:
+    from .data_store import Data
+else:
+    from data_store import Data
+
+if __package__:
     from . import artifacts
     from .node_sdk import json_value, presentation
 else:
