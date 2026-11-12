@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { FlowDetail, FlowMode, NodeBinding } from '@/domain/types'
+import type { Composition, FlowDetail, FlowMode, NodeBinding } from '@/domain/types'
 import BindingEditor from '@/components/panels/BindingEditor.vue'
+import CompositionEditor from '@/components/panels/CompositionEditor.vue'
 
 const props = defineProps<{
   flow: FlowDetail
@@ -9,12 +10,14 @@ const props = defineProps<{
   readonly?: boolean
   publishing?: boolean
   diagnosis?: NodeBinding
+  composition?: Composition
 }>()
 const emit = defineEmits<{
   (e: 'update-meta', patch: { name?: string; mode?: FlowMode }): void
   (e: 'update-snapshot-fields', value: string[]): void
   (e: 'publish'): void
   (e: 'update-diagnosis', value: NodeBinding | undefined): void
+  (e: 'update-composition', value: Composition | undefined): void
 }>()
 
 const draft = ref('')
@@ -93,12 +96,19 @@ function removeField(name: string): void {
       @keyup.enter="commitName"
     />
 
-    <div class="section-title">诊断实例</div>
-    <BindingEditor
+    <div class="section-title">诊断接入方式</div>
+    <el-radio-group :model-value="composition ? 'composition' : 'class'" :disabled="readonly"
+      @change="emit('update-composition', $event === 'composition' ? { objects: [], resources: [], operations: [] } : undefined)">
+      <el-radio-button value="composition">组合现有工程</el-radio-button>
+      <el-radio-button value="class">业务诊断类</el-radio-button>
+    </el-radio-group>
+    <CompositionEditor v-if="composition" :value="composition" :readonly="readonly"
+      @update="emit('update-composition', $event)" />
+    <BindingEditor v-else
       :binding="diagnosis" :readonly="readonly" diagnosis-only
       @update="emit('update-diagnosis', $event)"
     />
-    <div class="section-hint">可选。选择后，排查节点直接调用该诊断类的方法，获取和解析由实例统一管理。启动参数在开始节点配置。</div>
+    <div class="section-hint">组合模式配置现有对象、固定资源和节点操作，无需编写总控类。启动参数在开始节点配置。</div>
 
     <div class="section-title">快照字段（旧版兼容）</div>
     <div class="tag-input">

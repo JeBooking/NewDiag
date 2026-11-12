@@ -10,6 +10,7 @@ import type {
   ManualField,
   ParamType,
   StartParam,
+  CompositionArgument,
 } from '@/domain/types'
 import { KIND_META } from '@/domain/kinds'
 import { errorText } from '@/services/api'
@@ -18,6 +19,7 @@ import AttachmentField from './AttachmentField.vue'
 import BindingEditor from './BindingEditor.vue'
 import FunctionPipelineEditor from '@/components/panels/FunctionPipelineEditor.vue'
 import ParamValueInput from './ParamValueInput.vue'
+import CompositionArgumentEditor from '@/components/panels/CompositionArgumentEditor.vue'
 import DiagnosisMethodEditor from '@/components/panels/DiagnosisMethodEditor.vue'
 import { PARAM_TYPES, parameterType as normalizeType } from '@/domain/parameters'
 
@@ -48,7 +50,37 @@ const outputs = computed(() => props.node.outputs ?? [])
 const outputDraft = ref('')
 
 const isStart = computed(() => props.node.kind === 'start')
-const allowsCustomInputs = computed(() => !!props.doc?.diagnosis || props.doc?.nodes.some((node) => node.pipeline))
+const allowsCustomInputs = computed(() => !!props.doc?.composition || !!props.doc?.diagnosis || props.doc?.nodes.some((node) => node.pipeline))
+const operationParameters = computed(() => props.doc?.composition?.operations
+  .find((item) => item.id === props.node.operation)?.parameters ?? [])
+
+function changeOperation(value: unknown): void {
+  emit('update', {
+    operation: typeof value === 'string' && value ? value : undefined,
+    operationArguments: {},
+    runtimeInputs: undefined,
+    method: undefined,
+    binding: undefined,
+    pipeline: undefined,
+  })
+}
+
+function setOperationSource(name: string, manual: unknown): void {
+  const argumentsMap = { ...props.node.operationArguments }
+  const fields = (props.node.runtimeInputs ?? []).filter((item) => item.name !== name)
+  if (manual) {
+    delete argumentsMap[name]
+    fields.push({ name, type: 'json', required: true })
+  } else argumentsMap[name] = { lit: null }
+  emit('update', { operationArguments: argumentsMap, runtimeInputs: fields })
+}
+function setOperationType(name: string, type: ParamType): void {
+  const fields = (props.node.runtimeInputs ?? []).filter((item) => item.name !== name)
+  emit('update', { runtimeInputs: [...fields, { name, type, required: true }] })
+}
+function setOperationArgument(name: string, value: CompositionArgument): void {
+  emit('update', { operationArguments: { ...props.node.operationArguments, [name]: value } })
+}
 const inputName = ref('')
 const inputType = ref<ParamType>('text')
 const inputError = ref('')
@@ -72,6 +104,7 @@ const orderGroups = computed(() =>
 )
 
 const codeHint = computed(() => {
+  if (props.doc?.composition) return '复用流程中配置的排查操作，共享启动资源与按需缓存'
   if (props.doc?.diagnosis) return '调用本次诊断对象的方法，共享初始化数据与按需缓存'
   // 能不能绑代码由 KIND_META 声明，别再按类型名判断，否则新增可编程类型时这里会拦错
   if (!KIND_META[props.node.kind].codeCapable) return '该类型由人工完成，不执行代码'
@@ -586,14 +619,33 @@ function addGlobalInput(): void {
       <div class="section-title">参数绑定</div>
       <div class="section-hint">{{ codeHint }}</div>
       <el-select
-        v-if="node.kind === 'investigation' && !doc?.diagnosis" :model-value="connectionMode" :disabled="readonly"
+        v-if="node.kind === 'investigation' && !doc?.diagnosis && !doc?.composition" :model-value="connectionMode" :disabled="readonly"
         aria-label="排查接入方式" @change="changeConnectionMode"
       >
         <el-option label="分别选择四阶段函数" value="functions" />
         <el-option label="原有函数或适配器类" value="legacy" />
       </el-select>
+      <template v-if="node.kind === 'investigation' && doc?.composition">
+        <el-select :model-value="node.operation" :disabled="readonly" clearable
+          aria-label="排查操作" placeholder="选择操作；留空由人工判断" @change="changeOperation">
+          <el-option v-for="operation in doc.composition.operations" :key="operation.id"
+            :label="operation.id" :value="operation.id" />
+        </el-select>
+        <div v-for="name in operationParameters" :key="name">
+          <label>{{ name }}</label>
+          <el-checkbox :model-value="!(name in (node.operationArguments ?? {}))" :disabled="readonly"
+            @change="setOperationSource(name, $event)">执行到此节点时填写</el-checkbox>
+          <el-select v-if="!(name in (node.operationArguments ?? {}))"
+            :model-value="node.runtimeInputs?.find((field) => field.name === name)?.type ?? 'json'"
+            :disabled="readonly" :aria-label="`${name} 输入类型`" @change="setOperationType(name, $event)">
+            <el-option v-for="option in PARAM_TYPES" :key="option.value" :label="option.label" :value="option.value" />
+          </el-select>
+          <CompositionArgumentEditor v-else :value="node.operationArguments?.[name]" :composition="doc.composition"
+            :readonly="readonly" @update="setOperationArgument(name, $event)" />
+        </div>
+      </template>
       <DiagnosisMethodEditor
-        v-if="node.kind === 'investigation' && doc?.diagnosis"
+        v-else-if="node.kind === 'investigation' && doc?.diagnosis"
         :diagnosis="doc.diagnosis" :value="node.method" :inputs="node.runtimeInputs" :readonly="readonly"
         @update="emit('update', { method: $event, runtimeInputs: [], pipeline: undefined, binding: undefined })"
         @update-inputs="patchRuntimeInputs"

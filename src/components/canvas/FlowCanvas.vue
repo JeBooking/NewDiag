@@ -63,7 +63,8 @@ function candidateKinds(sourceId: string): NodeKind[] {
   }
   return (Object.keys(KIND_META) as NodeKind[]).filter(
     (kind) => !KIND_META[kind].entry && kind !== 'start'
-      && (!props.doc.diagnosis || kind !== 'dataPreparation') && canConnect(source.kind, kind),
+      && (!(props.doc.diagnosis || props.doc.composition) || kind !== 'dataPreparation')
+      && canConnect(source.kind, kind),
   )
 }
 
@@ -254,9 +255,10 @@ function projectAll(preservePositions: boolean) {
       kind: meta.kind,
       title: meta.title ?? '',
       detail: meta.detail ?? '',
-      hasBinding: Boolean(meta.method || meta.pipeline || (meta.binding?.project && meta.binding?.function)),
+      hasBinding: Boolean(meta.operation || meta.method || meta.pipeline || (meta.binding?.project && meta.binding?.function)),
       executionLabel: meta.kind === 'dataPreparation' ? '数据准备'
-        : meta.method ? '实例方法' : meta.pipeline?.dataSource ? '共享数据' : meta.pipeline ? '四阶段' : undefined,
+        : meta.operation ? '组合操作' : meta.method ? '实例方法'
+          : meta.pipeline?.dataSource ? '共享数据' : meta.pipeline ? '四阶段' : undefined,
       hasTarget: !isStart && meta.id !== entry,
       paramCount: isStart ? (meta.inputs?.length ?? 0) : undefined,
       issues: byNode.get(meta.id) ?? [],
@@ -550,8 +552,9 @@ function defaultTitle(kind: NodeKind) {
 
 function addNode(kind: NodeKind, position: { x: number; y: number }) {
   if (props.readonly) return
+  if ((props.doc.composition || props.doc.diagnosis) && kind === 'dataPreparation') return
   const node: DocNode = { id: nextId('n'), kind, title: defaultTitle(kind), detail: '', position }
-  if (kind === 'dataPreparation' || (kind === 'investigation' && !props.doc.diagnosis)) {
+  if (kind === 'dataPreparation' || (kind === 'investigation' && !props.doc.diagnosis && !props.doc.composition)) {
     node.pipeline = { manualFields: [] }
   }
   nodeMeta.set(node.id, node)
@@ -868,7 +871,7 @@ defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom, focusNode })
       <FlowOverview />
       <Panel v-if="!readonly" position="top-left" class="palette-panel">
         <div class="palette-stack">
-          <NodePalette :disabled="readonly" :instance-mode="!!doc.diagnosis"
+          <NodePalette :disabled="readonly" :instance-mode="!!doc.diagnosis || !!doc.composition"
             @add="(kind) => addNode(kind, centerPosition())" />
           <div v-if="issues.length" class="issue-global-wrap" :class="globalWorst">
             <span class="issue-global-badge">

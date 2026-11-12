@@ -35,6 +35,9 @@ export interface ProjectFunctionParam {
 export interface ProjectFunction {
   name: string
   doc?: string | null
+  kind?: string
+  compositionError?: string | null
+  variadicKeywords?: boolean
   params: ProjectFunctionParam[]
   returns?: string | null
   protocol?: 'investigation/v1' | 'diagnosis/v1'
@@ -104,6 +107,9 @@ function normalizeFunction(raw: unknown): ProjectFunction | null {
   return {
     name,
     doc: text(item.doc) ?? text(item.description) ?? null,
+    kind: text(item.kind),
+    compositionError: text(item.compositionError),
+    variadicKeywords: item.variadicKeywords === true,
     params,
     returns: text(item.returns) ?? null,
     protocol: item.protocol === 'investigation/v1' || item.protocol === 'diagnosis/v1'
@@ -133,6 +139,13 @@ export async function listProjects(): Promise<Project[]> {
   const data = await request<unknown>('/projects')
   const raw = Array.isArray(data) ? data : []
   return raw.map(normalizeProject).filter((item): item is Project => Boolean(item))
+}
+
+export async function fetchProjectCatalog(id: string, module: string): Promise<ProjectFunction[]> {
+  const query = new URLSearchParams({ catalog: 'true', module })
+  const raw = await request<unknown>(`/projects/${encodeURIComponent(id)}/functions?${query}`)
+  return Array.isArray(raw)
+    ? raw.map(normalizeFunction).filter((item): item is ProjectFunction => Boolean(item)) : []
 }
 
 export async function createProject(payload: CreateProjectPayload): Promise<Project> {
