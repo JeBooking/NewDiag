@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from app.services.flow_format import expand
 from app.services.signatures import _document_bindings, _probe_project, _param_list
 from app.services.compiler import compile_doc
 from app.worker.probe import expanded_functions
+
+logger = logging.getLogger(__name__)
 
 
 def generate(plan):
@@ -70,10 +73,15 @@ def prepare(db, instance, release, runtime):
         shutil.copytree(source, target, ignore=ignore)
         project_copy = {"name": name, "path": str(target), "module": project.module,
                         "factory": project.factory, "python": project.python}
+        logger.info("实例 %s 接口探测：工程=%s 源=%s 副本=%s module=%s python=%s",
+                    instance.id, name, source, target, project.module, project.python or "后端默认")
         from types import SimpleNamespace
         discovered, error = _probe_project(SimpleNamespace(**project_copy))
         if discovered is None:
-            raise ValueError(f"模块 {name} 探测失败：{error}")
+            raise ValueError(
+                f"模块 {name} 探测失败（副本目录={target}，module={project.module}，"
+                f"python={project.python or '后端默认'}）：{error}"
+            )
         for item in expanded_functions(discovered):
             signatures[f"{name}:{item['name']}"] = _param_list(item)
             for candidate in _document_bindings(doc):

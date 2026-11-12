@@ -10,6 +10,7 @@ import { request } from 'node:http'
 import { Socket } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { backendArgs } from './backend-command.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(here, '..')
@@ -104,7 +105,7 @@ function startBackend() {
   backend = start(
     '后端',
     python,
-    ['-m', 'uvicorn', 'app.main:app', '--reload', '--port', String(BACKEND_PORT)],
+    backendArgs(backendDir, BACKEND_PORT),
     { cwd: backendDir },
   )
   return backend

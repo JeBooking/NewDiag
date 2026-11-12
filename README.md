@@ -39,6 +39,8 @@ pnpm dev
 
 浏览器打开 http://127.0.0.1:5173 。后端在 8000，`/api` 由 Vite 代理，Ctrl+C 一起停。只调前端时用 `pnpm dev:web`，后端需另行启动。
 
+开发态热重载仅监控 `backend/app`。手工使用 uvicorn 热重载时也应在 backend 目录指定 `--reload-dir app`，避免 `data/executions` 中的生成代码触发后端重启。
+
 ### 用离线包
 
 在能上网的机器上构建：
