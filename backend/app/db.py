@@ -87,6 +87,8 @@ def _migrate() -> None:
     老库启动时必须自己 ALTER，否则查询会直接报 no such column。
     """
     expected = {
+        "instances": {"runtime_json": "TEXT NOT NULL DEFAULT '{}'",
+                      "plan_json": "TEXT NOT NULL DEFAULT '{}'"},
         "tokens": {"visited_at": "VARCHAR(32)"},
         "flows": {
             "folder_id": "VARCHAR(32)",

@@ -29,7 +29,7 @@ from app.schemas import (
 )
 
 try:  # 引擎层缺席时接口仍在，只是不推进
-    from app.services.scheduler import scheduler
+    from app.services.execution import scheduler
 except ImportError as exc:  # pragma: no cover
     logging.getLogger(__name__).warning("调度器不可用，实例不会自动推进：%s", exc)
 
@@ -227,6 +227,7 @@ def start_instance(
         flow_id=flow_id,
         release_id=release.id,
         status="running",
+        runtime_json=json.dumps({**payload.runtime.model_dump(by_alias=True), "engine": "python/v1"}),
         started_by="local",
         started_at=stamp,
     )

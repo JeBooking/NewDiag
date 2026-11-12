@@ -85,6 +85,8 @@ class Instance(Base):
     release_id: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
     snapshot_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    runtime_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    plan_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     started_by: Mapped[str] = mapped_column(String(64), nullable=False, default="local")
     started_at: Mapped[str] = mapped_column(String(32), nullable=False, default=now_iso)
     ended_at: Mapped[str | None] = mapped_column(String(32), nullable=True)

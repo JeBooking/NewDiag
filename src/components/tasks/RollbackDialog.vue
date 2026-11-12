@@ -27,6 +27,7 @@ const target = ref('')
 const branch = ref('')
 const reason = ref('')
 const mode = ref<'retry' | 'branch'>('retry')
+const generated = computed(() => props.detail?.runtime?.engine === 'python/v1')
 const statusText: Record<TokenStatus, string> = {
   queued: '排队', running: '执行中', waiting: '待处理', done: '完成',
   failed: '失败', abandoned: '已放弃',
@@ -44,7 +45,9 @@ function hasOutgoing(nodeId: string): boolean {
 const candidates = computed(() => (props.detail?.tokens ?? [])
   .filter((token) => {
     const step = plan.value?.steps[token.nodeId]
-    return token.visitedAt && step && step.kind !== 'start' && !step.terminal
+    const completed = !generated.value || props.detail?.runs.some((run) =>
+      run.tokenId === token.id && run.status === 'ok')
+    return completed && token.visitedAt && step && step.kind !== 'start' && !step.terminal
   })
   .slice()
   .sort((a, b) => a.visitedAt!.localeCompare(b.visitedAt!)
@@ -53,7 +56,9 @@ const candidates = computed(() => (props.detail?.tokens ?? [])
 const selected = computed(() => candidates.value.find((token) => token.id === target.value))
 const canReuse = computed(() => {
   const token = selected.value
-  if (!token || token.status === 'failed' || !hasOutgoing(token.nodeId)) return false
+  if (!token || (!generated.value && token.status === 'failed') || !hasOutgoing(token.nodeId)) return false
+  if (generated.value) return (props.detail?.runs ?? []).some((run) =>
+    run.tokenId === token.id && run.status === 'ok')
   const step = plan.value?.steps[token.nodeId]
   const runs = (props.detail?.runs ?? []).filter((run) => run.tokenId === token.id)
   if (step?.call || step?.pipeline) return runs.some((run) =>
@@ -108,7 +113,7 @@ watch(
     target.value = ''
     branch.value = ''
     reason.value = ''
-    mode.value = 'retry'
+    mode.value = generated.value ? 'branch' : 'retry'
     void ensurePlan()
   },
 )
@@ -119,7 +124,7 @@ watch(target, () => {
 })
 
 watch(canReuse, (value) => {
-  if (!value) mode.value = 'retry'
+  if (!value && !generated.value) mode.value = 'retry'
 })
 
 // 计划是异步读到的，先选目标后到分支时要补上默认值
@@ -184,7 +189,7 @@ async function submit(): Promise<void> {
         当前没有可回退的到访记录
       </div>
 
-      <template v-if="target">
+      <template v-if="target && !generated">
         <label class="label">回退方式</label>
         <el-radio-group v-model="mode">
           <el-radio value="retry">重新执行该节点</el-radio>

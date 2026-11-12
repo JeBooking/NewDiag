@@ -219,6 +219,9 @@ function onInspect(nodeId: string): void {
         </div>
       </div>
       <div class="head-right">
+        <span v-if="detail.runtime?.engine === 'python/v1'" class="meta">
+          {{ detail.runtime.mode === 'serial' ? '串行' : `并行 · 上限 ${detail.runtime.maxParallel}` }}
+        </span>
         <span class="meta">开始 {{ formatTime(detail.startedAt) }}</span>
         <span v-if="detail.endedAt" class="meta">结束 {{ formatTime(detail.endedAt) }}</span>
         <span v-if="detail.snapshot" class="meta">

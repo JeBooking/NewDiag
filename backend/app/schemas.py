@@ -234,6 +234,12 @@ class SnapshotOut(ApiModel):
     captured_at: str
 
 
+class RuntimeOptions(ApiModel):
+    mode: FlowMode = "serial"
+    max_parallel: int = Field(default=4, ge=1, le=128)
+    engine: str | None = None
+
+
 class InstanceSummary(ApiModel):
     id: str
     flow_id: str
@@ -244,6 +250,7 @@ class InstanceSummary(ApiModel):
     started_at: str
     ended_at: str | None = None
     started_by: str = "local"
+    runtime: RuntimeOptions = Field(default_factory=RuntimeOptions)
 
 
 class InstanceDetail(InstanceSummary):
@@ -256,6 +263,7 @@ class InstanceDetail(InstanceSummary):
 class InstanceCreate(ApiModel):
     release_id: str | None = None
     input: Any = None
+    runtime: RuntimeOptions = Field(default_factory=RuntimeOptions)
 
 
 class ReviewDecisionIn(ApiModel):
@@ -499,6 +507,7 @@ def make_instance_summary(
         started_at=instance.started_at,
         ended_at=instance.ended_at,
         started_by=instance.started_by,
+        runtime=RuntimeOptions.model_validate(_loads(instance.runtime_json, {})),
     )
 
 

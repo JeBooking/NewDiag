@@ -40,6 +40,8 @@ const startFormRef = ref<InstanceType<typeof ReleaseInputForm> | null>(null)
 /** 老版本没有冻结启动输入时退回 JSON 输入 */
 const startInput = ref('')
 const starting = ref(false)
+const runtimeMode = ref<'serial' | 'parallel'>('serial')
+const maxParallel = ref(4)
 
 const formatTime = (value?: string | null): string =>
   value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
@@ -149,6 +151,7 @@ async function submitStart(): Promise<void> {
     const instance = await startInstance(flowId.value, {
       releaseId: startTarget.value.id,
       input,
+      runtime: { mode: runtimeMode.value, maxParallel: maxParallel.value },
     })
     startVisible.value = false
     ElMessage.success('已启动诊断')
@@ -228,7 +231,6 @@ const planJson = computed(() =>
           <div class="plan-meta">
             <span>v{{ planDetail.versionNo }}</span>
             <span>入口节点：{{ planDetail.plan?.entry || '—' }}</span>
-            <span>模式：{{ planDetail.plan?.mode === 'serial' ? '串行' : '并行' }}</span>
           </div>
           <pre class="json">{{ planJson }}</pre>
         </template>
@@ -239,8 +241,20 @@ const planJson = computed(() =>
     <el-dialog v-model="startVisible" title="启动诊断" width="560px">
       <div class="start">
         <p class="hint">
-          将按 v{{ startTarget?.versionNo }} 的步骤表执行，启动时采集一次快照，之后只读。
+          按 v{{ startTarget?.versionNo }} 的流程生成 Python，启动时确定本次使用的模块版本。
         </p>
+        <el-form label-position="top">
+          <el-form-item label="本次执行模式">
+            <el-radio-group v-model="runtimeMode" :disabled="starting">
+              <el-radio-button value="serial">串行排查</el-radio-button>
+              <el-radio-button value="parallel">并行排查</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item v-if="runtimeMode === 'parallel'" label="同时开展的分支上限">
+            <el-input-number v-model="maxParallel" :min="1" :max="128" :precision="0" :disabled="starting" />
+            <p class="hint">人工等待中的分支占用名额，超出的分支排队。</p>
+          </el-form-item>
+        </el-form>
 
         <el-alert
           v-if="startLoadError"
