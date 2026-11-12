@@ -171,6 +171,8 @@ class Dataset:
 
 实例启动生成的目录位于 `<数据目录>/executions/<实例ID>`，其中包含 `flow.py`、`configuration.json`、`runtime` 和 `modules`。在该目录使用具备运行依赖的 Python 执行：
 
+也可在实例详情“导出代码”取得纯源码包（`GET /api/instances/{id}/code-export`），包含上述 Python 源码和配置模板。导出会清空实际启动输入和原机器解释器路径；先根据 inputs.json 填写配置。上传文件、非 Python 业务资源和执行现场不包含在代码包中。
+
 ```powershell
 python flow.py --help
 python flow.py --mode serial

@@ -11,6 +11,8 @@ import RunTimeline from '@/components/history/RunTimeline.vue'
 import TaskPanel from '@/components/tasks/TaskPanel.vue'
 import type { InstanceStatus, ReviewTask, RunRecord } from '@/domain/types'
 import { errorText } from '@/services/api'
+import { downloadFile } from '@/services/download'
+import { instanceCodeExportUrl } from '@/services/instances'
 import { useInstancesStore } from '@/stores/instances'
 
 const route = useRoute()
@@ -23,6 +25,7 @@ const selectedNodeId = ref<string | null>(null)
 const activeTab = ref<'runs' | 'paths' | 'trace'>('runs')
 const refreshing = ref(false)
 const terminating = ref(false)
+const exportingCode = ref(false)
 /** 卡片里正在看执行详情的节点；同一时刻只允许一个 */
 const inspectNodeId = ref<string | null>(null)
 /** 只用于把待办卡片的点击传导到画布，画布自身上报的选中不需要回打 */
@@ -52,6 +55,20 @@ const formatTime = (value?: string | null): string =>
   value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
 
 const detail = computed(() => store.detail)
+const canExportCode = computed(() => detail.value?.runtime?.engine === 'python/v1')
+
+async function exportCode(): Promise<void> {
+  if (exportingCode.value || !canExportCode.value) return
+  const id = instanceId.value
+  exportingCode.value = true
+  try {
+    await downloadFile(instanceCodeExportUrl(id), `diagnosis-${id}-code.zip`)
+  } catch (error) {
+    ElMessage.error(errorText(error, '导出代码失败'))
+  } finally {
+    exportingCode.value = false
+  }
+}
 const canTerminate = computed(() =>
   detail.value ? ['running', 'waiting', 'paused'].includes(detail.value.status) : false,
 )
@@ -228,6 +245,9 @@ function onInspect(nodeId: string): void {
           快照 {{ formatTime(detail.snapshot.capturedAt) }}
         </span>
         <el-button size="small" :loading="refreshing" @click="reload">刷新</el-button>
+        <el-button v-if="canExportCode" size="small" :loading="exportingCode" @click="exportCode">
+          导出代码
+        </el-button>
         <el-button
           v-if="canTerminate"
           type="danger"

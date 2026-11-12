@@ -126,6 +126,7 @@ backend/.venv/Scripts/python scripts/build_bundle.py
 - 流程列表「导出」导当前在线版本；版本页「导出」导指定的发布版本
 - 包内是 `workflow.json`、`attachments/` 和 `manifest.json`；业务工程代码不打包，manifest 里记录依赖的工程与函数
 - 「导入」支持 `.zip`，附件按内容重新入库；内容没变时哈希不变，引用不用改
+- 实例详情的“导出代码”下载该次生成的流程、运行库及业务 Python 源码，附输入配置模板；不包含依赖环境、上传文件或执行现场。它与流程导出是不同的 ZIP，不能作为流程包回导。
 
 ## 内网其他机器访问
 
