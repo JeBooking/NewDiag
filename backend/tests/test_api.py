@@ -391,6 +391,31 @@ def test_project_registration_and_discovery(client):
     assert client.get("/api/projects/missing/functions").status_code == 404
 
 
+def test_plain_class_project_catalog(client):
+    project_dir = BACKEND_DIR.parent / 'examples' / 'composed-basic' / 'data_tools'
+    created = client.post('/api/projects', json={
+        'name': '普通数据工程', 'path': str(project_dir), 'module': 'records',
+    })
+    assert created.status_code == 200, created.text
+    project_id = created.json()['id']
+
+    legacy = client.get(f'/api/projects/{project_id}/functions')
+    assert legacy.status_code == 200
+    assert legacy.json() == []
+    catalog = client.get(f'/api/projects/{project_id}/functions?catalog=true&module=records')
+    assert catalog.status_code == 200, catalog.text
+    entries = {entry['name']: entry for entry in catalog.json()}
+    assert {'Dataset', 'Dataset.from_file', 'Dataset.series'} <= entries.keys()
+    assert entries['Dataset']['kind'] == 'constructor'
+    assert entries['Dataset.from_file']['kind'] == 'class_method'
+    assert entries['Dataset.series']['kind'] == 'instance_method'
+    assert entries['Dataset']['params'][0]['name'] == 'values'
+
+    broken = client.get(f'/api/projects/{project_id}/functions?catalog=true&module=missing_module')
+    assert broken.status_code == 422
+    assert 'missing_module' in broken.json()['detail']
+
+
 def register_demo_project(client, tmp_path, name: str = "冷却系统") -> dict:
     """在本机真实目录里造一个可 import 的工程，让 probe 子进程能跑起来。"""
     project_dir = tmp_path / "demo-project"

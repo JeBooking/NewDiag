@@ -6,13 +6,14 @@ import { errorText } from '@/services/api'
 import {
   createProject,
   deleteProject,
-  fetchProjectFunctions,
+  fetchProjectCatalog,
   listProjects,
   refreshProject,
   updateProject,
   type CreateProjectPayload,
   type Project,
   type ProjectFunction,
+  type ProjectFunctions,
 } from '@/services/projects'
 
 const projects = ref<Project[]>([])
@@ -34,6 +35,7 @@ const drawerVisible = ref(false)
 const functionsLoading = ref(false)
 const activeProject = ref<Project | null>(null)
 const functions = ref<ProjectFunction[]>([])
+const functionsError = ref('')
 
 const editVisible = ref(false)
 const editSaving = ref(false)
@@ -153,15 +155,29 @@ async function remove(row: Project): Promise<void> {
   }
 }
 
+async function discover(row: Project): Promise<ProjectFunctions> {
+  return row.factory
+    ? refreshProject(row.id)
+    : { functions: await fetchProjectCatalog(row.id, row.module), error: null }
+}
+
 async function refresh(row: Project): Promise<void> {
   refreshingId.value = row.id
   try {
-    const result = await refreshProject(row.id)
+    const result = await discover(row)
     if (result.error) ElMessage.warning(`接口发现失败：${result.error}`)
     else ElMessage.success('已重新发现接口')
-    if (activeProject.value?.id === row.id) functions.value = result.functions
+    if (activeProject.value?.id === row.id) {
+      functions.value = result.functions
+      functionsError.value = result.error ?? ''
+    }
   } catch (err) {
-    ElMessage.error(errorText(err, '刷新失败'))
+    const message = errorText(err, '刷新失败')
+    if (activeProject.value?.id === row.id) {
+      functions.value = []
+      functionsError.value = message
+    }
+    ElMessage.error(message)
   } finally {
     refreshingId.value = null
   }
@@ -170,10 +186,14 @@ async function refresh(row: Project): Promise<void> {
 async function loadFunctions(row: Project): Promise<void> {
   functionsLoading.value = true
   functions.value = []
+  functionsError.value = ''
   try {
-    functions.value = await fetchProjectFunctions(row.id)
+    const result = await discover(row)
+    functions.value = result.functions
+    functionsError.value = result.error ?? ''
   } catch (err) {
-    ElMessage.error(errorText(err, '读取接口失败'))
+    functionsError.value = errorText(err, '读取接口失败')
+    ElMessage.error(functionsError.value)
   } finally {
     functionsLoading.value = false
   }
@@ -273,7 +293,7 @@ function signatureText(fn: ProjectFunction): string {
           <el-input v-model="form.python" placeholder="python" />
         </el-form-item>
         <el-form-item label="工厂函数">
-          <el-input v-model="form.factory" placeholder="留空则直接取模块级函数" />
+          <el-input v-model="form.factory" placeholder="组合接入留空；旧实例工厂按需填写" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -298,7 +318,7 @@ function signatureText(fn: ProjectFunction): string {
           <el-input v-model="editForm.python" placeholder="留空则使用后端默认解释器" />
         </el-form-item>
         <el-form-item label="工厂函数">
-          <el-input v-model="editForm.factory" placeholder="留空则直接取模块级函数" />
+          <el-input v-model="editForm.factory" placeholder="组合接入留空；旧实例工厂按需填写" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -309,7 +329,8 @@ function signatureText(fn: ProjectFunction): string {
 
     <el-drawer v-model="drawerVisible" :title="activeProject?.name || '接口'" size="520px">
       <div v-loading="functionsLoading" class="functions">
-        <el-empty v-if="!functionsLoading && !functions.length" description="没有发现可用接口" :image-size="60" />
+        <el-alert v-if="functionsError" :title="functionsError" type="error" :closable="false" show-icon />
+        <el-empty v-if="!functionsLoading && !functionsError && !functions.length" description="没有发现可用接口" :image-size="60" />
         <div v-for="fn in functions" :key="fn.name" class="function">
           <div class="signature">{{ signatureText(fn) }}</div>
           <div v-if="fn.doc" class="doc">{{ fn.doc }}</div>

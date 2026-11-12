@@ -112,6 +112,9 @@ def project_functions(project_id: str, db: Session = Depends(get_db),
         result = probe({'name': project.name, 'path': project.path,
                         'python': project.python, 'module': module or project.module,
                         'factory': '', 'catalog': True})
+        logger.info('普通接口发现 project=%s module=%s count=%s error=%s',
+                    project.name, module or project.module, len(result.get('functions', [])),
+                    result.get('error'))
         if result.get('error'):
             raise HTTPException(status_code=422, detail=result['error'])
         return [ProjectFunction(**item) for item in result['functions']]
