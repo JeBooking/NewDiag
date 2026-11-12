@@ -1,6 +1,6 @@
 # NewDiag 诊断类开发手册
 
-适用协议：`diagnosis/v1`，对应规格 v1.13。面向编写、接入业务诊断代码的开发者。
+适用协议：`diagnosis/v1`，对应规格 v1.14。面向编写、接入业务诊断代码的开发者。
 本文描述当前已实现的接口；设计契约以 [spec.md](spec.md) 为准。
 
 开发路径：先运行现成 example，再替换数据接口与判断逻辑，最后在画布上编排方法。
@@ -17,9 +17,9 @@
 | 按需资源 | 带 `@resource(...)` 的方法 | 首次访问获取、解析，随后复用 |
 | 人工动作／判断 | 平台待办 | 等待人提交，再按图继续 |
 
-类由业务工程提供，画布选择它的方法并编排连接。执行顺序、分支、人工待办、回退和终止由平台调度器管理。
+类由业务工程提供，画布选择它的方法并编排连接。平台将流程生成 Python，运行库调用方法并选择分支；平台附加待办、执行记录、回退及进程管理。
 
-同一次逻辑诊断不保证始终使用同一个 Python 内存对象：人工等待时会关闭业务进程，继续执行时重建对象并恢复数据。
+人工等待期间进程及对象持续存活，收到回复后从等待点继续。回退和并行新分支从已有数据恢复对象，不重新调用构造器或 initialize。
 
 ```mermaid
 flowchart TD
@@ -33,13 +33,13 @@ flowchart TD
     G --> H
     H --> I{需要人工处理}
     I -->|否| D
-    I -->|是| J[固定数据版本并关闭进程]
+    I -->|是| J[进程保持存活并等待输入]
     J --> K[人工提交]
-    K --> L[后续业务调用时重建对象并恢复数据]
+    K --> L[从等待点继续执行]
     L --> D
 ```
 
-图中省略终止分支。人工判断提交本身只记录选择，不重跑之前的业务方法；需要执行下一个业务方法时才重建对象。
+图中省略终止分支。人工判断提交本身只记录选择，不重跑之前的业务方法。
 
 ## 2. 先运行现成 example
 
@@ -86,7 +86,7 @@ $env:PYTHONPATH = 'D:\Projects\NewDiag\backend\app\worker'
 
 | 示例 | 观察点 |
 |---|---|
-| [workflow-parallel.json](../examples/diagnosis-instance/workflow-parallel.json) | 同级分支对相同资源请求只加载一次；改成串行仍可复用 |
+| [workflow-parallel.json](../examples/diagnosis-instance/workflow-parallel.json) | 启动时选择串行或并行；串行复用缓存，并行分叉后的新增缓存独立 |
 | [workflow-requests.json](../examples/diagnosis-instance/workflow-requests.json) | 通道、解析倍率不同的请求各自加载，不误用缓存 |
 
 ## 3. 开发一个业务类
@@ -111,7 +111,7 @@ import logging
 import os
 from pathlib import Path
 
-from diagnosis_sdk import Diagnosis, resource
+from diagnosis_sdk import Data, Diagnosis, resource
 
 __all__ = ["MotorDiagnosis"]
 logger = logging.getLogger(__name__)
@@ -129,7 +129,6 @@ class MotorDiagnosis(Diagnosis):
     def initialize(self, device_id: str, time_point: str):
         self.device_id = device_id
         self.time_point = time_point
-        self.checked_nodes = []
         logger.info("启动获取报告 device=%s time=%s", device_id, time_point)
         raw = (BASE / "measurements.json").read_text(encoding="utf-8")
         logger.info("启动解析报告")
@@ -138,7 +137,7 @@ class MotorDiagnosis(Diagnosis):
                          if row["device_id"] == device_id and row["time_point"] == time_point), None)
         if selected is None:
             raise ValueError("设备在指定时间没有报告")
-        self.report = selected
+        self.dataset = Data(report=selected)
 
     @resource(version="1")
     def waveform(self, device_id: str, time_point: str, channel: str = "A", scale: float = 1):
@@ -155,8 +154,7 @@ class MotorDiagnosis(Diagnosis):
                 "device_id": device_id, "time_point": time_point, "channel": channel}
 
     def check_voltage(self):
-        self.checked_nodes.append("voltage")
-        report = self.report
+        report = self.dataset.report
         value = report["voltage"]
         return {"presentation": {"blocks": [{"type": "metrics", "items": [
             {"label": "母线电压", "value": value, "unit": "V"},
@@ -165,12 +163,10 @@ class MotorDiagnosis(Diagnosis):
             "reason": f"启动报告电压 {value}V，与阈值 {self.voltage_limit}V 比较"}
 
     def check_waveform(self, channel: str = "A", scale: float = 1):
-        self.checked_nodes.append("waveform")
         value = self.waveform(self.device_id, self.time_point, channel, scale)
         return self._waveform_result(value)
 
     def review_waveform(self):
-        self.checked_nodes.append("review")
         value = self.waveform(device_id=self.device_id, time_point=self.time_point)
         result = self._waveform_result(value)
         result.pop("result")
@@ -178,8 +174,7 @@ class MotorDiagnosis(Diagnosis):
         return result
 
     def confirm_waveform(self):
-        logger.info("等待恢复后保留的成员 checked_nodes=%s", self.checked_nodes)
-        self.checked_nodes.append("confirm")
+        logger.info("等待后继续使用固定数据 pid=%s", os.getpid())
         value = self.waveform(self.device_id, self.time_point)
         return self._waveform_result(value)
 
@@ -219,17 +214,12 @@ class MotorDiagnosis(Diagnosis):
 公开接口必须同步、参数显式命名并支持关键字传参；不支持 `async def`、`*args`、`**kwargs` 或位置专用参数。
 默认值必须能用 JSON 表达。`version` 和资源的 `version` 都必须是非空字符串。
 
-### 3.2 首次创建与等待恢复
+### 3.2 首次创建与等待
 
-正常开发使用 `self.report`、`self.device_id`、`self.checked_nodes` 等成员，名称和读写方式由业务代码决定。
-不需要声明持久化成员，也不需要把已有成员改成 `self.data[...]`。
+首次启动按 `__init__` → `initialize` 执行。模块自有的数据对象使用 `Data`，名称可自定，例如 `self.dataset`；平台不规定其业务字段。小型固定配置仍可使用普通成员。
+人工等待只阻塞进程，不重建对象、不重新获取或解析数据。回退时复用目标到访结果，恢复固定数据后直接调用新后继。
 
-首次启动按 `__init__` → `initialize` 执行。人工等待前保存整个业务对象，继续时由 Python 对象快照还原，
-不重跑 `__init__` 和 `initialize`，也不重新获取、解析已有数据。
-因此普通成员在节点中发生的更新也会保存，构造配置恢复时不会重新覆盖这些成员。
-
-可以直接构造业务类、调用 initialize 和普通方法进行独立开发；没有平台上下文时，
-`@resource` 方法按普通方法执行。实例范围缓存、持久快照和完整流程调度由平台运行时提供。
+可以直接构造业务类、调用 initialize 和普通方法进行独立开发；没有运行上下文时，`@resource` 按普通方法执行。完整流程运行使用生成目录中的 `python flow.py`，人工输入由终端接收。
 
 ## 4. 参数分别放在哪里
 
@@ -312,29 +302,27 @@ initialize 在启动时执行，其必填参数仍需在开始节点准备；后
 
 ## 5. 普通成员与按需缓存
 
-### 5.1 共享数据就是普通 Python 成员
-
-在 initialize 中正常赋值：
+### 5.1 模块自有的一次写入数据对象
 
 ```python
-self.device_id = device_id
-self.report = report
-self.checked_nodes = []
+from diagnosis_sdk import Data
+
+# initialize 中创建，业务字段和加载时机由模块决定。
+self.dataset = Data(report=report)
+
+# 节点需要时再加载；未定义成员表示尚未取得。
+if 'waveform' not in self.dataset:
+    self.dataset.waveform = load_waveform()
+value = self.dataset.report['voltage']
 ```
 
-节点中按原有代码方式读取、修改：
+同一成员首次填充后禁止覆盖或删除；另一种数据形态使用另一成员。例如原始字节放 raw_report，解析结果放 report。
+dict、list、set 会递归变为只读映射、元组、冻结集合；自定义类、数组等由模块保证不修改。None、零、空集合均是已取得值，不代表“尚未加载”。
+不能放网络连接、锁、文件句柄或变化的“当前步骤”到数据容器；节点结论通过返回值交给运行记录。
+人工输入应先校验再写入固定成员；业务校验失败保留原待办，允许修正未被接受的输入。
+不要在普通成员中另外保留同一份大数据，否则仍会进入兼容对象快照。
 
-```python
-voltage = self.report['voltage']
-self.checked_nodes.append('check_voltage')
-```
-
-这些成员默认都保存、恢复，包括构造器成员、私有成员和节点后续新增或修改的成员。
-不要求固定命名为 self.data，也不要求列出哪些成员应持久化。
-成员之间的共享引用和循环引用随同一个 Python 对象图保存。
-
-普通成员保持 Python 自身的共享、赋值和原地修改语义；如果节点需要一份独立副本，由业务代码显式复制。
-平台不会把普通 self 成员改造成只读容器，也不会在恢复时用构造器重新覆盖它们。
+每次保存只写新成员内容；之前的成员使用产物引用，不扫描整个内存对象寻找变化，也不复制整份数据。读取不返回副本。
 
 ### 5.2 按需缓存：@resource
 
@@ -372,21 +360,17 @@ again = self.waveform(
 - 读取失败、解析失败要抛异常，不要返回 `None` 冒充成功，否则它会成为成功的空缓存。
 - 同一资源键的并发请求合并加载，等待者共享该次结果；失败不成为成功缓存。
 - 节点在资源加载成功后判断失败，已成功加载的资源仍会保存，后续重执行可以复用。
-- 当前同一实例的画布“并行”节点由调度器逐个调用；不要把并行分支理解为多个节点方法同时运行。
+- 串行路径共用缓存。并行路径真实分进程，分叉前的数据可继承，分叉后的加载独立，不做跨进程缓存合并。
 
 业务异常不会自动重试整个节点；“失败不缓存”只表示后续再次请求仍可加载。
-平台对超时或进程崩溃重试一次，业务接口必须只读、可重复调用，不能把取数和修改设备状态放在一起。
+新引擎对超时或进程崩溃结束当前路径，释放名额继续队列；不自动重跑已完成节点。业务取数接口应只读。
 
-### 5.4 全量恢复与后续 TODO
+### 5.4 保存边界与兼容
 
-当前按“业务对象全部需要恢复”实现，使用实例隔离的 Python pickle 快照保存对象图，
-支持普通字典、自定义类、元组、集合、字节串等可序列化 Python 状态，不使用 repr 冒充数据。
-恢复范围、连接／文件句柄／锁等运行资源的排除或重建，以及大对象快照成本，记入 [TODO](todo.md)，本轮不作筛选设计。
-无法序列化的对象会明确报错，不会静默跳过成员。
-
-旧 self.data 容器和已有 JSON 产物保留兼容读取，已有业务可以继续使用；新接入不必采用它。
-Python 快照只从平台本实例保存的产物恢复，不把上传附件当作 Python 快照加载。
-对外的 presentation 和节点返回 data 仍遵循展示／JSON 协议，不能把任意 Python 对象直接发给页面。
+`Data` 成员使用 Python 产物保存一次，业务对象快照中的 Data 仅保存成员引用。节点输出单独保存，并由到访历史引用。
+旧普通成员仍支持 pickle 整体保存，不自动获得增量效果；大数据应迁移到 Data。已有 `@resource` 返回值仍只保存首次结果，读取返回隔离副本以维持旧契约。
+没有序列化能力的成员会明确报错，不静默省略；本轮不实现任意连接、会话、线程或调用栈恢复。
+Python 产物只从本实例创建的存储恢复，不把上传附件当作 pickle 加载。展示仍使用 JSON／blocks 协议。
 
 ## 6. 排查方法返回什么
 
@@ -436,7 +420,7 @@ return {
 }
 ```
 
-平台保存本次展示与数据版本，关闭业务进程，生成判断待办。
+平台保存本次展示并生成判断待办，业务进程持续存活。
 执行人填写依据并选是／否后，平台直接推进分支，不重新调用该方法。
 后续节点如果需要业务对象，会重新构造并恢复已有数据。
 
@@ -547,45 +531,28 @@ def present(parsed):
 当前新建流程默认已有诊断实例配置骨架，但工程、类名和版本为空，需要实际选择后才能发布。
 导入现有流程保持其原有配置，不会强制改成实例模式。
 
-## 8. 人工等待、回退与重新测量
+## 8. 人工等待、回退与并行
 
-### 8.1 正常人工等待
+### 8.1 人工等待
 
-| 时机 | 执行内容 |
-|---|---|
-| 首次启动 | `__init__` → 平台注入容器 → `initialize` |
-| 连续自动排查 | 复用存活对象及内存成员，逐节点保存对象和缓存版本 |
-| 人工等待 | 保存数据与缓存版本，关闭会话、释放对象 |
-| 继续后的业务调用 | 从快照还原 Python 对象及缓存 → 调用后续方法 |
+生成代码发出待办并同步等待回复。平台由待办页面接收，独立运行由终端输入。等待期间进程和对象存活，等待时间不计入自动步骤超时。
+没有 pickle 调用栈的步骤；数据保存用于分支与回退，不是恢复人工等待的前提。
 
-恢复时不调用 `__init__` 或 `initialize`，已有缓存不会再执行业务获取或解析。
-Python 对象快照的序列化和反序列化仍有开销，不应把“无需重新采集解析”理解为没有任何恢复成本。
+### 8.2 回退
 
-### 8.2 回退绑定具体到访的数据
+在人工等待、串行暂停或失败时，选择已完成的具体到访 B 和新的后继。B 的输出直接复用，不执行 B，不重问 B 的人工数据。
+原进程及所有未完成路径、待办取消；新路径只继承 B 及祖先输出。固定数据保留该独立分支已经取得的内容，回退不会将已取得成员清空。
+已有运行记录不删除，旧执行代消息不能再推进实例。开始和终止节点不能作为目标，生成引擎没有 retry 模式。
 
-同一执行代的节点共享当前资源视图，包括同级分支。
-回退创建新的执行代，继承所选那次到访的数据版本，不读取整个实例曾经出现过的“最新缓存”。
+### 8.3 串行与并行启动配置
 
-| 回退目标当时的状态 | 后续行为 |
-|---|---|
-| 已加载资源 A | 重执行目标节点时继续复用该版本 A |
-| 尚未加载资源 A | 后续第一次需要 A 时才加载 |
-| 较晚到访才加载资源 B | 回到较早到访时不会把 B 混入其资源视图 |
+模式不属于流程设计，启动时选择。串行深度优先，一条思路失败后继续下一条同级思路；成功仍有队列时选择结束／继续。
+并行把同级思路放入独立进程，原进程继续第一个子分支，其余排队；无后继只结束当前路径，不再次跳转同级路径。
+上限默认 4，可设 1–128。人工等待占名额，分支退出释放名额。模块会话子进程属于分支，不另计一个排查名额。
 
-重执行节点会重新进行展示、判断等方法逻辑，不代表自动清空已有资源。
-回退也不会撤销执行人已经完成的设备操作。
+### 8.4 平台重启
 
-### 8.3 处置后需要新数据
-
-人工处置不会隐式刷新缓存。例如旧请求查询 08:00 的电压，修复后再次查询 08:00，仍应得到原请求的历史数据。
-需要复测时，让业务方法明确发起一个不同的新请求，例如传入 09:00 的测量时刻。
-本次实现没有自动过期时间、清空全部缓存或通用刷新按钮，不要在接入代码里假设这些能力已经存在。
-
-### 8.4 进程故障与平台重启
-
-人工等待后的恢复属于当前实现。平台进程整体重启后自动续跑尚未实现。
-超时、业务进程崩溃可能触发重试；若成功采集的数据尚未形成可用检查点，重试可能再次获取。
-业务代码不能依赖“整个故障期间只调用一次”的保证。
+本轮不实现服务重启后自动续跑。常驻人工等待与平台进程重启是不同的场景。解释器及依赖环境仍由部署方维护。
 
 ## 9. 日志、定位和故障处理
 
@@ -601,7 +568,7 @@ $env:NEWDIAG_LOG_LEVEL = 'DEBUG'
 默认平台日志在 `backend/logs/app.log`。实例 ID 可串联会话启动、调用、关闭与节点结果。
 SDK 会记录「诊断资源首次加载」「诊断资源缓存命中」；完整 example 另外记录初始化和对象 pid。
 判断是否重复采集，看资源加载日志和「诊断对象由快照恢复」日志。
-新的全量对象快照恢复不会再次执行构造器，示例的 checked_nodes 日志可核对普通成员是否保留。
+示例 pid 可核对等待期间进程未更换；回退及并行新进程恢复数据时不重新运行构造器和 initialize。
 
 | 现象 | 优先检查 |
 |---|---|
@@ -611,8 +578,8 @@ SDK 会记录「诊断资源首次加载」「诊断资源缓存命中」；完�
 | 初始化或旧函数发布提示必填参数缺少来源 | 开始节点声明、作用域、节点 `params`，以及 Python 默认值；实例方法无来源必填参数可现场填写 |
 | 对象快照保存失败 | 查看具体成员类型的序列化错误；当前不自动排除成员，后续边界见 TODO |
 | 等待后普通成员不符 | 核对所选到访的数据版本、对象快照和业务自身的序列化钩子，不能重新采集替代恢复 |
-| 旧 self.data 在排查阶段写入报错 | 旧容器仍按兼容规则处理；新接入使用普通 self.report 等成员 |
-| 资源反复获取 | 有效参数是否变化；是否发生超时／崩溃；是否回到尚未加载的历史版本 |
+| 旧 self.data 在排查阶段写入报错 | 旧容器仍按兼容规则处理；新接入使用自有 Data 容器，例如 self.dataset |
+| 资源反复获取 | 有效参数是否变化；是否发生超时／崩溃；是否进入独立的并行分支 |
 | 缺数据却一直命中缓存 | 是否把失败转换成正常 `None`；需要失败时应抛异常 |
 | 版本或接口与发布计划不符 | 是否覆盖了正在运行实例依赖的类、方法或资源定义 |
 | 产物缺失／损坏 | 检查数据目录和备份，不能用重新采集伪装历史恢复 |
@@ -624,26 +591,23 @@ SDK 会记录「诊断资源首次加载」「诊断资源缓存命中」；完�
 
 ### 10.1 版本管理
 
-`Diagnosis.version` 表示诊断类协议版本，`@resource(version=...)` 表示资源逻辑版本。
-改动方法签名、构造配置、资源定义或数据格式后，更新对应版本并重新发布流程。
-实现代码本身不会被平台归档；函数签名没变也不代表算法没变，算法变更仍需业务方管理版本。
-
-如果旧实例还在等待，保留它依赖的旧工程代码和解释器。发布快照不能代替业务工程版本归档。
-可以为不同部署版本使用独立工程目录和工程登记名，避免覆盖仍在使用的代码。
+发布固定图编排及模块引用。新实例启动时读取当前模块，校验参数来源并复制源码；已经运行的实例继续使用自己的源码，下一次启动使用更新实现。
+更新算法可继续使用兼容的旧 flow；删除方法、改变必填参数等不兼容变更仍需修改绑定并重新发布。版本值需准确反映模块变更。
+源码副本不包括依赖环境，部署方仍须维护所用解释器及依赖包。旧解释引擎实例仍依赖原工程目录。
 
 ### 10.2 从已有业务类迁移
 
 1. 将本次诊断的启动参数和主要数据准备放在 initialize；已有构造器只在首次创建时执行，恢复不重跑它。
-2. 保留现成的 self.report 等普通成员，节点继续按原有属性读写方式使用它们；默认全部恢复。
+2. 将共享大数据放入自有 Data 成员，先写一次再只读；删除节点对既有数据的原地修改。
 3. 将后续才需要的数据加载提取为资源方法，补齐请求参数并添加 `@resource`。
 4. 将各排查逻辑整理成公开方法，内部辅助逻辑使用 `_` 方法。
 5. 将桌面展示替换为 `presentation.blocks`，将自动判断返回为 `result` 和 `reason`。
-6. 暂按对象整体恢复接入，运行资源的保存、排除和重建边界留待 TODO；保存失败时根据具体错误定位，不静默省略成员。
+6. 不把连接、锁或文件句柄当作业务数据保存；保存失败时根据具体错误定位，不静默省略成员。
 7. 在新流程中选择诊断类并编排方法；保留旧流程继续使用原协议，不原地改变其契约。
 
 ### 10.3 数据运维
 
-默认备份整个 `backend/data`，包括 SQLite 和 `artifacts` 目录；设置了 `NEWDIAG_DATA_DIR` 时，备份实际配置的数据目录。
+默认备份整个 `backend/data`，包括 SQLite、上传文件、旧 `artifacts` 和新 `executions` 目录；设置了 `NEWDIAG_DATA_DIR` 时，备份实际配置的数据目录。
 只备份数据库无法恢复业务产物。
 产物不可变，暂不自动回收。不要按文件时间删除“看起来旧”的数据，历史运行和回退可能仍引用它们。
 部署路径、日志及环境变量详见 [部署手册](deploy.md)。
@@ -657,13 +621,16 @@ SDK 会记录「诊断资源首次加载」「诊断资源缓存命中」；完�
 | [session.py](../backend/app/worker/session.py) | 业务进程请求分发与诊断运行时 |
 | [compiler.py](../backend/app/services/compiler.py) | doc 校验、类绑定、方法参数编译 |
 | [signatures.py](../backend/app/services/signatures.py) | 发布／运行的接口指纹 |
-| [scheduler.py](../backend/app/services/scheduler.py) | 初始化、调用方法、待办、数据视图和回退 |
+| [generated_runner.py](../backend/app/services/generated_runner.py) | 平台事件记录、待办、进程上限、回退 |
+| [generated_runtime.py](../backend/app/worker/generated_runtime.py) | 生成代码的调用、分支推进和终端输入 |
+| [data_store.py](../backend/app/worker/data_store.py) | 模块自有只读数据及新增成员引用 |
+| [scheduler.py](../backend/app/services/scheduler.py) | 旧实例解释执行兼容 |
 | [artifacts.py](../backend/app/worker/artifacts.py) | 不可变 JSON 产物、字段读取及 Python 对象快照 |
 | [models.py](../backend/app/models.py) | `diagnosis_states` 引用记录，`seq` 确定保存顺序 |
 | [FlowPanel.vue](../src/components/panels/FlowPanel.vue) | 流程诊断类配置 |
 | [DiagnosisMethodEditor.vue](../src/components/panels/DiagnosisMethodEditor.vue) | 排查实例方法选择 |
 | [types.ts](../src/domain/types.ts) | 前端 doc／plan 类型契约 |
-| [test_diagnosis_instance.py](../backend/tests/test_diagnosis_instance.py) | 真实进程等待恢复、缓存与回退检查 |
+| [test_diagnosis_instance.py](../backend/tests/test_diagnosis_instance.py) | 旧引擎检查；不作为生成引擎已验证的证据 |
 
 修改平台前先读 [AGENTS.md](../AGENTS.md) 和 [spec.md](spec.md)，契约变化需同步规格与前后端类型。
 当前用户约定需求开发完成后不要求主动测试；如果要推送，仍必须按仓库要求在仓库根目录执行：
