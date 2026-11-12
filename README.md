@@ -8,6 +8,9 @@
 
 设计细节见 [docs/spec.md](docs/spec.md)，协作规则见 [AGENTS.md](AGENTS.md)，**部署到内网服务器上长期运行**看 [docs/deploy.md](docs/deploy.md)。
 
+- [用户手册](docs/user-manual.md)：从示例开始，完成工程登记、流程编排、发布执行、人工待办与回退。
+- [开发者手册](docs/developer-manual.md)：普通 Python 模块接入契约、参数与展示映射、状态保存、生成执行及框架扩展入口。
+
 外部 Python 类和桌面应用改造，见 [模块接入手册](docs/module-integration.md)。
 开发新诊断类的完整步骤、接口和故障处理，见 [诊断类开发手册](docs/diagnosis-development-guide.md)。
 默认通过[通用组合接入](docs/composition-integration.md)配置原工程的对象、资源和操作，由平台生成串联代码，无需继承诊断基类。
@@ -79,7 +82,8 @@ backend/.venv/Scripts/python scripts/build_bundle.py
 
 画布上拖节点、连线。节点类型：开始、排查、排查动作、结论、处置措施、问题解决、上升。
 
-- 开始节点是唯一入口，不能删除；它声明的启动参数由下游绑定函数的签名派生
+- 开始节点是唯一入口，不能删除；组合模式在此声明全局启动参数，旧函数模式可从绑定签名派生参数
+- 组合模式在流程属性配置对象、固定资源和操作，排查节点选择操作；是否自动判断由操作的判断映射决定
 - 排查节点绑定了 Python 函数就自动判断，没绑定就是人工判断
 - 使用诊断类时，在流程属性选择业务类，在排查节点选择实例方法；启动参数由 initialize 及节点方法签名派生
 - 节点右上角显示校验问题数量，悬停能看到具体问题
@@ -177,7 +181,7 @@ pnpm dev:lan          # 访问 http://<那台机器的内网IP>:5173
 ```bash
 pnpm type-check                                  # 前端类型
 pnpm build                                       # 类型 + 打包
-backend/.venv/Scripts/python -m pytest backend/tests -q   # 后端 96 个用例
+backend/.venv/Scripts/python -m pytest backend/tests -q   # 后端回归检查
 ```
 
 三套端到端脚本（需要后端已启动，且先跑过 `demo_seed.py` 登记工程）：
