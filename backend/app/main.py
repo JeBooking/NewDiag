@@ -51,8 +51,8 @@ async def lifespan(_app: FastAPI):
         os.environ.get("NEWDIAG_DB") or "(默认 backend/data/newdiag.db)",
     )
     yield
-    from app.services.execution import scheduler
-    scheduler.shutdown()
+    from app.services.generated_runner import runner
+    runner.shutdown()
     logger.info("进程退出 pid=%s", os.getpid())
 
 

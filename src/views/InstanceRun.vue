@@ -66,7 +66,7 @@ async function start(): Promise<void> {
   try {
     const instance = await startInstance(flowId.value, {
       releaseId: latest.value.id,
-      input: formRef.value?.build() ?? { global: {}, scope: {} },
+      input: formRef.value?.build() ?? { global: {} },
     })
     await router.push({ name: 'instance', params: { id: instance.id } })
   } catch (err) {

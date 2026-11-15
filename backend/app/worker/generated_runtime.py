@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import artifacts, diagnosis_sdk, node_sdk
-from .function_pipeline import execute_pipeline
 from .composition_runtime import CompositionRuntime
 
 sys.modules.setdefault("diagnosis_sdk", diagnosis_sdk)
@@ -24,14 +23,6 @@ sys.modules.setdefault("node_sdk", node_sdk)
 
 def stamp():
     return datetime.now(timezone.utc).isoformat()
-
-
-def lookup(value, path):
-    for part in path.split("."):
-        if not part:
-            continue
-        value = value[int(part)] if isinstance(value, (list, tuple)) else value[part]
-    return value
 
 
 class Context:
@@ -164,37 +155,6 @@ class Context:
                 except (OSError, subprocess.TimeoutExpired):
                     process.kill()
 
-    def arguments_for(self, expressions, function=""):
-        result = {}
-        context = self.config["input"]
-        for name, expr in expressions.items():
-            try:
-                if "lit" in expr:
-                    value = expr["lit"]
-                elif "snapshot" in expr:
-                    source = {**context.get("global", context),
-                              **context.get("scope", {}).get(function, {})}
-                    value = lookup(source, expr["snapshot"])
-                else:
-                    record = artifacts.load(self.root, self.history[expr["run"]])
-                    parts = [part for part in expr.get("path", "").split(".") if part]
-                    section = parts.pop(0) if parts and parts[0] in ("input", "output") else "output"
-                    value = record[section]
-                    for part in parts:
-                        if artifacts.is_reference(value):
-                            value = artifacts.load(self.root, value)
-                        value = value[int(part)] if isinstance(value, list) else value[part]
-                    if artifacts.is_reference(value):
-                        value = artifacts.load(self.root, value)
-                if expr.get("file") and isinstance(value, dict):
-                    digest = value["hash"].removeprefix("sha256:")
-                    value = str(Path(self.config["fileRoot"]) / digest[:2] / digest)
-                result[name] = value
-            except (KeyError, IndexError, TypeError):
-                if not expr.get("optional"):
-                    raise ValueError(f"参数 {name} 的数据来源尚未取得")
-        return result
-
     def execute(self, node, step):
         self.node, self.output, self.evidence = node, None, {}
         self.arguments, self.started = {}, stamp()
@@ -206,19 +166,6 @@ class Context:
             self.branch = "default"
         elif self.config.get("composition") is not None and (step["kind"] == "start" or step.get("compositionOperation")):
             self.branch = self.composition(step)
-        elif step["kind"] == "start" and self.config.get("diagnosis"):
-            self.branch = self.diagnosis(step, initialize=True)
-        elif step.get("diagnosisMethod"):
-            self.branch = self.diagnosis(step)
-        elif step.get("pipeline"):
-            self.branch = self.pipeline(step)
-        elif step.get("call", {}).get("protocol") == "investigation/v1":
-            self.branch = self.adapter(step)
-        elif step.get("call"):
-            call = step["call"]
-            self.arguments = self.arguments_for(call.get("args", {}), call["function"])
-            self.output = self.invoke(call["project"], call["function"], self.arguments)
-            self.branch = self.decision(self.output) if step["kind"] == "investigation" else "default"
         elif step.get("human"):
             kind = "decision" if step["kind"] == "investigation" else "action"
             answer = self.ask({**self.prompt, "type": kind})
@@ -238,42 +185,6 @@ class Context:
         if result is False or isinstance(result, str) and result in ("no", "n", "false", "否"):
             return "no"
         raise ValueError("判断结果必须为布尔值或 yes/no")
-
-    def diagnosis(self, step, initialize=False):
-        binding = self.config["diagnosis"]
-        project = binding["project"]
-        method = step.get("diagnosisMethod", {})
-        function = binding["function"] + ("." + method["name"] if method else "")
-        base_arguments = self.arguments_for(binding["args"] if initialize else method["args"], function)
-        fields = method.get("inputs", [])
-
-        def invoke_method(answer=None):
-            self.arguments = {**base_arguments, **(answer["data"] if answer else {})}
-            request = {"class": binding["function"], "config": binding.get("config", {}),
-                       "definition": binding["definition"], "version": binding["version"],
-                       "artifactRoot": str(self.root), "fileRoot": self.config["fileRoot"],
-                       "operation": "initialize" if initialize else "method",
-                       "inputs": self.arguments if initialize else {},
-                       "arguments": self.arguments, "method": method.get("name"),
-                       "state": self.states.get(project)}
-            result = self.invoke(project, "__newdiag_diagnosis__", request)
-            self.states[project] = result["state"]
-            if result.get("error"):
-                raise RuntimeError(result["error"])
-            return result
-
-        result = self.human_step({**self.prompt, "type": "parameters", "fields": fields}, invoke_method) if fields else invoke_method()
-        if initialize:
-            self.output = {"initialized": True}
-            return "default"
-        value = result["result"]
-        self.evidence = {"presentation": value["presentation"]}
-        if value.get("result") is None:
-            answer = self.ask({**self.prompt, "type": "judgment", "presentation": value["presentation"],
-                               "pipeline": {"inputs": self.arguments}})
-            value.update(result=answer["result"], reason=answer.get("reason", "人工判断"))
-        self.output = value
-        return self.decision(value)
 
     def composition(self, step):
         def invoke(project, request):
@@ -303,62 +214,6 @@ class Context:
             value.update(result=answer['result'], reason=answer.get('reason', '人工判断'))
         self.output = value
         return self.decision(value)
-
-    def pipeline(self, step):
-        pipeline = step["pipeline"]
-        function = (pipeline.get("acquire") or {}).get("function", "")
-        state = {"inputs": self.arguments_for(pipeline.get("args", {}), function),
-                 "stages": [], "startedAt": self.started}
-        context = self.config["input"]
-        state["inputContext"] = {**context.get("global", context),
-                                 **context.get("scope", {}).get(function, {}), **state["inputs"]}
-        if pipeline.get("dataSource"):
-            source = pipeline["dataSource"]
-            value = artifacts.load(self.root, self.history[source["node"]])["output"]["data"]
-            state["parsed"] = artifacts.select(value, source.get("path", ""))
-        self.arguments = state["inputs"]
-
-        def invoke(binding, arguments):
-            references = {key: value for key, value in arguments.items() if artifacts.is_reference(value)}
-            return self.invoke(binding["project"], "__newdiag_function__", {
-                "function": binding["function"], "arguments": arguments,
-                "signature": binding.get("signature", []), "artifactArguments": references,
-                "artifactRoot": str(self.root), "fileRoot": self.config["fileRoot"],
-                "storeArtifact": bool(pipeline.get("preparation") and binding["_stage"] in ("acquire", "parse")),
-            })
-
-        response = execute_pipeline(pipeline, state, "start", invoke)
-        while response["status"] in ("acquisition", "judgment"):
-            phase = response["status"]
-            def resume(answer):
-                extra = {"data": answer.get("data")} if phase == "acquisition" else {"decision": answer}
-                return execute_pipeline(pipeline, state, phase, invoke, **extra)
-            response = self.human_step({**self.prompt, "type": phase, "fields": response.get("fields", []),
-                                        "presentation": state.get("presentation")}, resume)
-        self.evidence = {"presentation": state.get("presentation"), "pipeline": {"stages": state["stages"]}}
-        self.output = {"data": state["parsed"], **state.get("decision", {})}
-        return "default" if response["status"] == "prepared" else state["decision"]["result"]
-
-    def adapter(self, step):
-        call = step["call"]
-        self.arguments = self.arguments_for(call["args"], call["function"])
-        request = {"operation": "start", "inputs": self.arguments, "config": call.get("config", {}),
-                   "version": call["version"], "adapter": call["function"], "fileRoot": self.config["fileRoot"],
-                   "state": {"inputs": self.arguments, "stages": [], "startedAt": self.started}}
-        response = self.invoke(call["project"], "__newdiag_pipeline__", request)
-        while True:
-            state = response["state"]
-            if response["status"] == "complete":
-                break
-            phase = response["status"]
-            def resume(answer):
-                request.update(operation=phase, state=state, data=answer.get("data"), decision=answer)
-                return self.invoke(call["project"], "__newdiag_pipeline__", request)
-            response = self.human_step({**self.prompt, "type": phase, "fields": response.get("fields", []),
-                                        "presentation": state.get("presentation")}, resume)
-        self.output = {"data": state["parsed"], **state["decision"]}
-        self.evidence = {"presentation": state["presentation"], "pipeline": {"stages": state["stages"]}}
-        return state["decision"]["result"]
 
     def run(self, nodes, entry):
         node = entry

@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
 import { ensureLayout } from '@/components/canvas/autolayout'
-import type { DocEdge, DocNode, FlowDetail, FlowDoc, FlowMode, LintIssue } from '@/domain/types'
+import type { DocEdge, DocNode, FlowDetail, FlowDoc, LintIssue } from '@/domain/types'
 import { CURRENT_USER, isApiError } from '@/services/api'
 import {
   checkoutFlow,
@@ -24,15 +24,13 @@ function cloneDoc(doc: FlowDoc): FlowDoc {
 }
 
 /** 后端在没有 revision 时可能返回 {}，补齐成画布能消费的空文档 */
-function coerceDoc(raw: unknown, name: string, mode: FlowMode): FlowDoc {
+function coerceDoc(raw: unknown, name: string): FlowDoc {
   const record = raw && typeof raw === 'object' ? (raw as Partial<FlowDoc>) : {}
   return {
     format: 1,
     name: typeof record.name === 'string' && record.name ? record.name : name,
-    mode: record.mode === 'serial' ? 'serial' : record.mode === 'parallel' ? 'parallel' : mode,
     nodes: Array.isArray(record.nodes) ? record.nodes : [],
     edges: Array.isArray(record.edges) ? record.edges : [],
-    diagnosis: record.diagnosis,
     composition: record.composition,
   }
 }
@@ -158,7 +156,7 @@ export const useEditorStore = defineStore('editor', () => {
       hasLock.value = mine && Boolean(detail.workingRevisionId)
       flow.value = detail
       // 先补坐标再补开始节点：ensureStartNode 要按现有节点的 position 摆位置
-      const laid = ensureLayout(coerceDoc(detail.doc, detail.name, detail.mode))
+      const laid = ensureLayout(coerceDoc(detail.doc, detail.name))
       const prepared = ensureStartNode(laid.doc)
       doc.value = prepared.doc
       // 补出来的坐标和开始节点都要等用户保存才落库，这里只标脏、不抢锁不自动存
@@ -298,7 +296,7 @@ export const useEditorStore = defineStore('editor', () => {
       dirty.value = false
       saveIssues.value = result.issues ?? []
       lastSavedAt.value = new Date().toISOString()
-      if (result.doc) doc.value = coerceDoc(result.doc, result.name, result.mode)
+      if (result.doc) doc.value = coerceDoc(result.doc, result.name)
     } catch (error) {
       if (isApiError(error) && error.issues.length > 0) issues.value = error.issues
       throw error
@@ -333,12 +331,11 @@ export const useEditorStore = defineStore('editor', () => {
     reset()
   }
 
-  /** 名称/模式的修改走 PATCH，成功后同步本地，避免整页重开丢掉选中态 */
+  /** 名称的修改走 PATCH，成功后同步本地，避免整页重开丢掉选中态 */
   function patchFlowMeta(patch: Partial<FlowDetail>): void {
     if (!flow.value) return
     flow.value = { ...flow.value, ...patch }
     if (patch.name && doc.value) doc.value = { ...doc.value, name: patch.name }
-    if (patch.mode && doc.value) doc.value = { ...doc.value, mode: patch.mode }
   }
 
   function clearIssues(): void {

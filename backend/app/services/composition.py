@@ -299,8 +299,6 @@ def validate(configuration, nodes, functions=None):
                     errors.append(f"节点 {node['id']} 参数 {field['name']} 不能同时配置来源和现场输入")
             if set(node.get('operationArguments', {})) - set(operation.get('parameters', [])):
                 errors.append(f"节点 {node['id']} 包含操作未声明的参数")
-        if node.get('binding') or node.get('pipeline') or node.get('method') or node.get('kind') == 'dataPreparation':
-            errors.append('组合实例的节点统一选择排查操作')
     for resource in configuration.get('resources', []):
         if resource.get('trigger', 'lazy') not in ('startup', 'lazy'):
             errors.append(f"资源 {resource['id']} 的加载时机无效")

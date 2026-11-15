@@ -9,7 +9,6 @@ export interface InstanceFilter {
 export interface RollbackPayload {
   targetNodeId: string
   targetTokenId?: string
-  mode?: 'branch' | 'retry'
   branch?: string
   reason?: string
 }

@@ -62,9 +62,7 @@ function candidateKinds(sourceId: string): NodeKind[] {
     for (const edge of edgeMeta.values()) if (edge.from === sourceId) return []
   }
   return (Object.keys(KIND_META) as NodeKind[]).filter(
-    (kind) => !KIND_META[kind].entry && kind !== 'start'
-      && (!(props.doc.diagnosis || props.doc.composition) || kind !== 'dataPreparation')
-      && canConnect(source.kind, kind),
+    (kind) => !KIND_META[kind].entry && kind !== 'start' && canConnect(source.kind, kind),
   )
 }
 
@@ -255,10 +253,8 @@ function projectAll(preservePositions: boolean) {
       kind: meta.kind,
       title: meta.title ?? '',
       detail: meta.detail ?? '',
-      hasBinding: Boolean(meta.operation || meta.method || meta.pipeline || (meta.binding?.project && meta.binding?.function)),
-      executionLabel: meta.kind === 'dataPreparation' ? '数据准备'
-        : meta.operation ? '组合操作' : meta.method ? '实例方法'
-          : meta.pipeline?.dataSource ? '共享数据' : meta.pipeline ? '四阶段' : undefined,
+      hasBinding: Boolean(meta.operation),
+      executionLabel: meta.operation ? '组合操作' : undefined,
       hasTarget: !isStart && meta.id !== entry,
       paramCount: isStart ? (meta.inputs?.length ?? 0) : undefined,
       issues: byNode.get(meta.id) ?? [],
@@ -477,15 +473,13 @@ function commit() {
     docEdges.push({ ...meta, from: edge.source, to: edge.target })
   }
 
-  // 顶层字段（name/mode/snapshotFields 及将来新增的）原样带过去，画布只管 nodes/edges
+  // 顶层字（name 及将来新增的）原样带过去，画布只管 nodes/edges
   const next: FlowDoc = {
     ...props.doc,
     format: 1,
     nodes: docNodes,
     edges: docEdges,
   }
-  // 没填快照字段时不要凭空生出这个键
-  if (next.snapshotFields === undefined) delete next.snapshotFields
   const json = canonical(next)
   if (json === lastJson) return
   lastJson = json
@@ -552,11 +546,7 @@ function defaultTitle(kind: NodeKind) {
 
 function addNode(kind: NodeKind, position: { x: number; y: number }) {
   if (props.readonly) return
-  if ((props.doc.composition || props.doc.diagnosis) && kind === 'dataPreparation') return
   const node: DocNode = { id: nextId('n'), kind, title: defaultTitle(kind), detail: '', position }
-  if (kind === 'dataPreparation' || (kind === 'investigation' && !props.doc.diagnosis && !props.doc.composition)) {
-    node.pipeline = { manualFields: [] }
-  }
   nodeMeta.set(node.id, node)
   projectAll(true)
   emit('select-node', node.id)
@@ -871,8 +861,7 @@ defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom, focusNode })
       <FlowOverview />
       <Panel v-if="!readonly" position="top-left" class="palette-panel">
         <div class="palette-stack">
-          <NodePalette :disabled="readonly" :instance-mode="!!doc.diagnosis || !!doc.composition"
-            @add="(kind) => addNode(kind, centerPosition())" />
+          <NodePalette :disabled="readonly" @add="(kind) => addNode(kind, centerPosition())" />
           <div v-if="issues.length" class="issue-global-wrap" :class="globalWorst">
             <span class="issue-global-badge">
               <svg v-if="globalWorst === 'error'" viewBox="0 0 512 512" aria-hidden="true">

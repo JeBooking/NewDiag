@@ -3,13 +3,11 @@ export type FlowMode = 'parallel' | 'serial'
 export type NodeKind =
   | 'start'
   | 'investigation'
-  | 'dataPreparation'
   | 'investigationAction'
   | 'conclusion'
   | 'remediation'
   | 'problemSolved'
   | 'escalation'
-  | 'deepDiagnosis'
   | 'jump'
 
 export type Branch = 'yes' | 'no'
@@ -25,14 +23,6 @@ export interface InvestigationFields {
   assessment: string
 }
 
-export interface NodeBinding {
-  project: string
-  function: string
-  protocol?: 'investigation/v1' | 'diagnosis/v1'
-  version?: string
-  config?: Record<string, unknown>
-}
-
 export interface ManualField {
   name: string
   label?: string
@@ -45,52 +35,18 @@ export interface ManualField {
   description?: string
 }
 
-export type StageName = 'acquire' | 'parse' | 'present' | 'judge'
-
-export type StageArgument =
-  | { source: 'raw' | 'parsed' | 'decision' | 'inputs'; path?: string }
-  | { lit: unknown }
-  | { omit: true }
-
-export interface StageFunction {
-  project: string
-  function: string
-  arguments?: Record<string, StageArgument>
-}
-
-export interface FunctionPipeline {
-  dataSource?: { node: string; path?: string }
-  acquire?: StageFunction
-  parse?: StageFunction
-  present?: StageFunction
-  judge?: StageFunction
-  manualFields: ManualField[]
-}
-
 /** 开始节点参数的输入控件类型，由函数签名推导，作者可覆盖 */
 export type ParamType = 'text' | 'number' | 'boolean' | 'datetime' | 'file' | 'array' | 'object' | 'json'
 
 /**
- * 开始节点声明的一个启动参数。
- * - scope=global：全局参数，所有函数可用
- * - scope=function：只对该函数可见，覆盖同名全局参数
+ * 开始节点声明的一个启动参数；组合配置下都是全局输入。
  */
 export interface StartParam {
   name: string
-  scope: 'global' | 'function'
-  /** scope=function 时必填，函数名（不带工程名前缀） */
-  function?: string
   type?: ParamType
   /** 设计时默认值；执行时可改，改完固化进本次启动上下文 */
   default?: unknown
 }
-
-/** 参数来源：字段名（自动匹配）、快照字段、上游节点输出、常量 */
-export type ParamSource =
-  | string
-  | { lit: unknown }
-  | { snapshot: string }
-  | { run: string; path: string }
 
 export type CompositionArgument =
   | { lit: unknown }
@@ -140,16 +96,9 @@ export interface DocNode {
   detail: string
   fields?: InvestigationFields
   attachments?: AttachmentRef[]
-  binding?: NodeBinding
-  pipeline?: FunctionPipeline
-  method?: string
   operation?: string
   operationArguments?: Record<string, CompositionArgument>
   runtimeInputs?: ManualField[]
-  /** 该节点返回结构里的字段名，供下游绑定 */
-  outputs?: string[]
-  /** 参数名 → 来源；不填则按签名自动匹配 */
-  params?: Record<string, ParamSource>
   /** 仅 start 节点：本次诊断的启动参数声明 */
   inputs?: StartParam[]
   position: { x: number; y: number }
@@ -166,27 +115,22 @@ export interface DocEdge {
 export interface FlowDoc {
   format: 1
   name: string
-  mode?: FlowMode
-  diagnosis?: NodeBinding
   composition?: Composition
   nodes: DocNode[]
   edges: DocEdge[]
-  /** 旧版全局启动字段；新文档改用 start 节点的 inputs，读取时兼容 */
-  snapshotFields?: string[]
 }
 
-type BindingFields = 'binding' | 'pipeline' | 'method' | 'runtimeInputs' | 'params' | 'outputs' | 'operation' | 'operationArguments'
+type BindingFields = 'runtimeInputs' | 'operation' | 'operationArguments'
 
 /** 持久化与导出格式；编辑器使用 FlowDoc 投影，运行配置保存在实例中。 */
 export interface StoredFlow {
   format: 2
-  flow: Omit<FlowDoc, 'nodes' | 'mode' | 'diagnosis' | 'composition'> & {
+  flow: Omit<FlowDoc, 'nodes' | 'composition'> & {
     nodes: Omit<DocNode, BindingFields | 'position'>[]
   }
   bindings: {
     format: 1
-    diagnosis?: NodeBinding
-  composition?: Composition
+    composition?: Composition
     nodes: Record<string, Pick<DocNode, BindingFields>>
   }
   presentation: {
@@ -231,29 +175,11 @@ export type NodeTrailState = 'current' | 'dropped' | 'unvisited'
 /** 边是否被实际走过；dropped 表示走过但随回退作废 */
 export type EdgeTrail = 'taken' | 'dropped'
 
-export type ArgExpr =
-  | { lit: unknown }
-  /** optional=true 表示取不到值时省略该参数，交给函数自身默认值 */
-  | { snapshot: string; optional?: boolean; file?: boolean }
-  | { run: string; path: string; optional?: boolean }
-
-export interface PlanCall {
-  project: string
-  function: string
-  args: Record<string, ArgExpr>
-  protocol?: 'investigation/v1'
-  version?: string
-  config?: Record<string, unknown>
-}
-
 export interface PlanStep {
   kind: NodeKind
-  call?: PlanCall
   compositionOperation?: string
   operationInputs?: ManualField[]
   operationArguments?: Record<string, CompositionArgument>
-  diagnosisMethod?: { name: string; args: Record<string, ArgExpr>; inputs?: ManualField[] }
-  pipeline?: FunctionPipeline & { args: Record<string, ArgExpr> }
   human?: boolean
   text?: string
   next?: Record<string, string[]>
@@ -264,15 +190,10 @@ export interface Plan {
   format: 1
   flowId: string
   release: number
-  mode: FlowMode
   entry: string
   steps: Record<string, PlanStep>
   signature: Record<string, string>
   composition?: Composition
-  diagnosis?: NodeBinding & {
-    args: Record<string, ArgExpr>
-    definition: Record<string, unknown>
-  }
 }
 
 export type InstanceStatus =
@@ -330,10 +251,9 @@ export interface ReviewTask {
     attachments?: AttachmentRef[]
     instructions?: string
     nodeKind?: NodeKind
-    type?: 'decision' | 'action' | 'after_success' | 'acquisition' | 'judgment' | 'parameters'
+    type?: 'decision' | 'action' | 'after_success' | 'judgment' | 'parameters'
     fields?: ManualField[]
     presentation?: unknown
-    pipeline?: Record<string, unknown>
   }
   createdAt: string
   decidedAt?: string
@@ -352,7 +272,6 @@ export interface FlowSummary {
   id: string
   name: string
   description: string
-  mode: FlowMode
   updatedAt: string
   /** 所属目录，空表示未分类 */
   folderId?: string | null
@@ -373,8 +292,6 @@ export interface ReleaseSummary {
 /** 发布时冻结的启动表单字段，执行页只读它，不读当前代码 */
 export interface ReleaseInput {
   name: string
-  scope: 'global' | 'function'
-  function?: string
   type: ParamType
   required: boolean
   default?: unknown

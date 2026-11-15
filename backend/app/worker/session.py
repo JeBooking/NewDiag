@@ -23,19 +23,14 @@ import traceback
 from contextlib import redirect_stdout
 
 if __package__:
-    from . import artifacts, node_sdk, diagnosis_sdk
+    from . import diagnosis_sdk, node_sdk
     from .composition import CompositionRuntime
     sys.modules.setdefault("node_sdk", node_sdk)
     sys.modules.setdefault("diagnosis_sdk", diagnosis_sdk)
 else:
-    import artifacts
-    import node_sdk
     import diagnosis_sdk
+    import node_sdk
     from composition import CompositionRuntime
-
-execute_adapter = node_sdk.execute_adapter
-is_adapter = node_sdk.is_adapter
-json_value = node_sdk.json_value
 
 MAX_DEPTH = 5
 
@@ -51,7 +46,6 @@ def main() -> int:
 
     with redirect_stdout(sys.stderr):
         target = _bootstrap(config)
-    diagnosis = diagnosis_sdk.DiagnosisRuntime()
     composition = CompositionRuntime()
 
     for line in sys.stdin:
@@ -65,8 +59,6 @@ def main() -> int:
                 raise ValueError("请求必须是 JSON 对象")
             request_id = request.get("id")
             if request.get("op") == "shutdown":
-                with redirect_stdout(sys.stderr):
-                    diagnosis.close()
                 _write({"id": request_id, "ok": True, "value": None})
                 break
             function_name = request.get("function")
@@ -77,34 +69,6 @@ def main() -> int:
             with redirect_stdout(sys.stderr):
                 if function_name == '__newdiag_composition__':
                     value = composition.execute(target, args)
-                elif function_name == "__newdiag_diagnosis__":
-                    value = diagnosis.execute(target, args)
-                elif function_name == "__newdiag_pipeline__":
-                    cls = _resolve_callable(target, args["adapter"])
-                    if not is_adapter(cls):
-                        raise TypeError("目标不是 InvestigationNode 适配器类")
-                    value = json_value(execute_adapter(cls, args))
-                elif function_name == "__newdiag_function__":
-                    if __package__:
-                        from .probe import _describe
-                    else:
-                        from probe import _describe
-                    func = _resolve_callable(target, args["function"])
-                    if inspect.iscoroutinefunction(func):
-                        raise TypeError("四阶段函数必须为同步函数")
-                    actual = _describe(args["function"], func)["params"]
-                    fields = ("name", "type", "required", "default")
-                    def comparable(params):
-                        return [{key: item.get(key) for key in fields} for item in params]
-                    if comparable(actual) != comparable(args["signature"]):
-                        raise ValueError("函数签名与发布计划不一致，请重新发布")
-                    arguments = dict(args["arguments"])
-                    root = args.get("artifactRoot")
-                    for name, reference in (args.get("artifactArguments") or {}).items():
-                        arguments[name] = artifacts.load(root, reference)
-                    value = json_value(func(**arguments))
-                    if args.get("storeArtifact"):
-                        value = artifacts.save(root, value)
                 else:
                     func = _resolve_callable(target, function_name)
                     value = _json_safe(func(**args))

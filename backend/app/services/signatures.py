@@ -1,7 +1,6 @@
 """函数签名指纹：发布时记录，执行前比对，防止代码偷偷改了参数。
 
-编译期还负责「按真实参数名绑定」，所以这里的 probe 结果有两种用途：
-`probe_doc` 给出参数表供 compiler 过滤，`collect_signatures` 给出指纹。
+组合配置下 `probe_doc` 给出接口参数表供 compiler 校验，`collect_signatures` 给出指纹。
 """
 
 from __future__ import annotations
@@ -24,170 +23,55 @@ PROBE_TIMEOUT = 30.0
 
 
 def probe_doc(doc: dict) -> dict:
-    """扫描 doc 里的 binding，按工程去重后探测函数签名。
+    """探测组合配置引用的公开接口。
 
-    返回 {工程:函数: [{"name","type","required","default"}...]}；
-    单个工程探测失败时该工程记 {"error": "..."}，函数不存在时该函数记 {"error": "..."}。
+    返回 {工程:模块:接口: [{"name","type","required","default"}...]}；
+    单个工程探测失败时该工程记 {"error": "..."}。
     """
-    if doc.get('composition') is not None:
-        from .composition import probe_configuration
-        return probe_configuration(doc['composition'])
-    result: dict[str, object] = {}
-    cache: dict[str, tuple[list[dict] | None, str]] = {}
+    composition = doc.get("composition")
+    if not isinstance(composition, dict):
+        return {}
+    from .composition import probe_configuration
     started = time.perf_counter()
-    for binding in _document_bindings(doc):
-        project_name = str(binding.get("project") or "")
-        function_name = str(binding.get("function") or "")
-        if not project_name or not function_name:
-            continue
-
-        if project_name not in cache:
-            project = _load_project(project_name)
-            if project is None:
-                cache[project_name] = (None, "工程未登记")
-            else:
-                cache[project_name] = _probe_project(project)
-        functions, error = cache[project_name]
-        if functions is None:
-            result.setdefault(project_name, {"error": error or "探测失败"})
-            continue
-        from app.worker.probe import expanded_functions
-        functions = expanded_functions(functions)
-
-        key = f"{project_name}:{function_name}"
-        if isinstance(result.get(key), dict) and result[key].get("error"):
-            continue
-        matched = [f for f in functions if str(f.get("name")) == function_name]
-        if not matched:
-            result[key] = {"error": f"工程 {project_name} 里找不到函数 {function_name}"}
-            continue
-        func = matched[0]
-        if binding.get("_function_pipeline") and (func.get("error") or func.get("pipelineError")):
-            result[key] = {"error": func.get("error") or func["pipelineError"]}
-            continue
-        if binding.get("protocol") == "diagnosis/v1":
-            try:
-                _validate_diagnosis_binding(binding, func)
-            except ValueError as exc:
-                result[key] = {"error": str(exc)}
-                continue
-        elif binding.get("protocol") == "investigation/v1":
-            try:
-                _validate_adapter_binding(binding, func)
-            except ValueError as exc:
-                result[key] = {"error": str(exc)}
-                continue
-        elif func.get("protocol") == "investigation/v1":
-            result[key] = {"error": "四阶段适配器必须使用 investigation/v1 绑定"}
-            continue
-        result[key] = _param_list(func)
+    result = probe_configuration(composition)
     failed = [k for k, v in result.items() if isinstance(v, dict) and v.get("error")]
     logger.info(
-        "签名探测：%d 个函数，%d 个失败，%d 个工程，%.0fms%s",
+        "签名探测：%d 个接口，%d 个失败，%.0fms%s",
         sum(1 for v in result.values() if isinstance(v, list)),
         len(failed),
-        len(cache),
         (time.perf_counter() - started) * 1000,
         f"，失败：{failed}" if failed else "",
     )
     return result
 
 
-def _document_bindings(doc):
-    if isinstance(doc.get('composition'), dict):
-        from .composition import calls_in
-        yield from calls_in(doc['composition'])
-    diagnosis = doc.get("diagnosis")
-    if isinstance(diagnosis, dict):
-        yield diagnosis
-        yield {"project": diagnosis.get("project"),
-               "function": str(diagnosis.get("function") or "") + ".__definition__"}
-        for node in doc.get("nodes") or []:
-            if isinstance(node, dict) and node.get("method"):
-                yield {"project": diagnosis.get("project"),
-                       "function": str(diagnosis.get("function") or "") + "." + str(node["method"])}
-    for node in doc.get("nodes") or []:
-        if not isinstance(node, dict):
-            continue
-        if isinstance(node.get("pipeline"), dict):
-            for stage in ("acquire", "parse", "present", "judge"):
-                binding = node["pipeline"].get(stage)
-                if isinstance(binding, dict):
-                    yield {**binding, "_function_pipeline": True}
-        elif isinstance(node.get("binding"), dict):
-            yield node["binding"]
-
-
-def _validate_diagnosis_binding(binding, function):
-    if function.get("protocol") != "diagnosis/v1":
-        raise ValueError("流程入口不是诊断业务类")
-    if binding.get("version") != function.get("version"):
-        raise ValueError("诊断类版本不一致，请重新选择并发布")
-    config = binding.get("config") or {}
-    if not isinstance(config, dict):
-        raise ValueError("诊断类配置必须为对象")
-    params = function.get("configParams") or []
-    names = {item["name"] for item in params}
-    missing = {item["name"] for item in params if item.get("required") and item["name"] not in config}
-    if set(config) - names or missing:
-        raise ValueError(f"诊断类配置错误：缺少 {sorted(missing)}，未声明 {sorted(set(config) - names)}")
-
-
-def _validate_adapter_binding(binding: dict, func: dict) -> None:
-    if func.get("protocol") != "investigation/v1":
-        raise ValueError("所选入口不是四阶段排查适配器")
-    if binding.get("version") != func.get("version"):
-        raise ValueError("适配器版本不一致，请重新选择适配器后发布")
-    config = binding.get("config") or {}
-    if not isinstance(config, dict):
-        raise ValueError("适配器初始化配置必须为对象")
-    params = func.get("configParams") or []
-    names = {p["name"] for p in params}
-    unknown = set(config) - names
-    missing = {p["name"] for p in params if p.get("required") and p["name"] not in config}
-    if unknown or missing:
-        raise ValueError(f"初始化配置错误：缺少 {sorted(missing)}，未声明 {sorted(unknown)}")
+def projects_in(doc: dict) -> set[str]:
+    """doc 组合配置引用到的工程名。"""
+    composition = doc.get("composition")
+    if not isinstance(composition, dict):
+        return set()
+    from .composition import calls_in
+    return {str(call.get("project") or "") for call in calls_in(composition)} - {""}
 
 
 def collect_signatures(
     plan: dict, probed: dict | None = None, *, cancelled: Callable[[], bool] | None = None
 ) -> dict[str, str]:
-    """对 plan 里出现的每个 project:function 取当前签名哈希。
+    """对 plan 里出现的每个接口取当前签名哈希。
 
     probed 传 probe_doc 的结果时复用参数表，不再起子进程。
     取不到的项目记空字符串，不抛异常——发布/启动不应被工程环境问题整死。
     """
-    if plan.get('composition') is not None:
-        from .composition import probe_configuration
-        values = probed if probed is not None else probe_configuration(plan['composition'])
-        return {key: _hash_params(key, value) if isinstance(value, list) else ''
-                for key, value in values.items()}
+    composition = plan.get("composition")
+    if composition is None:
+        return {}
+    from .composition import probe_configuration
+    values = probed if probed is not None else probe_configuration(composition)
     result: dict[str, str] = {}
-    projects: dict[str, object] = {}
-    for key in _plan_keys(plan):
+    for key, value in values.items():
         if cancelled is not None and cancelled():
             break
-        project_name, function_name = _split_key(key)
-
-        if probed is not None:
-            entry = probed.get(key)
-            if isinstance(entry, list):
-                result[key] = _hash_params(function_name, entry)
-            else:
-                result[key] = ""
-            continue
-
-        if project_name not in projects:
-            projects[project_name] = _load_project(project_name)
-        project = projects[project_name]
-        if project is None:
-            result[key] = ""
-            continue
-        functions, _ = _probe_project(project)
-        if functions is None:
-            result[key] = ""
-            continue
-        result[key] = _hash_function(functions, function_name)
+        result[key] = _hash_params(key, value) if isinstance(value, list) else ""
     return result
 
 
@@ -263,49 +147,10 @@ def _hash_params(name: str, params: list[dict]) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _hash_function(discovered: list[dict], function_name: str) -> str:
-    from app.worker.probe import expanded_functions
-    discovered = expanded_functions(discovered)
-    matched = [f for f in discovered if str(f.get("name")) == function_name]
-    if not matched:
-        return ""
-    return _hash_params(function_name, _param_list(matched[0]))
-
-
 def _format_default(value) -> str:
     if isinstance(value, str):
         return json.dumps(value, ensure_ascii=False)
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=repr)
-
-
-def _plan_keys(plan: dict) -> list[str]:
-    keys: list[str] = []
-    diagnosis = plan.get("diagnosis")
-    if diagnosis:
-        prefix = f"{diagnosis['project']}:{diagnosis['function']}"
-        keys.extend([prefix, prefix + ".__definition__"])
-    for step in (plan.get("steps") or {}).values():
-        if not isinstance(step, dict):
-            continue
-        if step.get("diagnosisMethod") and diagnosis:
-            key = f"{diagnosis['project']}:{diagnosis['function']}.{step['diagnosisMethod']['name']}"
-            if key not in keys:
-                keys.append(key)
-        calls = [step.get("call")]
-        pipeline = step.get("pipeline") or {}
-        calls.extend(pipeline.get(stage) for stage in ("acquire", "parse", "present", "judge"))
-        for call in calls:
-            if not call:
-                continue
-            key = f"{call.get('project', '')}:{call.get('function', '')}"
-            if key not in keys:
-                keys.append(key)
-    return keys
-
-
-def _split_key(key: str) -> tuple[str, str]:
-    project, _, function = key.partition(":")
-    return project, function
 
 
 def _published_signatures(plan: dict) -> dict[str, str]:

@@ -1,27 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { Composition, FlowDetail, FlowMode, NodeBinding } from '@/domain/types'
-import BindingEditor from '@/components/panels/BindingEditor.vue'
+import type { Composition, FlowDetail } from '@/domain/types'
 import CompositionEditor from '@/components/panels/CompositionEditor.vue'
 
 const props = defineProps<{
   flow: FlowDetail
-  snapshotFields?: string[]
   readonly?: boolean
   publishing?: boolean
-  diagnosis?: NodeBinding
   composition?: Composition
 }>()
 const emit = defineEmits<{
-  (e: 'update-meta', patch: { name?: string; mode?: FlowMode }): void
-  (e: 'update-snapshot-fields', value: string[]): void
+  (e: 'update-meta', patch: { name?: string }): void
   (e: 'publish'): void
-  (e: 'update-diagnosis', value: NodeBinding | undefined): void
   (e: 'update-composition', value: Composition | undefined): void
 }>()
-
-const draft = ref('')
-const fields = computed(() => props.snapshotFields ?? [])
 
 const name = ref(props.flow.name)
 const nameDirty = computed(() => name.value.trim() !== props.flow.name && name.value.trim().length > 0)
@@ -48,39 +40,6 @@ function commitName(): void {
   if (!nameDirty.value) return
   emit('update-meta', { name: name.value.trim() })
 }
-
-function addFields(raw: string): void {
-  const items = raw
-    .split(/[,，\s]+/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-  if (items.length === 0) {
-    draft.value = ''
-    return
-  }
-  const next = [...fields.value]
-  for (const item of items) {
-    if (!next.includes(item)) next.push(item)
-  }
-  if (next.length !== fields.value.length) emit('update-snapshot-fields', next)
-  draft.value = ''
-}
-
-function onDraftInput(value: unknown): void {
-  const text = typeof value === 'string' ? value : String(value ?? '')
-  if (/[,，]$/.test(text)) {
-    addFields(text)
-    return
-  }
-  draft.value = text
-}
-
-function removeField(name: string): void {
-  emit(
-    'update-snapshot-fields',
-    fields.value.filter((item) => item !== name),
-  )
-}
 </script>
 
 <template>
@@ -96,44 +55,10 @@ function removeField(name: string): void {
       @keyup.enter="commitName"
     />
 
-    <div class="section-title">诊断接入方式</div>
-    <el-radio-group :model-value="composition ? 'composition' : 'class'" :disabled="readonly"
-      @change="emit('update-composition', $event === 'composition' ? { objects: [], resources: [], operations: [] } : undefined)">
-      <el-radio-button value="composition">组合现有工程</el-radio-button>
-      <el-radio-button value="class">业务诊断类</el-radio-button>
-    </el-radio-group>
-    <CompositionEditor v-if="composition" :value="composition" :readonly="readonly"
-      @update="emit('update-composition', $event)" />
-    <BindingEditor v-else
-      :binding="diagnosis" :readonly="readonly" diagnosis-only
-      @update="emit('update-diagnosis', $event)"
-    />
-    <div class="section-hint">组合模式配置现有对象、固定资源和节点操作，无需编写总控类。启动参数在开始节点配置。</div>
-
-    <div class="section-title">快照字段（旧版兼容）</div>
-    <div class="tag-input">
-      <el-tag
-        v-for="field in fields"
-        :key="field"
-        size="small"
-        :closable="!readonly"
-        @close="removeField(field)"
-      >
-        {{ field }}
-      </el-tag>
-      <el-input
-        v-if="!readonly"
-        :model-value="draft"
-        size="small"
-        placeholder="输入后回车或逗号"
-        class="tag-field"
-        @update:model-value="onDraftInput"
-        @keydown.enter.prevent="addFields(draft)"
-        @blur="addFields(draft)"
-      />
-    </div>
-    <div v-if="readonly && !fields.length" class="section-hint">未设置</div>
-    <div class="section-hint">启动时把这些字段作为诊断快照，节点按名字自动取用</div>
+    <div class="section-title">工程组合</div>
+    <div class="section-hint">配置原工程的对象、固定资源和排查操作；启动参数在开始节点配置。</div>
+    <CompositionEditor :value="composition ?? { objects: [], resources: [], operations: [] }"
+      :readonly="readonly" @update="emit('update-composition', $event)" />
 
     <div class="section-title">版本</div>
     <div class="kv">
@@ -204,17 +129,6 @@ function removeField(name: string): void {
   justify-content: space-between;
   gap: 12px;
   font-size: 12px;
-}
-
-.tag-input {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.tag-field {
-  width: 100%;
 }
 
 .key {

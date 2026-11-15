@@ -57,11 +57,11 @@ LOCAL_ACTOR = "local"
 UNCATEGORIZED_ALIASES = frozenset({"root", "none", "null"})
 
 
-def empty_doc(name: str, mode: str = "parallel") -> dict:
-    return {"format": 1, "name": name, "mode": mode, "nodes": [], "edges": []}
+def empty_doc(name: str) -> dict:
+    return {"format": 1, "name": name, "nodes": [], "edges": []}
 
 
-def instance_doc(name: str, mode: str = "parallel") -> dict:
+def instance_doc(name: str) -> dict:
     """新建流程用的诊断实例模板：骨架齐全、没有业务内容。
 
     组合配置留空，由编排团队选择原工程接口；模板不预设业务对象或启动参数。
@@ -69,7 +69,6 @@ def instance_doc(name: str, mode: str = "parallel") -> dict:
     return {
         "format": 1,
         "name": name,
-        "mode": mode,
         'composition': {'objects': [], 'resources': [], 'operations': []},
         "nodes": [],
         "edges": [],
@@ -187,10 +186,6 @@ def commit_working(
     working.committed_at = stamp
     flow.current_revision_id = working.id
     flow.updated_at = stamp
-    # 模式（并行/串行）属于图本身，以画布提交为准，保证发布与画布一致
-    mode = doc.get("mode")
-    if mode in ("parallel", "serial"):
-        flow.mode = mode
     if flow.editing_by == LOCAL_ACTOR or admin:
         flow.editing_by = None
         flow.editing_revision_id = None
@@ -297,12 +292,11 @@ def create_flow(payload: FlowCreate, db: Session = Depends(get_db)) -> FlowDetai
     require_folder(db, payload.folder_id)
     stamp = now_iso()
     # 新建即实例模板；导入 / 复制走各自的文档，不经过这里
-    doc = instance_doc(payload.name, payload.mode)
+    doc = instance_doc(payload.name)
     flow = Flow(
         id=new_id(),
         name=payload.name,
         description=payload.description or "",
-        mode=payload.mode,
         folder_id=payload.folder_id,
         owner_id=LOCAL_ACTOR,
         created_at=stamp,
@@ -338,12 +332,10 @@ def import_flow(payload: ImportFlowIn, db: Session = Depends(get_db)) -> FlowDet
     collect_issues(doc, strict_binding=False)
 
     stamp = now_iso()
-    mode = doc.get("mode") if doc.get("mode") in ("parallel", "serial") else "parallel"
     flow = Flow(
         id=new_id(),
         name=str(doc.get("name") or "").strip() or "未命名流程",
         description=str(doc.get("description") or ""),
-        mode=mode,
         owner_id=LOCAL_ACTOR,
         created_at=stamp,
         updated_at=stamp,
@@ -388,38 +380,22 @@ def _attachment_refs(doc: dict):
 
 
 def _bindings(doc: dict) -> list[dict]:
+    """流程包导出时记录的工程接口引用；组合配置是唯一来源。"""
+    composition = doc.get("composition")
+    if not isinstance(composition, dict):
+        return []
+    from app.services.composition import calls_in
+
     seen: set[tuple[str, str, str]] = set()
     result: list[dict] = []
-    bindings = [doc.get("diagnosis")]
-    composition = doc.get('composition')
-    if isinstance(composition, dict):
-        objects = composition.get('objects', [])
-        if isinstance(objects, list):
-            bindings.extend(objects)
-        for name in ('resources', 'operations'):
-            groups = composition.get(name, [])
-            if isinstance(groups, list):
-                for group in groups:
-                    if isinstance(group, dict) and isinstance(group.get('calls'), list):
-                        bindings.extend(group['calls'])
-    for node in doc.get("nodes") or []:
-        if not isinstance(node, dict):
-            continue
-        pipeline = node.get("pipeline")
-        if isinstance(pipeline, dict):
-            bindings.extend(pipeline.get(stage) for stage in ("acquire", "parse", "present", "judge"))
-        else:
-            bindings.append(node.get("binding"))
-    for binding in bindings:
-        if not isinstance(binding, dict):
-            continue
-        project = str(binding.get("project") or "")
-        function = str(binding.get('interface') or binding.get("function") or "")
-        module = str(binding.get('module') or '')
+    for call in calls_in(composition):
+        project = str(call.get("project") or "")
+        function = str(call.get("interface") or call.get("function") or "")
+        module = str(call.get("module") or "")
         if not project or not function or (project, module, function) in seen:
             continue
         seen.add((project, module, function))
-        result.append({"project": project, "function": function, **({'module': module} if module else {})})
+        result.append({"project": project, "function": function, **({"module": module} if module else {})})
     return result
 
 
@@ -582,13 +558,11 @@ async def import_package(file: UploadFile = File(...), db: Session = Depends(get
     collect_issues(doc, strict_binding=False)
 
     stamp = now_iso()
-    mode = doc.get("mode") if doc.get("mode") in ("parallel", "serial") else "parallel"
     name = str(doc.get("name") or "").strip() or Path(file.filename or "").stem or "导入的流程"
     flow = Flow(
         id=new_id(),
         name=name,
         description=str(doc.get("description") or ""),
-        mode=mode,
         owner_id=LOCAL_ACTOR,
         created_at=stamp,
         updated_at=stamp,
@@ -657,14 +631,6 @@ def patch_flow(flow_id: str, payload: FlowPatch, db: Session = Depends(get_db)) 
         flow.name = payload.name
     if payload.description is not None:
         flow.description = payload.description
-    if payload.mode is not None:
-        flow.mode = payload.mode
-        # 检出中的草稿也同步模式，否则下次提交会把旧模式写回来
-        working = working_revision(db, flow)
-        if working is not None:
-            doc = revision_doc(working)
-            doc["mode"] = payload.mode
-            working.json = json.dumps(compact(doc), ensure_ascii=False)
     # 显式传 folderId: null 才是「移到未分类」，不传表示不动
     if "folder_id" in payload.model_fields_set:
         require_folder(db, payload.folder_id)

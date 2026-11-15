@@ -17,13 +17,11 @@ FlowMode = Literal["parallel", "serial"]
 NodeKind = Literal[
     "start",
     "investigation",
-    "dataPreparation",
     "investigationAction",
     "conclusion",
     "remediation",
     "problemSolved",
     "escalation",
-    "deepDiagnosis",
     "jump",
 ]
 ParamType = Literal["text", "number", "boolean", "datetime", "file", "array", "object", "json"]
@@ -62,7 +60,6 @@ class FlowSummary(ApiModel):
     id: str
     name: str
     description: str = ""
-    mode: FlowMode = "parallel"
     updated_at: str
     # 空表示未分类
     folder_id: str | None = None
@@ -84,14 +81,12 @@ class FlowDetail(FlowSummary):
 class FlowCreate(ApiModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = ""
-    mode: FlowMode = "parallel"
     folder_id: str | None = None
 
 
 class FlowPatch(ApiModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
-    mode: FlowMode | None = None
     # 显式传 null 表示移到未分类，与「不传」区分靠 model_fields_set
     folder_id: str | None = None
 
@@ -157,8 +152,6 @@ class ReleaseInput(ApiModel):
     """发布时冻结的启动表单字段；执行页只读它，不再看当前代码。"""
 
     name: str
-    scope: Literal["global", "function"] = "global"
-    function: str | None = None
     type: ParamType = "text"
     required: bool = True
     default: Any = None
@@ -277,7 +270,6 @@ class RollbackIn(ApiModel):
     # 前端用 targetNodeId，spec 写 target，两个都收
     target: str | None = Field(default=None, validation_alias=AliasChoices("target", "targetNodeId"))
     target_token_id: str | None = None
-    mode: Literal["branch", "retry"] = "branch"
     # 分支键由目标节点类型决定：排查是 yes/no，其余是 default（引擎侧归一，这里只挡空值）
     branch: str = Field(default="default", min_length=1)
     reason: str | None = None
@@ -302,14 +294,6 @@ class ProjectFunction(ApiModel):
     composition_error: str | None = None
     params: list[ProjectParam] = Field(default_factory=list)
     returns: str | None = None
-    protocol: str | None = None
-    version: str | None = None
-    config_params: list[dict[str, Any]] = Field(default_factory=list)
-    manual_fields: list[dict[str, Any]] = Field(default_factory=list)
-    automatic_acquisition: bool | None = None
-    automatic_judgment: bool | None = None
-    methods: list[dict[str, Any]] = Field(default_factory=list)
-    resources: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ProjectOut(ApiModel):
@@ -331,7 +315,7 @@ class ProjectCreate(ApiModel):
 
 
 class ProjectPatch(ApiModel):
-    # 不含 name：工程名是 binding.project 的引用键，改名会让已发布的流程找不到实现
+    # 不含 name：工程名是组合配置的引用键，改名会让已发布的流程找不到实现
     path: str | None = Field(default=None, min_length=1)
     module: str | None = Field(default=None, min_length=1, max_length=200)
     # 空串表示清空，与「不传」区分靠 model_fields_set
@@ -377,7 +361,6 @@ def make_flow_summary(
         id=flow.id,
         name=flow.name,
         description=flow.description or "",
-        mode=flow.mode,  # type: ignore[arg-type]
         updated_at=flow.updated_at,
         folder_id=flow.folder_id,
         editing_by=flow.editing_by,

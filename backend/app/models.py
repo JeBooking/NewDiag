@@ -27,7 +27,6 @@ class Flow(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="parallel")
     # 空表示未分类；老库由 init_db 补列，见 db.init_db
     folder_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     owner_id: Mapped[str] = mapped_column(String(64), nullable=False, default="local")
@@ -162,18 +161,6 @@ class Review(Base):
     decided_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
-class DiagnosisState(Base):
-    __tablename__ = "diagnosis_states"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    instance_id: Mapped[str] = mapped_column(String(32), ForeignKey("instances.id"), nullable=False)
-    generation: Mapped[int] = mapped_column(Integer, nullable=False)
-    seq: Mapped[int] = mapped_column(Integer, nullable=False)
-    token_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    reference_json: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[str] = mapped_column(String(32), nullable=False, default=now_iso)
-
-
 class FileBlob(Base):
     __tablename__ = "files"
 
@@ -188,7 +175,7 @@ class Project(Base):
     __tablename__ = "projects"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    # 工程名是节点绑定与签名 key 的唯一口径，必须唯一
+    # 工程名是组合配置与签名 key 的唯一口径，必须唯一
     name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     path: Mapped[str] = mapped_column(Text, nullable=False)
     module: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -205,5 +192,3 @@ Index("ix_instances_flow", Instance.flow_id)
 Index("ix_tokens_instance", Token.instance_id)
 Index("ix_runs_instance", Run.instance_id)
 Index("ix_reviews_instance", Review.instance_id)
-Index("ix_diagnosis_states_scope", DiagnosisState.instance_id, DiagnosisState.generation,
-      DiagnosisState.seq)

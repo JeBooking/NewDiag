@@ -9,7 +9,20 @@ import uuid
 from pathlib import Path
 from . import artifacts
 from .node_sdk import presentation
-from .function_pipeline import _summary
+
+# 单个值序列化后的落库上限。原始数据可能是整份文件，不该跟着每次运行进库。
+SUMMARY_CHARS = 4096
+
+
+def _summary(value):
+    """超过阈值的值压成摘要；小值原样保留，运行记录仍然可读。"""
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if len(text) <= SUMMARY_CHARS:
+        return value
+    encoded = text.encode('utf-8')
+    return {'omitted': True, 'bytes': len(encoded), 'sha256': hashlib.sha256(encoded).hexdigest()}
+
+
 logger = logging.getLogger(__name__)
 
 class CompositionRuntime:

@@ -30,7 +30,7 @@ from app.schemas import (
 )
 
 try:  # 引擎层缺席时接口仍在，只是不推进
-    from app.services.execution import scheduler
+    from app.services.generated_runner import runner as scheduler
 except ImportError as exc:  # pragma: no cover
     logging.getLogger(__name__).warning("调度器不可用，实例不会自动推进：%s", exc)
 
@@ -85,23 +85,15 @@ def release_inputs(release: Release) -> list[dict]:
 
 
 def normalize_start_input(raw: Any) -> dict:
-    """启动上下文固定两层：global 全函数可用，scope 按函数名覆盖同名全局参数。
+    """启动上下文只有全局一层：{"global": {...}}。
 
-    前端已按两层提交时原样保留；提交扁平对象时按 global 处理（兼容老前端）。
-    调度器按同一口径取值，见 services/scheduler._snapshot_value。
+    前端按 global 提交时原样保留；提交扁平对象时整体当作 global（兼容老前端）。
     """
-    if isinstance(raw, dict) and ("global" in raw or "scope" in raw):
+    if isinstance(raw, dict) and "global" in raw:
         glob = raw.get("global")
-        scope = raw.get("scope")
-        return {
-            "global": glob if isinstance(glob, dict) else {},
-            "scope": (
-                {str(key): value for key, value in scope.items() if isinstance(value, dict)}
-                if isinstance(scope, dict)
-                else {}
-            ),
-        }
-    return {"global": raw if isinstance(raw, dict) else {}, "scope": {}}
+    else:
+        glob = raw
+    return {"global": glob if isinstance(glob, dict) else {}}
 
 
 def _blank(value: Any) -> bool:
@@ -109,44 +101,27 @@ def _blank(value: Any) -> bool:
 
 
 def apply_defaults(inputs: list[dict], context: dict) -> dict:
-    """把发布时冻结的默认值填进启动上下文，请求里已经给了的字段不动。
-
-    函数局部参数的默认值只写进 scope[函数名]：全局层是所有函数共享的，
-    一旦泄漏，别的同名参数会被悄悄改掉。
-    """
+    """把发布时冻结的默认值填进启动上下文，请求里已经给了的字段不动。"""
     glob = context.setdefault("global", {})
-    scope = context.setdefault("scope", {})
     for item in inputs:
         default = item.get("default")
         if default is None and not (item.get("type") == "json" and not item.get("required", True)):
             continue
         name = str(item.get("name") or "")
-        if not name:
-            continue
-        if item.get("scope") == "function":
-            bucket = scope.setdefault(str(item.get("function") or ""), {})
-            if name in bucket and (item.get("type") == "json" or not _blank(bucket[name])):
-                continue
-            bucket[name] = default
-        elif name not in glob or (item.get("type") != "json" and _blank(glob[name])):
+        if name and (name not in glob or (item.get("type") != "json" and _blank(glob[name]))):
             glob[name] = default
     return context
 
 
 def missing_inputs(inputs: list[dict], context: dict) -> list[str]:
     missing: list[str] = []
+    values = context.get("global")
     for item in inputs:
         if not item.get("required", True):
             continue
         name = str(item.get("name") or "")
         if not name:
             continue
-        if item.get("scope") == "function":
-            section = context.get("scope")
-            key = str(item.get("function") or "")
-            values = section.get(key) if isinstance(section, dict) else None
-        else:
-            values = context.get("global")
         if (not isinstance(values, dict) or name not in values
                 or (_blank(values[name]) and item.get("type") != "json")):
             missing.append(name)
@@ -396,7 +371,7 @@ def rollback(
     try:
         scheduler.rollback(
             instance_id, payload.target, payload.branch, payload.reason,
-            target_token_id=payload.target_token_id, mode=payload.mode,
+            target_token_id=payload.target_token_id,
         )
     except Exception as exc:
         logger.warning("实例 %s 回退失败：%s", instance_id, exc)

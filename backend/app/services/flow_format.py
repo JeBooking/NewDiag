@@ -1,8 +1,8 @@
-"""持久流程分层格式；旧格式在边界读取时展开，运行策略由实例提供。"""
+"""持久流程分层格式；业务定义、节点绑定与画布布局分开保存。"""
 
 from copy import deepcopy
 
-NODE_BINDINGS = ("binding", "pipeline", "method", "runtimeInputs", "params", "outputs", "operation", "operationArguments")
+NODE_BINDINGS = ("runtimeInputs", "operation", "operationArguments")
 
 
 def expand(value):
@@ -29,8 +29,6 @@ def expand(value):
         raise ValueError("节点绑定必须是对象")
     result = {**core, "nodes": []}
     result.pop("mode", None)
-    if bindings.get("diagnosis"):
-        result["diagnosis"] = bindings["diagnosis"]
     if bindings.get("composition") is not None:
         result["composition"] = bindings["composition"]
     positions = presentation.get("nodes", {}) if isinstance(presentation, dict) and presentation.get("format") == 1 else {}
@@ -55,8 +53,6 @@ def expand(value):
 def compact(value):
     doc = expand(value)
     bindings = {"format": 1, "nodes": {}}
-    if doc.get("diagnosis"):
-        bindings["diagnosis"] = doc.pop("diagnosis")
     if doc.get("composition") is not None:
         bindings["composition"] = doc.pop("composition")
     presentation = {"format": 1, "nodes": {}}

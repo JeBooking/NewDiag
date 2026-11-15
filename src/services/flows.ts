@@ -2,7 +2,6 @@ import type {
   FlowDetail,
   FlowDoc,
   StoredFlow,
-  FlowMode,
   FlowSummary,
   InstanceSummary,
   LintIssue,
@@ -16,13 +15,11 @@ export type { ReleaseDetail }
 export interface CreateFlowPayload {
   name: string
   description?: string
-  mode?: FlowMode
 }
 
 export interface UpdateFlowPayload {
   name?: string
   description?: string
-  mode?: FlowMode
   /** null 表示移出目录（未分类） */
   folderId?: string | null
 }

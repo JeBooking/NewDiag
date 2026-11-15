@@ -40,12 +40,6 @@ export interface ProjectFunction {
   variadicKeywords?: boolean
   params: ProjectFunctionParam[]
   returns?: string | null
-  protocol?: 'investigation/v1' | 'diagnosis/v1'
-  methods?: { name: string; params: ProjectFunctionParam[] }[]
-  version?: string
-  configParams?: { name: string; required: boolean; default?: unknown }[]
-  automaticAcquisition?: boolean
-  automaticJudgment?: boolean
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -112,26 +106,6 @@ function normalizeFunction(raw: unknown): ProjectFunction | null {
     variadicKeywords: item.variadicKeywords === true,
     params,
     returns: text(item.returns) ?? null,
-    protocol: item.protocol === 'investigation/v1' || item.protocol === 'diagnosis/v1'
-      ? item.protocol : undefined,
-    methods: Array.isArray(item.methods) ? item.methods.flatMap((raw) => {
-      const method = record(raw)
-      return method && typeof method.name === 'string'
-        ? [{ name: method.name, params: Array.isArray(method.params)
-          ? method.params.map(normalizeParam).filter((p): p is ProjectFunctionParam => Boolean(p)) : [] }]
-        : []
-    }) : [],
-    version: text(item.version),
-    configParams: Array.isArray(item.configParams)
-      ? item.configParams.flatMap((raw) => {
-        const param = record(raw)
-        return param && typeof param.name === 'string'
-          ? [{ name: param.name, required: param.required === true, default: param.default }]
-          : []
-      })
-      : [],
-    automaticAcquisition: item.automaticAcquisition === true,
-    automaticJudgment: item.automaticJudgment === true,
   }
 }
 
@@ -186,10 +160,4 @@ export async function refreshProject(id: string): Promise<ProjectFunctions> {
   const item = record(data)
   const error = typeof item?.error === 'string' && item.error ? item.error : null
   return { functions: normalizeFunctions(item?.functions), error }
-}
-
-export async function fetchProjectFunctions(projectId: string): Promise<ProjectFunction[]> {
-  const data = await request<unknown>(`/projects/${encodeURIComponent(projectId)}/functions`)
-  const list = Array.isArray(data) ? data : record(data)?.functions
-  return normalizeFunctions(list)
 }

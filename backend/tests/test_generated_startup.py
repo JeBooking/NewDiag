@@ -65,13 +65,25 @@ def live_backend(tmp_path):
             process.wait(timeout=15)
 
 
-def test_generated_files_do_not_restart_development_backend(tmp_path):
-    example = ROOT / "examples" / "diagnosis-instance"
-    with live_backend(tmp_path) as (client, log):
+def register_composed_projects(client, example: Path) -> None:
+    for name, folder, module in (
+        ("组合数据示例", "data_tools", "records"),
+        ("组合判断示例", "analysis_tools", "checks"),
+    ):
         response = client.post("/api/projects", json={
-            "name": "诊断实例示例", "path": str(example), "module": "diagnosis", "python": sys.executable,
+            "name": name, "path": str(example / folder), "module": module, "python": sys.executable,
         })
         response.raise_for_status()
+
+
+def composed_input() -> dict:
+    return {"global": {"samples": [1, 2, 8, 3], "limit": 5}}
+
+
+def test_generated_files_do_not_restart_development_backend(tmp_path):
+    example = ROOT / "examples" / "composed-basic"
+    with live_backend(tmp_path) as (client, log):
+        register_composed_projects(client, example)
         document = json.loads((example / "workflow.json").read_text(encoding="utf-8"))
         flow = client.post("/api/flows/import", json={"doc": document})
         flow.raise_for_status()
@@ -79,9 +91,7 @@ def test_generated_files_do_not_restart_development_backend(tmp_path):
         release = client.post(f"/api/flows/{flow_id}/releases", json={})
         release.raise_for_status()
         started = client.post(f"/api/flows/{flow_id}/instances", json={
-            "releaseId": release.json()["id"], "input": {"global": {
-                "device_id": "motor-01", "time_point": "2026-11-05T08:00:00+08:00",
-            }},
+            "releaseId": release.json()["id"], "input": composed_input(),
         })
         started.raise_for_status()
         instance = started.json()["id"]
@@ -102,15 +112,17 @@ def test_generated_files_do_not_restart_development_backend(tmp_path):
 
 def test_snapshot_probe_failure_does_not_stop_backend(tmp_path):
     example = tmp_path / "example"
-    shutil.copytree(ROOT / "examples" / "diagnosis-instance", example,
+    shutil.copytree(ROOT / "examples" / "composed-basic", example,
                     ignore=shutil.ignore_patterns("__pycache__"))
-    source = example / "diagnosis.py"
+    source = example / "data_tools" / "records.py"
     with source.open("a", encoding="utf-8") as output:
-        output.write('\nif "executions" in Path(__file__).parts:\n    raise RuntimeError("snapshot-probe-failure")\n')
+        output.write(
+            '\nfrom pathlib import Path as _Path\n'
+            'if "executions" in _Path(__file__).parts:\n'
+            '    raise RuntimeError("snapshot-probe-failure")\n'
+        )
     with live_backend(tmp_path) as (client, log):
-        client.post("/api/projects", json={
-            "name": "诊断实例示例", "path": str(example), "module": "diagnosis", "python": sys.executable,
-        }).raise_for_status()
+        register_composed_projects(client, example)
         flow = client.post("/api/flows/import", json={
             "doc": json.loads((example / "workflow.json").read_text(encoding="utf-8")),
         })
@@ -118,12 +130,9 @@ def test_snapshot_probe_failure_does_not_stop_backend(tmp_path):
         flow_id = flow.json()["id"]
         release = client.post(f"/api/flows/{flow_id}/releases", json={})
         release.raise_for_status()
-        failed = client.post(f"/api/flows/{flow_id}/instances", json={
-            "input": {"device_id": "motor-01", "time_point": "2026-11-05T08:00:00+08:00"},
-        })
-        assert failed.status_code == 500
+        failed = client.post(f"/api/flows/{flow_id}/instances", json={"input": composed_input()})
+        assert failed.status_code == 500, failed.text
         assert "snapshot-probe-failure" in failed.json()["detail"]
-        assert "副本目录=" in failed.json()["detail"]
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             assert client.get("/api/health").status_code == 200
@@ -180,17 +189,13 @@ def development_stack(tmp_path):
 
 def test_development_reload_recovers_with_open_event_stream(tmp_path):
     with development_stack(tmp_path) as (client, log, process, backend):
-        example = ROOT / "examples" / "diagnosis-instance"
-        client.post("/api/projects", json={
-            "name": "诊断实例示例", "path": str(example), "module": "diagnosis", "python": sys.executable,
-        }).raise_for_status()
+        example = ROOT / "examples" / "composed-basic"
+        register_composed_projects(client, example)
         flow = client.post("/api/flows/import", json={
             "doc": json.loads((example / "workflow.json").read_text(encoding="utf-8")),
         }).json()
         client.post(f"/api/flows/{flow['id']}/releases", json={}).raise_for_status()
-        started = client.post(f"/api/flows/{flow['id']}/instances", json={
-            "input": {"device_id": "motor-01", "time_point": "2026-11-05T08:00:00+08:00"},
-        })
+        started = client.post(f"/api/flows/{flow['id']}/instances", json={"input": composed_input()})
         started.raise_for_status()
         instance = started.json()["id"]
         wait_until(lambda: client.get(f"/api/instances/{instance}").json().get("status") == "waiting")

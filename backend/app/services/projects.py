@@ -57,6 +57,10 @@ def _normalize(payload: Any) -> dict[str, Any]:
                             "type": param.get("type"),
                             "default": param.get("default"),
                             "required": bool(param.get("required", False)),
+                            # 发布侧要区分「真默认值」和 repr 兜底值
+                            "defaultTrusted": bool(param.get("defaultTrusted", True)),
+                            # 发布侧要区分「真默认值」和 repr 兜底值
+                            "defaultTrusted": bool(param.get("defaultTrusted", True)),
                         }
                     )
                 elif isinstance(param, str):

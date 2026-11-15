@@ -83,7 +83,6 @@ const formatTime = (value?: string | null): string =>
 
 function kindLabel(review: ReviewTask): string {
   if (review.request.type === 'parameters') return '填写参数'
-  if (review.request.type === 'acquisition') return '提供数据'
   if (review.request.type === 'after_success') return '串行决策'
   if (review.kind === 'decision') return '判断'
   // 转交节点的「完成」语义是把问题交给别的链路，不是处置动作，标签要区分
@@ -180,7 +179,7 @@ function onRolledBack(): void {
       <div v-if="selected" class="detail">
         <div class="detail-node">{{ selectedTitle }}</div>
         <DataTask
-          v-if="selected.request.type === 'acquisition' || selected.request.type === 'parameters'"
+          v-if="selected.request.type === 'parameters'"
           :review="selected" :busy="busy" :error="submitError" @submit="submitData"
         />
         <DecisionTask
