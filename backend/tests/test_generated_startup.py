@@ -57,7 +57,7 @@ def live_backend(tmp_path):
                                         "NEWDIAG_DB": str(backend / "data" / "newdiag.db"),
                                         "PYTHONIOENCODING": "utf-8"}, **process_options())
         try:
-            with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=15) as client:
+            with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=15, trust_env=False) as client:
                 wait_until(lambda: client.get("/api/health").status_code == 200)
                 yield client, log
         finally:
@@ -178,7 +178,8 @@ def development_stack(tmp_path):
                                         "NEWDIAG_DB": str(backend / "data" / "newdiag.db"),
                                         "PYTHONIOENCODING": "utf-8"}, **options)
         try:
-            with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=2) as client:
+            # 本机常驻 HTTP_PROXY，NO_PROXY 对回环端口不生效，会被代理打回 502
+            with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=2, trust_env=False) as client:
                 wait_until(lambda: client.get("/api/health").status_code == 200)
                 wait_until(lambda: "后端已就绪" in log.read_text(encoding="utf-8"))
                 yield client, log, process, backend

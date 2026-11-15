@@ -60,12 +60,24 @@ def validate_doc(
         issues.append(_issue(LEVEL_ERROR, "文档至少需要一个排查节点"))
         return issues
 
+    # 空值不算旧格式：清掉内容的残留字段不该把流程永久锁死
+    if doc.get("diagnosis") or doc.get("snapshotFields"):
+        issues.append(_issue(LEVEL_ERROR, "这是旧格式流程：诊断类与快照字段已移除，请用组合配置重新编排"))
     for nid, node in nodes_by_id.items():
         kind = node.get("kind")
         if node.get("runtimeInputs") and not node.get("operation"):
             issues.append(_issue(LEVEL_ERROR, "节点现场参数需要绑定排查操作", node_id=nid))
-        if kind not in rules.V1_KINDS:
+        if kind == "dataPreparation":
+            issues.append(_issue(LEVEL_ERROR, "数据准备节点已移除，请改用固定资源并在参数来源里选「资源」", node_id=nid))
+        elif kind not in rules.V1_KINDS:
             issues.append(_issue(LEVEL_ERROR, f"v1 不支持的节点类型：{kind}", node_id=nid))
+        legacy = [key for key in ("binding", "pipeline", "method", "params", "outputs") if node.get(key)]
+        if legacy:
+            issues.append(_issue(
+                LEVEL_ERROR,
+                f"节点仍在使用已移除的旧接入字段（{', '.join(legacy)}）：请改为选择组合操作",
+                node_id=nid,
+            ))
 
     valid_edges = _check_edges(edges, nodes_by_id, issues)
     shaped_edges = [e for e in edges if e.get("from") in nodes_by_id and e.get("to") in nodes_by_id]

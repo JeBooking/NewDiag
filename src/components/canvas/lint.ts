@@ -1,5 +1,5 @@
 import { onScopeDispose, ref, watch, type Ref } from 'vue'
-import { KIND_META, isTerminalKind } from '@/domain/kinds'
+import { KIND_META, isKnownKind, isTerminalKind } from '@/domain/kinds'
 import { canConnect, isSingleSuccessor, needsBranch } from '@/domain/rules'
 import type { DocEdge, DocNode, FlowDoc, InvestigationFields, LintIssue } from '@/domain/types'
 
@@ -90,6 +90,10 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
   const edges = doc.edges ?? []
 
   for (const node of nodes) {
+    if (!isKnownKind(node.kind)) {
+      issues.push({ id: `node:${node.id}:kind`, level: 'error', nodeId: node.id,
+        message: `节点类型「${node.kind}」已移除，请重新编排这个节点` })
+    }
     if (node.operation && !doc.composition) {
       issues.push({ id: `node:${node.id}:composition`, nodeId: node.id,
         level: 'error', message: '选择排查操作前必须配置组合实例' })

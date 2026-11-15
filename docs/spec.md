@@ -318,6 +318,7 @@ revision 与流程包使用分层格式：
 8. 组合配置的接口必须存在；参数来源合法；`node` 来源必须是上游
 9. 启动参数名称不重复，类型受支持
 10. 环允许存在，但必须能从环内走出去
+11. 旧接入格式（`diagnosis`、`binding`、`pipeline`、`method`、`params`、`outputs`、`dataPreparation`、`snapshotFields`）不再接受：导入返回 422，发布也会拦下，提示改用组合配置
 
 ---
 

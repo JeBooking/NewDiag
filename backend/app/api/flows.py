@@ -175,6 +175,16 @@ def collect_issues(doc: dict, *, strict_binding: bool = True) -> list[dict]:
     ]
 
 
+def reject_removed_format(doc: dict) -> None:
+    """旧接入格式导入即拒绝：这些文档在新界面里无法继续编排，也没法发布。"""
+    removed = [
+        item for item in collect_issues(doc, strict_binding=True)
+        if item.get("level") == "error" and "已移除" in str(item.get("message") or "")
+    ]
+    if removed:
+        raise HTTPException(status_code=422, detail=removed)
+
+
 def commit_working(
     db: Session, flow: Flow, working: Revision, *, admin: bool = False
 ) -> CommitResult:
@@ -328,8 +338,8 @@ def import_flow(payload: ImportFlowIn, db: Session = Depends(get_db)) -> FlowDet
     绑定问题按半成品放行（同 commit），发布时才强制校验。
     """
     doc = submitted_doc(payload.doc)
-    # 导入同保存：问题只提示，不阻断
-    collect_issues(doc, strict_binding=False)
+    # 旧接入格式无法在新界面继续编排，导入时直接拒绝；其余问题按半成品放行
+    reject_removed_format(doc)
 
     stamp = now_iso()
     flow = Flow(
@@ -554,8 +564,8 @@ async def import_package(file: UploadFile = File(...), db: Session = Depends(get
                 ref["hash"] = stored
     db.flush()
 
-    # 导入同保存：问题只提示，不阻断
-    collect_issues(doc, strict_binding=False)
+    # 旧接入格式无法在新界面继续编排，导入时直接拒绝；其余问题按半成品放行
+    reject_removed_format(doc)
 
     stamp = now_iso()
     name = str(doc.get("name") or "").strip() or Path(file.filename or "").stem or "导入的流程"

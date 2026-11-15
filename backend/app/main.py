@@ -96,6 +96,7 @@ async def reject_oversized_upload(request: Request, call_next):
 async def access_log(request: Request, call_next):
     """每个请求一行日志，带 request id，方便和前端报错对上。"""
     request_id = uuid.uuid4().hex[:8]
+    request.state.request_id = request_id
     started = time.perf_counter()
     try:
         response = await call_next(request)
@@ -124,6 +125,18 @@ async def access_log(request: Request, call_next):
 
 for module in (flows, releases, instances, projects, files):
     app.include_router(module.router, prefix="/api")
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    """兜底：任何未捕获异常都变成带请求 id 的 500，不让客户端拿到裸 HTML。"""
+    request_id = getattr(request.state, "request_id", "-")
+    logger.error("[%s] 未捕获异常：%s %s", request_id, request.method, request.url.path, exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"服务器内部错误（请求 id {request_id}），请把该 id 发给管理员"},
+        headers={"X-Request-ID": request_id},
+    )
 
 
 @app.get("/api/health", tags=["meta"])

@@ -571,6 +571,44 @@ def test_publish_rejects_unprobeable_project(client):
     assert "工程未登记" in messages
 
 
+def test_import_rejects_removed_format(client):
+    """旧接入格式导入直接 422，不能静默变成人工流程。"""
+    doc = valid_doc()
+    node_of(doc, "n1")["binding"] = {"project": "旧工程", "function": "judge"}
+    response = client.post("/api/flows/import", json={"doc": doc})
+    assert response.status_code == 422, response.text
+    messages = " ".join(item.get("message", "") for item in response.json()["detail"])
+    assert "已移除" in messages
+
+    flow = create_flow(client)
+    client.post(f"/api/flows/{flow['id']}/checkout").raise_for_status()
+    client.put(f"/api/flows/{flow['id']}/working", json={"doc": doc}).raise_for_status()
+    commit = client.post(f"/api/flows/{flow['id']}/commit")
+    assert commit.status_code == 200, commit.text
+    assert any("已移除" in item["message"] for item in commit.json()["issues"])
+    publish = client.post(f"/api/flows/{flow['id']}/releases", json={})
+    assert publish.status_code == 422, publish.text
+
+
+def test_import_rejects_removed_format(client):
+    """旧接入格式导入直接 422，不能静默变成人工流程。"""
+    doc = valid_doc()
+    node_of(doc, "n1")["binding"] = {"project": "旧工程", "function": "judge"}
+    response = client.post("/api/flows/import", json={"doc": doc})
+    assert response.status_code == 422, response.text
+    messages = " ".join(item.get("message", "") for item in response.json()["detail"])
+    assert "已移除" in messages
+
+    flow = create_flow(client)
+    client.post(f"/api/flows/{flow['id']}/checkout").raise_for_status()
+    client.put(f"/api/flows/{flow['id']}/working", json={"doc": doc}).raise_for_status()
+    commit = client.post(f"/api/flows/{flow['id']}/commit")
+    assert commit.status_code == 200, commit.text
+    assert any("已移除" in item["message"] for item in commit.json()["issues"])
+    publish = client.post(f"/api/flows/{flow['id']}/releases", json={})
+    assert publish.status_code == 422, publish.text
+
+
 def test_escalation_ends_as_escalated(client):
     """到达「上升」节点是交接结束，不是失败。"""
     doc = {

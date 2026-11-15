@@ -225,6 +225,36 @@ def test_runtime_inputs_require_operation():
     assert "节点现场参数需要绑定排查操作" in messages(doc)
 
 
+def test_removed_binding_fields_rejected():
+    doc = base_doc()
+    node(doc, "n1").pop("operation")
+    node(doc, "n1")["binding"] = {"project": "旧工程", "function": "judge"}
+    text = messages(doc)
+    assert "已移除的旧接入字段" in text and "binding" in text
+
+
+def test_data_preparation_node_rejected():
+    doc = base_doc()
+    doc["nodes"].append({**_node("prep", "dataPreparation", "数据准备", "旧节点"), "pipeline": {}})
+    text = messages(doc)
+    assert "数据准备节点已移除" in text
+
+
+def test_removed_binding_fields_rejected():
+    doc = base_doc()
+    node(doc, "n1").pop("operation")
+    node(doc, "n1")["binding"] = {"project": "旧工程", "function": "judge"}
+    text = messages(doc)
+    assert "已移除的旧接入字段" in text and "binding" in text
+
+
+def test_data_preparation_node_rejected():
+    doc = base_doc()
+    doc["nodes"].append({**_node("prep", "dataPreparation", "数据准备", "旧节点"), "pipeline": {}})
+    text = messages(doc)
+    assert "数据准备节点已移除" in text
+
+
 def test_missing_branch_rejected():
     doc = base_doc()
     edge(doc, "e1").pop("branch")
