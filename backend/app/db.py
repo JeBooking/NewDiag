@@ -81,10 +81,11 @@ def init_db() -> None:
 
 
 def _migrate() -> None:
-    """补齐老库缺少的列。
+    """对齐老库结构：补缺失列，删已废弃的列与表。
 
-    create_all 只建缺失的表，已有表不会加列；所以升级到带目录 / 启动表单的版本后，
-    老库启动时必须自己 ALTER，否则查询会直接报 no such column。
+    create_all 只建缺失的表，已有表既不会加列也不会删列；所以升级到带目录 / 启动表单
+    的版本后，老库启动时必须自己 ALTER，否则查询会报 no such column；而删掉的模型字段
+    如果在旧库里还留着 NOT NULL 且无默认值，新建记录会直接撞约束（500）。
     """
     expected = {
         "instances": {"runtime_json": "TEXT NOT NULL DEFAULT '{}'",
@@ -97,6 +98,9 @@ def _migrate() -> None:
         },
         "releases": {"inputs_json": "TEXT NOT NULL DEFAULT '[]'"},
     }
+    # 已从模型里删掉的结构：列不删，旧库的 NOT NULL 约束会挡住新写入
+    removed_columns = {"flows": ("mode",), "releases": ("code_json",)}
+    removed_tables = ("diagnosis_states",)
     with engine.begin() as conn:
         tables = set(inspect(conn).get_table_names())
         for table, columns in expected.items():
@@ -124,6 +128,19 @@ def _migrate() -> None:
                                  THEN updated_at END
                         ) WHERE status != 'queued'
                     """)
+        for table, columns in removed_columns.items():
+            if table not in tables:
+                continue
+            existing = {str(row[1]) for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            for column in columns:
+                if column not in existing:
+                    continue
+                conn.exec_driver_sql(f"ALTER TABLE {table} DROP COLUMN {column}")
+                logger.info("迁移：%s 删除废弃列 %s", table, column)
+        for table in removed_tables:
+            if table in tables:
+                conn.exec_driver_sql(f"DROP TABLE {table}")
+                logger.warning("迁移：删除废弃表 %s", table)
 
 
 def get_db():

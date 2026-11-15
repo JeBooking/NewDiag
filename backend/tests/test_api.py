@@ -1263,3 +1263,13 @@ def test_init_db_migrates_old_database(tmp_path, monkeypatch):
         # 老版本没有启动表单列，读出空数组而不是报错
         release = client.get("/api/releases/r1").json()
         assert release["inputs"] == []
+
+        # 已废弃的 mode 列必须删掉：旧库里它是 NOT NULL 无默认值，留着会让新建流程撞约束
+        created = client.post("/api/flows", json={"name": "迁移后新建"})
+        assert created.status_code == 200, created.text
+        assert created.json()["name"] == "迁移后新建"
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(flows)")}
+    conn.close()
+    assert "mode" not in columns
