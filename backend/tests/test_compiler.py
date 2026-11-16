@@ -1,6 +1,7 @@
-"""validate_doc / compile_doc 的行为测试（spec 第 4、5 节）。
+"""validate_doc / compile_doc 的行为测试（spec 第 4、5、6 节）。
 
-v1.16 只有组合配置一种接入方式：节点选择 operation，参数来源在组合配置里声明。
+v1.17 只有一种接入方式：节点槽位；每个槽位填一个外接工程的公开方法，
+参数来源只有固定值、启动输入、现场参数和上一槽结果四种。
 """
 
 from __future__ import annotations
@@ -19,42 +20,33 @@ from app.services.compiler import ValidationError, compile_doc, validate_doc
 from app.services.rules import can_connect, is_single_successor
 
 START_ID = "start"
+PROJECT = "冷却系统"
+MODULE = "motor"
 
 
-def composition() -> dict:
+def construct(name: str = "motor") -> dict:
     return {
-        "objects": [
-            {"id": "motor", "project": "冷却系统", "module": "motor", "function": "Motor",
-             "arguments": {}},
-        ],
-        "resources": [],
-        "operations": [
-            {
-                "id": "checkVoltage",
-                "parameters": ["threshold"],
-                "calls": [
-                    {"id": "voltage", "project": "冷却系统", "module": "motor",
-                     "interface": "Motor.voltage", "function": "voltage",
-                     "target": {"source": "object", "name": "motor"},
-                     "arguments": {"device": {"source": "input", "name": "device"}}},
-                ],
-                "presentation": [],
-                "decision": {"result": {"source": "value", "name": "voltage"},
-                             "reason": {"lit": "读取母线电压"}},
-            },
-        ],
+        "object": name, "project": PROJECT, "module": MODULE,
+        "interface": "Motor", "function": "Motor", "arguments": {},
+    }
+
+
+def slot(function: str, arguments: dict | None = None, **extra) -> dict:
+    return {
+        "object": "motor", "project": PROJECT, "module": MODULE,
+        "interface": f"Motor.{function}", "function": function,
+        "arguments": arguments or {}, **extra,
     }
 
 
 def base_doc() -> dict:
-    """开始 → 排查（组合操作）→ 结论 → 处置 → 问题解决 / 上升。"""
+    """开始（构造）→ 排查（拉取／处理／展示／判定）→ 结论 → 处置 → 问题解决 / 上升。"""
     return {
         "format": 1,
         "name": "冷却系统诊断",
-        "composition": composition(),
         "nodes": [
-            _start_node([{"name": "device", "type": "text"}]),
-            _investigation("n1", "检查母线电压", "checkVoltage"),
+            _start_node([{"name": "device", "type": "text"}], [construct()]),
+            _investigation("n1"),
             _node("c1", "conclusion", "电压不足", "母线电压低于 210V"),
             _node("n3", "remediation", "调整稳压器", "把稳压器输出调到 220V"),
             _node("n5", "problemSolved", "问题解决", "电压恢复正常"),
@@ -70,7 +62,8 @@ def base_doc() -> dict:
     }
 
 
-def _start_node(inputs: list[dict] | None = None, nid: str = START_ID) -> dict:
+def _start_node(inputs: list[dict] | None = None, constructs: list[dict] | None = None,
+                nid: str = START_ID) -> dict:
     node = {
         "id": nid,
         "kind": "start",
@@ -80,6 +73,8 @@ def _start_node(inputs: list[dict] | None = None, nid: str = START_ID) -> dict:
     }
     if inputs is not None:
         node["inputs"] = inputs
+    if constructs is not None:
+        node["slots"] = {"constructs": constructs}
     return node
 
 
@@ -88,15 +83,18 @@ def _node(nid, kind, title, detail) -> dict:
             "position": {"x": 0, "y": 0}}
 
 
-def _investigation(nid: str, title: str, operation: str | None) -> dict:
-    node = _node(nid, "investigation", title, "读取母线电压是否低于 210V")
+def _investigation(nid: str, slots: dict | None = None) -> dict:
+    node = _node(nid, "investigation", "检查母线电压", "读取母线电压是否低于 210V")
     node["fields"] = {
         "observation": "母线电压",
         "acquisition": "调用数据服务器读取 voltage",
         "assessment": "低于 210V 判为异常",
     }
-    if operation:
-        node["operation"] = operation
+    node["slots"] = slots if slots is not None else {
+        "fetch": slot("voltage", {"device": {"source": "input", "name": "device"}}),
+        "present": slot("plot", view="image"),
+        "decide": slot("judge", {"value": {"source": "previous"}}),
+    }
     return node
 
 
@@ -117,9 +115,16 @@ def node(doc: dict, nid: str) -> dict:
 
 
 SIGNATURES = {
-    "冷却系统:motor:Motor": [],
-    "冷却系统:motor:Motor.voltage": [
+    f"{PROJECT}:{MODULE}:Motor": [],
+    f"{PROJECT}:{MODULE}:Motor.voltage": [
         {"name": "device", "type": "str", "required": True, "default": None},
+        {"name": "$keywords", "type": "no", "required": False, "default": None},
+    ],
+    f"{PROJECT}:{MODULE}:Motor.plot": [
+        {"name": "$keywords", "type": "no", "required": False, "default": None},
+    ],
+    f"{PROJECT}:{MODULE}:Motor.judge": [
+        {"name": "value", "type": "any", "required": False, "default": None},
         {"name": "$keywords", "type": "no", "required": False, "default": None},
     ],
 }
@@ -138,35 +143,67 @@ def test_valid_doc_compiles_to_plan():
     assert plan["flowId"] == "f1"
     assert plan["release"] == 3
     assert plan["entry"] == START_ID
-    assert plan["composition"]["operations"][0]["id"] == "checkVoltage"
+    assert "composition" not in plan
     assert "mode" not in plan
 
 
-def test_start_step_has_only_kind_and_next():
+def test_start_step_carries_constructs():
     plan = compile_doc(base_doc(), "f1", 1, functions=SIGNATURES)
-    assert plan["steps"][START_ID] == {"kind": "start", "next": {"default": ["n1"]}}
+    step = plan["steps"][START_ID]
+    assert step["kind"] == "start"
+    assert step["next"] == {"default": ["n1"]}
+    assert step["slots"]["constructs"][0]["object"] == "motor"
 
 
-def test_investigation_step_carries_operation_and_inputs():
-    doc = base_doc()
-    node(doc, "n1")["runtimeInputs"] = [{"name": "threshold", "type": "number"}]
-    plan = compile_doc(doc, "f1", 1, functions=SIGNATURES)
+def test_investigation_step_carries_slot_chain():
+    plan = compile_doc(base_doc(), "f1", 1, functions=SIGNATURES)
     step = plan["steps"]["n1"]
-    assert step["compositionOperation"] == "checkVoltage"
-    assert step["operationInputs"] == [{"name": "threshold", "type": "number"}]
     assert step["next"] == {"yes": ["c1"], "no": ["n9"]}
+    assert step["slots"]["fetch"]["function"] == "voltage"
+    assert step["slots"]["present"]["view"] == "image"
+    assert step["slots"]["decide"]["function"] == "judge"
+    assert step["slots"]["decide"]["fingerprint"] == ""
 
 
-def test_human_investigation_has_no_operation():
+def test_cache_switch_compiled_into_step():
     doc = base_doc()
-    node(doc, "n1").pop("operation")
+    node(doc, "n1")["slots"]["fetch"]["useCache"] = False
+    step = compile_doc(doc, "f1", 1, functions=SIGNATURES)["steps"]["n1"]
+    assert step["slots"]["fetch"]["useCache"] is False
+
+
+def test_cache_switch_rejected_outside_fetch():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["present"]["useCache"] = False
+    assert "只有拉取槽会缓存" in messages(doc)
+
+
+def test_runtime_inputs_compiled_into_step():
+    doc = base_doc()
+    node(doc, "n1")["runtimeInputs"] = [{"name": "scale", "type": "number"}]
+    step = compile_doc(doc, "f1", 1, functions=SIGNATURES)["steps"]["n1"]
+    assert step["runtimeInputs"] == [{"name": "scale", "type": "number"}]
+
+
+def test_human_decide_keeps_slots():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["decide"] = {"human": True}
+    plan = compile_doc(doc, "f1", 1, functions=SIGNATURES)
+    assert plan["steps"]["n1"]["slots"]["decide"] == {"human": True}
+    assert not plan["steps"]["n1"].get("human")
+
+
+def test_investigation_without_slots_is_human():
+    doc = base_doc()
+    node(doc, "n1").pop("slots")
+    doc["nodes"][0]["slots"] = {"constructs": [construct()]}
     plan = compile_doc(doc, "f1", 1, functions=SIGNATURES)
     assert plan["steps"]["n1"]["human"] is True
 
 
 def test_start_supports_multiple_successors():
     doc = base_doc()
-    doc["nodes"].append(_investigation("n2", "另一条思路", None))
+    doc["nodes"].append(_investigation("n2"))
     doc["edges"].append({"id": "s2", "from": START_ID, "to": "n2", "order": 2})
     doc["edges"].append({"id": "e5", "from": "n2", "to": "n9", "branch": "no", "order": 1})
     assert errors(doc) == []
@@ -187,7 +224,7 @@ def test_missing_start_rejected_on_publish():
 
 def test_two_start_nodes_rejected():
     doc = base_doc()
-    doc["nodes"].append(_start_node([{"name": "second"}], nid="start2"))
+    doc["nodes"].append(_start_node([{"name": "second"}], [construct("motor2")], nid="start2"))
     assert "开始节点必须全局唯一" in messages(doc)
 
 
@@ -218,41 +255,30 @@ def test_start_input_type_and_duplicate_rejected():
     assert "启动参数 device 的类型不支持" in messages(doc)
 
 
-def test_runtime_inputs_require_operation():
+def test_runtime_inputs_require_slots():
     doc = base_doc()
-    node(doc, "n1").pop("operation")
+    node(doc, "n1").pop("slots")
     node(doc, "n1")["runtimeInputs"] = [{"name": "threshold", "type": "number"}]
-    assert "节点现场参数需要绑定排查操作" in messages(doc)
+    assert "节点现场参数需要先配置槽位" in messages(doc)
 
 
 def test_removed_binding_fields_rejected():
     doc = base_doc()
-    node(doc, "n1").pop("operation")
-    node(doc, "n1")["binding"] = {"project": "旧工程", "function": "judge"}
+    node(doc, "n1")["operation"] = "old"
     text = messages(doc)
-    assert "已移除的旧接入字段" in text and "binding" in text
+    assert "已移除的旧接入字段" in text and "operation" in text
+
+
+def test_flow_level_composition_rejected():
+    doc = base_doc()
+    doc["composition"] = {"objects": [], "resources": [], "operations": []}
+    assert "对象／资源／操作配置已移除" in messages(doc)
 
 
 def test_data_preparation_node_rejected():
     doc = base_doc()
     doc["nodes"].append({**_node("prep", "dataPreparation", "数据准备", "旧节点"), "pipeline": {}})
-    text = messages(doc)
-    assert "数据准备节点已移除" in text
-
-
-def test_removed_binding_fields_rejected():
-    doc = base_doc()
-    node(doc, "n1").pop("operation")
-    node(doc, "n1")["binding"] = {"project": "旧工程", "function": "judge"}
-    text = messages(doc)
-    assert "已移除的旧接入字段" in text and "binding" in text
-
-
-def test_data_preparation_node_rejected():
-    doc = base_doc()
-    doc["nodes"].append({**_node("prep", "dataPreparation", "数据准备", "旧节点"), "pipeline": {}})
-    text = messages(doc)
-    assert "数据准备节点已移除" in text
+    assert "数据准备节点已移除" in messages(doc)
 
 
 def test_missing_branch_rejected():
@@ -321,46 +347,108 @@ def test_investigation_requires_fields():
     assert "取数方式" in text and "判定依据" in text
 
 
-# ---------------------------------------------------------------- 组合配置校验
+# ---------------------------------------------------------------- 槽位校验
 
 
-def test_operation_without_composition_rejected():
+def test_function_only_flow_needs_no_construct():
+    """纯函数工程不需要构造槽，只要没有槽位引用对象。"""
     doc = base_doc()
-    doc.pop("composition")
-    assert "选择排查操作前必须配置组合实例" in messages(doc)
+    doc["nodes"][0].pop("slots")
+    for name in ("fetch", "present", "decide"):
+        node(doc, "n1")["slots"][name].pop("object")
+    assert errors(doc) == []
 
 
-def test_unknown_operation_rejected():
+def test_construct_object_name_must_be_identifier():
     doc = base_doc()
-    node(doc, "n1")["operation"] = "missing"
-    assert "引用的排查操作不存在" in messages(doc, functions=SIGNATURES)
+    doc["nodes"][0]["slots"]["constructs"] = [construct("电机-1")]
+    assert "合法标识符" in messages(doc)
 
 
-def test_runtime_input_must_be_operation_parameter():
+def test_duplicate_construct_name_rejected():
     doc = base_doc()
-    node(doc, "n1")["runtimeInputs"] = [{"name": "unknown", "type": "number"}]
-    assert "现场参数名称或类型无效" in messages(doc, functions=SIGNATURES)
+    doc["nodes"][0]["slots"]["constructs"].append(construct())
+    assert "构造槽的对象名重复" in messages(doc)
 
 
-def test_argument_and_runtime_input_conflict_rejected():
+def test_slot_object_must_be_declared():
     doc = base_doc()
-    node(doc, "n1")["operationArguments"] = {"threshold": {"lit": 1}}
-    node(doc, "n1")["runtimeInputs"] = [{"name": "threshold", "type": "number"}]
-    assert "不能同时配置来源和现场输入" in messages(doc, functions=SIGNATURES)
+    node(doc, "n1")["slots"]["present"]["object"] = "unknown"
+    assert "引用了未声明的对象" in messages(doc)
 
 
-def test_input_argument_must_be_declared_on_start():
+def test_investigation_requires_present():
+    doc = base_doc()
+    node(doc, "n1")["slots"].pop("present")
+    assert "缺少展示槽" in messages(doc)
+
+
+def test_present_requires_view():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["present"].pop("view")
+    assert "展示槽必须选择展示类型" in messages(doc)
+
+
+def test_only_present_carries_view():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["fetch"]["view"] = "image"
+    assert "只有展示槽能指定展示类型" in messages(doc)
+
+
+def test_investigation_requires_decide():
+    doc = base_doc()
+    node(doc, "n1")["slots"].pop("decide")
+    assert "缺少判定槽" in messages(doc)
+
+
+def test_decide_needs_method_or_human():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["decide"] = {}
+    assert "必须选择方法或人工判断" in messages(doc)
+
+
+def test_human_decide_cannot_carry_interface():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["decide"] = {**slot("judge"), "human": True}
+    assert "要么选人工判断" in messages(doc)
+
+
+def test_previous_rejected_in_construct():
+    doc = base_doc()
+    doc["nodes"][0]["slots"]["constructs"][0]["arguments"] = {"values": {"source": "previous"}}
+    assert "构造参数不能引用上一槽返回值" in messages(doc)
+
+
+def test_previous_requires_upstream_slot_in_node():
+    """上一槽结果只认本节点内的上游槽，跨节点不传值。"""
+    doc = base_doc()
+    node(doc, "n1")["slots"].pop("fetch")
+    assert "没有拉取或处理槽" in messages(doc)
+
+
+def test_process_previous_requires_fetch():
+    doc = base_doc()
+    node(doc, "n1")["slots"].pop("fetch")
+    node(doc, "n1")["slots"]["process"] = slot("plot", {"data": {"source": "previous"}})
+    assert "没有拉取槽" in messages(doc)
+
+
+def test_removed_sources_rejected():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["fetch"]["arguments"] = {"device": {"source": "resource", "name": "x"}}
+    assert "来源无效" in messages(doc)
+
+
+def test_parameter_must_be_declared():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["fetch"]["arguments"] = {"device": {"source": "parameter", "name": "device"}}
+    assert "未声明的现场参数 device" in messages(doc)
+
+
+def test_input_must_be_declared_on_start():
     doc = base_doc()
     doc["nodes"][0]["inputs"] = [{"name": "other", "type": "text"}]
-    assert "启动输入 device 尚未在开始节点声明" in messages(doc, functions=SIGNATURES)
-
-
-def test_node_source_must_be_upstream():
-    doc = base_doc()
-    doc["composition"]["operations"][0]["calls"][0]["arguments"]["device"] = {
-        "source": "node", "name": "c1"
-    }
-    assert "只能引用上游节点结果" in messages(doc, functions=SIGNATURES)
+    assert "未在开始节点声明的启动输入 device" in messages(doc)
 
 
 def test_missing_probed_interface_rejected():
@@ -370,13 +458,20 @@ def test_missing_probed_interface_rejected():
 
 def test_missing_required_interface_argument_rejected():
     doc = base_doc()
-    doc["composition"]["operations"][0]["calls"][0]["arguments"] = {}
+    node(doc, "n1")["slots"]["fetch"]["arguments"] = {}
     assert "缺少必填参数 device" in messages(doc, functions=SIGNATURES)
 
 
-def test_lax_commit_downgrades_composition_issues():
+def test_unknown_interface_argument_rejected():
     doc = base_doc()
-    doc["composition"]["operations"][0]["calls"][0]["arguments"] = {}
+    node(doc, "n1")["slots"]["fetch"]["arguments"] = {
+        "device": {"source": "input", "name": "device"}, "other": {"lit": 1}}
+    assert "接口未声明的参数" in messages(doc, functions=SIGNATURES)
+
+
+def test_lax_commit_downgrades_slot_issues():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["fetch"]["arguments"] = {}
     assert errors(doc, functions=SIGNATURES, strict_binding=True)
     lax = [issue for issue in validate_doc(doc, SIGNATURES, strict_binding=False)
            if issue["level"] == "error"]
@@ -391,7 +486,7 @@ def test_lax_commit_keeps_structural_errors():
 
 def test_issues_are_json_safe():
     doc = base_doc()
-    node(doc, "n1")["operation"] = "missing"
+    node(doc, "n1")["slots"]["present"].pop("view")
     json.dumps(validate_doc(doc, functions=SIGNATURES), ensure_ascii=False)
 
 

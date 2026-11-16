@@ -1,0 +1,66 @@
+"""拉取缓存与「每次重新拉取」开关（worker/slot_runtime.py、services/slots.py）。"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from app.services.slots import validate
+from app.worker.slot_runtime import SlotRuntime
+
+CALL = {"project": "数据", "module": "feeder", "interface": "DataCenter.fetch",
+        "function": "fetch", "arguments": {}}
+
+
+def runtime(tmp_path):
+    calls = []
+
+    def invoke(project, request):
+        calls.append(request)
+        return {"value": f"v{len(calls)}"}
+
+    return SlotRuntime(str(tmp_path), invoke), calls
+
+
+def test_fetch_uses_cache_by_default(tmp_path):
+    slot, calls = runtime(tmp_path)
+    assert slot.fetch(dict(CALL)) == "v1"
+    assert slot.fetch(dict(CALL)) == "v1"
+    assert len(calls) == 1
+
+
+def test_disabling_cache_refetches_and_updates_it(tmp_path):
+    slot, calls = runtime(tmp_path)
+    assert slot.fetch(dict(CALL)) == "v1"
+
+    assert slot.fetch({**CALL, "useCache": False}) == "v2"
+    assert len(calls) == 2
+
+    # 重新拉取的值写回缓存，后续默认读取拿到新值
+    assert slot.fetch(dict(CALL)) == "v2"
+    assert len(calls) == 2
+
+
+def start_doc(slots):
+    return {"nodes": [{"id": "s1", "kind": "start", "slots": slots}]}
+
+
+def messages(doc):
+    return " | ".join(validate(doc))
+
+
+def test_only_fetch_accepts_cache_switch():
+    doc = start_doc({"fetch": {**CALL, "useCache": False}})
+    assert messages(doc) == ""
+
+    doc = start_doc({"fetch": dict(CALL), "process": {**CALL, "useCache": False}})
+    assert "只有拉取槽会缓存" in messages(doc)
+
+
+def test_cache_switch_must_be_boolean():
+    doc = start_doc({"fetch": {**CALL, "useCache": "yes"}})
+    assert "使用缓存开关必须为布尔值" in messages(doc)

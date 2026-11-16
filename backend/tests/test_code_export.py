@@ -32,8 +32,7 @@ def test_code_export_uses_snapshot_and_omits_runtime_data(tmp_path, monkeypatch)
     (directory / 'branch.json').write_text('PRIVATE_BRANCH')
     configuration = {'projects': {'工程': {'path': str(tmp_path / 'current-project'),
         'python': 'C:/original/python.exe', 'module': 'business'}},
-        'input': {'global': {'device': 'PRIVATE_INPUT'}}, 'states': 'PRIVATE_STATE',
-        'composition': {'objects': [], 'resources': [], 'operations': []}, 'meta': {}}
+        'input': {'global': {'device': 'PRIVATE_INPUT'}}, 'states': 'PRIVATE_STATE', 'meta': {}}
     (directory / 'configuration.json').write_text(json.dumps(configuration), encoding='utf-8')
     fields = [{'name': 'device', 'scope': 'global', 'type': 'text', 'default': 'PRIVATE_DEFAULT'},
               {'name': 'limit', 'scope': 'function', 'function': 'check', 'type': 'number'}]

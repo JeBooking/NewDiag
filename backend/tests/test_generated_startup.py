@@ -106,7 +106,7 @@ def test_generated_files_do_not_restart_development_backend(tmp_path):
         assert "WatchFiles detected changes" not in text, text
         detail = client.get(f"/api/instances/{instance}").json()
         review = next(item for item in detail["reviews"] if item["status"] == "pending")
-        accepted = client.post(f"/api/instances/{instance}/reviews/{review['id']}", json={"result": "done"})
+        accepted = client.post(f"/api/instances/{instance}/reviews/{review['id']}", json={"result": "yes"})
         assert accepted.status_code == 200, accepted.text
 
 

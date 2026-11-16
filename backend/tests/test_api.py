@@ -485,40 +485,27 @@ def composed_doc(
     inputs: list[dict] | None = None,
     arguments: dict | None = None,
 ) -> dict:
-    """开始节点 + 一个组合排查操作 + 上升。"""
+    """开始节点 + 一个槽位排查节点（展示与判定指向同一接口）+ 上升。"""
     declared = inputs if inputs is not None else [{"name": "voltage", "type": "number"}]
+    args = arguments if arguments is not None else {"voltage": {"source": "input", "name": "voltage"}}
+    call = {"project": project, "module": module, "interface": interface,
+            "function": interface, "arguments": args}
     return {
         "format": 1,
-        "name": "组合发布诊断",
-        "composition": {
-            "objects": [],
-            "resources": [],
-            "operations": [
-                {
-                    "id": "run",
-                    "parameters": [],
-                    "calls": [
-                        {"id": "call", "project": project, "module": module,
-                         "interface": interface, "function": interface,
-                         "arguments": arguments if arguments is not None else {}},
-                    ],
-                    "presentation": [],
-                },
-            ],
-        },
+        "name": "槽位发布诊断",
         "nodes": [
             start_doc_node(declared),
             {
                 "id": "n1",
                 "kind": "investigation",
-                "title": "调用组合操作",
+                "title": "调用槽位接口",
                 "detail": "读取接口返回值",
                 "fields": {
                     "observation": "返回值",
                     "acquisition": "调用接口",
                     "assessment": "返回 True 判为命中",
                 },
-                "operation": "run",
+                "slots": {"present": {**call, "view": "text"}, "decide": {**call}},
                 "position": {"x": 0, "y": 100},
             },
             {
@@ -536,8 +523,8 @@ def composed_doc(
     }
 
 
-def test_publish_compiles_composition_operation(client, tmp_path):
-    """发布按组合配置生成步骤表，并记录接口签名指纹。"""
+def test_publish_compiles_slot_chain(client, tmp_path):
+    """发布按槽位生成步骤表，并记录接口签名指纹。"""
     register_demo_project(client, tmp_path)
 
     doc = composed_doc("冷却系统", "cooling.diagnosis", "judge_voltage",
@@ -546,7 +533,9 @@ def test_publish_compiles_composition_operation(client, tmp_path):
     assert status == 200, body
 
     detail = client.get(f"/api/releases/{body['id']}").json()
-    assert detail["plan"]["steps"]["n1"]["compositionOperation"] == "run"
+    step = detail["plan"]["steps"]["n1"]
+    assert step["slots"]["decide"]["interface"] == "judge_voltage"
+    assert step["slots"]["present"]["view"] == "text"
     assert "冷却系统:cooling.diagnosis:judge_voltage" in detail["signature"]
 
 
@@ -687,7 +676,7 @@ def test_commit_is_lenient_but_publish_is_strict(client, tmp_path):
     register_demo_project(client, tmp_path, name="冷却系统B")
 
     doc = composed_doc("冷却系统B", "cooling.diagnosis", "judge_voltage",
-                       arguments={"voltage": {"source": "node", "name": "还没建的上游节点"}})
+                       arguments={"voltage": {"source": "resource", "name": "还没建的上游资源"}})
     flow = create_flow(client)
     flow_id = flow["id"]
     client.post(f"/api/flows/{flow_id}/checkout").raise_for_status()
@@ -695,13 +684,13 @@ def test_commit_is_lenient_but_publish_is_strict(client, tmp_path):
     commit = client.post(f"/api/flows/{flow_id}/commit")
     assert commit.status_code == 200, commit.text
     warnings = commit.json()["issues"]
-    assert any("只能引用上游节点结果" in item["message"] for item in warnings), warnings
+    assert any("来源无效" in item["message"] for item in warnings), warnings
     assert all(item["level"] == "warning" for item in warnings), warnings
 
     publish = client.post(f"/api/flows/{flow_id}/releases", json={})
     assert publish.status_code == 422, publish.text
     messages = " ".join(item["message"] for item in publish.json()["detail"])
-    assert "只能引用上游节点结果" in messages
+    assert "来源无效" in messages
 
 
 def test_rollback_to_single_exit_node(client):
@@ -733,6 +722,18 @@ def test_rollback_to_single_exit_node(client):
     assert body["status"] in {"running", "waiting", "paused"}
     # 旧待办被取消，不该再有待处理项挂在新一代上
     assert any(item["status"] == "cancelled" for item in body["reviews"])
+    # 回退本身也要留痕：轨迹里能看到从哪个到访退、按哪个分支、为什么
+    rolled = [run for run in body["runs"] if run["status"] == "rollback"]
+    assert rolled, [run["status"] for run in body["runs"]]
+    assert rolled[0]["nodeId"] == "n2"
+    assert rolled[0]["input"]["reason"] == "结论有误，重判"
+    assert rolled[0]["input"]["branch"] == "default"
+    # 回退本身也要留痕：轨迹里能看到从哪个到访退、按哪个分支、为什么
+    rolled = [run for run in body["runs"] if run["status"] == "rollback"]
+    assert rolled, [run["status"] for run in body["runs"]]
+    assert rolled[0]["nodeId"] == "n2"
+    assert rolled[0]["input"]["reason"] == "结论有误，重判"
+    assert rolled[0]["input"]["branch"] == "default"
 
 
 # ---------------------------------------------------------------- 目录与移动
@@ -876,7 +877,7 @@ def input_doc(
     inputs: list[dict] | None = None,
     arguments: dict | None = None,
 ) -> dict:
-    """开始节点声明全局启动参数，排查节点调用组合操作 check。"""
+    """开始节点声明全局启动参数，排查节点在展示与判定槽里调用 check。"""
     declared = inputs if inputs is not None else [
         {"name": "fault_time", "type": "datetime"},
         {"name": "device_id", "type": "text"},
@@ -884,24 +885,11 @@ def input_doc(
     args = arguments if arguments is not None else {
         item["name"]: {"source": "input", "name": item["name"]} for item in declared
     }
+    call = {"project": project, "module": "inputs.diagnosis",
+            "interface": "check", "function": "check", "arguments": args}
     return {
         "format": 1,
         "name": "带启动参数",
-        "composition": {
-            "objects": [],
-            "resources": [],
-            "operations": [
-                {
-                    "id": "run",
-                    "parameters": [],
-                    "calls": [
-                        {"id": "call", "project": project, "module": "inputs.diagnosis",
-                         "interface": "check", "function": "check", "arguments": args},
-                    ],
-                    "presentation": [],
-                },
-            ],
-        },
         "nodes": [
             start_doc_node(declared),
             {
@@ -914,7 +902,7 @@ def input_doc(
                     "acquisition": "调用 check",
                     "assessment": "返回 True 判为命中",
                 },
-                "operation": "run",
+                "slots": {"present": {**call, "view": "text"}, "decide": {**call}},
                 "position": {"x": 0, "y": 100},
             },
             {
@@ -1144,9 +1132,6 @@ def test_publish_skips_untrusted_signature_default(client, tmp_path):
 
     doc = composed_doc("默认值工程", "untrusted.diagnosis", "scheduled",
                        inputs=[{"name": "when", "type": "datetime"}], arguments={})
-    operation = doc["composition"]["operations"][0]
-    operation["decision"] = {"result": {"source": "value", "name": "call"},
-                             "reason": {"lit": "按计划时间判断"}}
     flow_id, release = seed_published(client, doc)
     detail = client.get(f"/api/releases/{release['id']}").json()
     inputs = {item["name"]: item for item in detail["inputs"]}
@@ -1273,3 +1258,47 @@ def test_init_db_migrates_old_database(tmp_path, monkeypatch):
     columns = {row[1] for row in conn.execute("PRAGMA table_info(flows)")}
     conn.close()
     assert "mode" not in columns
+
+
+def test_startup_reports_stale_instances(client, caplog):
+    """后端重启后，未结束的实例必须被点名，否则界面看起来只是「卡在某个节点」。"""
+    import logging
+
+    from app import db, models
+
+    flow = create_flow(client)
+    with db.SessionLocal() as session:
+        session.add(models.Instance(id="stale1", flow_id=flow["id"], release_id="r1", status="running"))
+        session.add(models.Instance(id="stale2", flow_id=flow["id"], release_id="r1", status="waiting"))
+        session.commit()
+
+    from app import main as app_main
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        app_main._report_stale_instances()
+
+    text = caplog.text
+    assert "2 个上次未结束的实例" in text
+    assert "stale1(running)" in text and "stale2(waiting)" in text
+
+
+def test_startup_reports_stale_instances(client, caplog):
+    """后端重启后，未结束的实例必须被点名，否则界面看起来只是「卡在某个节点」。"""
+    import logging
+
+    from app import db, models
+
+    flow = create_flow(client)
+    with db.SessionLocal() as session:
+        session.add(models.Instance(id="stale1", flow_id=flow["id"], release_id="r1", status="running"))
+        session.add(models.Instance(id="stale2", flow_id=flow["id"], release_id="r1", status="waiting"))
+        session.commit()
+
+    from app import main as app_main
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        app_main._report_stale_instances()
+
+    text = caplog.text
+    assert "2 个上次未结束的实例" in text
+    assert "stale1(running)" in text and "stale2(waiting)" in text
