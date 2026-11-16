@@ -118,8 +118,8 @@ def _annotation_type(annotation) -> str:
 def freeze_inputs(doc: dict, probed: dict) -> list[dict]:
     """把开始节点声明的参数与真实签名合成执行页的启动表单。
 
-    参数清单直接用编译器的 StartParams，保证「发布时冻结的表单」和「编译期绑定的来源」
-    是同一份口径（老文档的 snapshotFields 也会被当作全局参数）。
+    参数清单直接用编译器的 StartParams，保证「发布时冻结的表单」和「编译期槽位里的来源」
+    是同一份口径。
     冻结的意义：发布后改 doc 或改函数签名，老版本的表单不能跟着变。
     required 取签名该参数有无默认值；作者在设计期给了默认值就不算必填，执行页预填即可。
     签名默认值只有 defaultTrusted 时才写进表单：repr 兜底的值不是真值，写进去等于预填假数据。

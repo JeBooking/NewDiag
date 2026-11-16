@@ -28,7 +28,7 @@ ParamType = Literal["text", "number", "boolean", "datetime", "file", "array", "o
 Branch = Literal["yes", "no"]
 InstanceStatus = Literal["running", "waiting", "paused", "success", "failed", "escalated", "terminated"]
 TokenStatus = Literal["queued", "running", "waiting", "done", "failed", "abandoned"]
-RunStatus = Literal["ok", "failed", "abandoned"]
+RunStatus = Literal["ok", "failed", "abandoned", "rollback"]
 ReviewKind = Literal["decision", "action"]
 ReviewStatus = Literal["pending", "done", "cancelled"]
 ReviewResult = Literal["yes", "no", "done", "rollback", "continue"]
@@ -291,7 +291,7 @@ class ProjectFunction(ApiModel):
     kind: str | None = None
     fingerprint: str | None = None
     variadic_keywords: bool = False
-    composition_error: str | None = None
+    interface_error: str | None = None
     params: list[ProjectParam] = Field(default_factory=list)
     returns: str | None = None
 

@@ -72,7 +72,7 @@ def _normalize(payload: Any) -> dict[str, Any]:
                     "returns": item.get("returns"),
                 }
             )
-            for key in ('doc', 'kind', 'fingerprint', 'compositionError', 'variadicKeywords', "protocol", "version", "configParams", "manualFields",
+            for key in ('doc', 'kind', 'fingerprint', 'interfaceError', 'variadicKeywords', "protocol", "version", "configParams", "manualFields",
                         "automaticAcquisition", "automaticJudgment", "methods", "resources"):
                 if key in item:
                     functions[-1][key] = item[key]

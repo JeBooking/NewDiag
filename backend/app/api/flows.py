@@ -58,21 +58,8 @@ UNCATEGORIZED_ALIASES = frozenset({"root", "none", "null"})
 
 
 def empty_doc(name: str) -> dict:
+    """新建流程用的空白文档：槽位留空，由编排团队在节点上选接口。"""
     return {"format": 1, "name": name, "nodes": [], "edges": []}
-
-
-def instance_doc(name: str) -> dict:
-    """新建流程用的诊断实例模板：骨架齐全、没有业务内容。
-
-    组合配置留空，由编排团队选择原工程接口；模板不预设业务对象或启动参数。
-    """
-    return {
-        "format": 1,
-        "name": name,
-        'composition': {'objects': [], 'resources': [], 'operations': []},
-        "nodes": [],
-        "edges": [],
-    }
 
 
 def get_flow_or_404(db: Session, flow_id: str) -> Flow:
@@ -98,10 +85,16 @@ def revision_doc(revision: Revision | None) -> dict:
 
 
 def submitted_doc(value: dict) -> dict:
+    """前端提交的是编辑投影（format=1）；已经是持久格式时先摊平。"""
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=422, detail="流程文档必须是对象")
     try:
-        return expand(value)
+        doc = expand(value) if value.get("format") == 2 else value
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if doc.get("format") != 1:
+        raise HTTPException(status_code=422, detail=f"不支持的编辑文档格式 {doc.get('format')}")
+    return doc
 
 
 def current_revision(db: Session, flow: Flow) -> Revision | None:
@@ -302,7 +295,7 @@ def create_flow(payload: FlowCreate, db: Session = Depends(get_db)) -> FlowDetai
     require_folder(db, payload.folder_id)
     stamp = now_iso()
     # 新建即实例模板；导入 / 复制走各自的文档，不经过这里
-    doc = instance_doc(payload.name)
+    doc = empty_doc(payload.name)
     flow = Flow(
         id=new_id(),
         name=payload.name,
@@ -390,15 +383,12 @@ def _attachment_refs(doc: dict):
 
 
 def _bindings(doc: dict) -> list[dict]:
-    """流程包导出时记录的工程接口引用；组合配置是唯一来源。"""
-    composition = doc.get("composition")
-    if not isinstance(composition, dict):
-        return []
-    from app.services.composition import calls_in
+    """流程包导出时记录的工程接口引用；槽位是唯一来源。"""
+    from app.services.slots import calls_in
 
     seen: set[tuple[str, str, str]] = set()
     result: list[dict] = []
-    for call in calls_in(composition):
+    for _, call in calls_in(doc):
         project = str(call.get("project") or "")
         function = str(call.get("interface") or call.get("function") or "")
         module = str(call.get("module") or "")
