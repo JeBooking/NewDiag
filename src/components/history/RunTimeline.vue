@@ -8,12 +8,24 @@ const STATUS_TEXT: Record<RunStatus, string> = {
   ok: '成功',
   failed: '失败',
   abandoned: '已放弃',
+  rollback: '回退',
 }
 
-const STATUS_TYPE: Record<RunStatus, 'success' | 'danger' | 'info'> = {
+const STATUS_TYPE: Record<RunStatus, 'success' | 'danger' | 'info' | 'warning'> = {
   ok: 'success',
   failed: 'danger',
   abandoned: 'info',
+  rollback: 'warning',
+}
+
+const BRANCH_TEXT: Record<string, string> = { yes: '是', no: '否', default: '默认' }
+
+/** 回退那一步不展示输入输出，直接给一句人能读的说明 */
+function rollbackNote(run: RunRecord): string {
+  const input = (run.input ?? {}) as { reason?: unknown; branch?: unknown }
+  const reason = typeof input.reason === 'string' && input.reason ? input.reason : '未填原因'
+  const branch = typeof input.branch === 'string' ? BRANCH_TEXT[input.branch] ?? input.branch : ''
+  return `复用这次到访的结果${branch ? `，按「${branch}」继续` : ''} · 原因：${reason}`
 }
 
 const items = computed(() =>
@@ -52,7 +64,7 @@ function hasPayload(run: RunRecord): boolean {
         :key="run.id"
         :timestamp="formatTime(run.startedAt)"
         placement="top"
-        :type="run.status === 'failed' ? 'danger' : run.status === 'abandoned' ? 'info' : 'primary'"
+        :type="run.status === 'failed' ? 'danger' : run.status === 'rollback' ? 'warning' : run.status === 'abandoned' ? 'info' : 'primary'"
       >
         <div class="row">
           <span class="name">{{ nodeTitle(run.nodeId) }}</span>
@@ -61,6 +73,7 @@ function hasPayload(run: RunRecord): boolean {
           </el-tag>
           <span class="meta">第 {{ run.generation }} 代 · 尝试 {{ run.attempt }}</span>
         </div>
+        <div v-if="run.status === 'rollback'" class="note">{{ rollbackNote(run) }}</div>
         <div v-if="run.error" class="error">{{ run.error }}</div>
         <details v-if="hasPayload(run)" class="payload">
           <summary>输入 / 输出</summary>
@@ -108,6 +121,13 @@ function hasPayload(run: RunRecord): boolean {
   margin-top: 4px;
   font-size: 12px;
   color: var(--el-color-danger);
+  white-space: pre-wrap;
+}
+
+.note {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-color-warning);
   white-space: pre-wrap;
 }
 

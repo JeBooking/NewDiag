@@ -23,7 +23,7 @@ function time(value?: string | null): string {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
 }
 
-const resultText: Record<RunStatus, string> = { failed: '失败', ok: '成功', abandoned: '已放弃' }
+const resultText: Record<RunStatus, string> = { failed: '失败', ok: '成功', abandoned: '已放弃', rollback: '回退' }
 const runsByToken = computed(() => {
   const grouped: Record<string, RunRecord[]> = {}
   for (const run of props.runs) (grouped[run.tokenId] ??= []).push(run)

@@ -17,12 +17,14 @@ const STATUS_TEXT: Record<RunStatus, string> = {
   ok: '成功',
   failed: '失败',
   abandoned: '已放弃',
+  rollback: '回退',
 }
 
-const STATUS_TYPE: Record<RunStatus, 'success' | 'danger' | 'info'> = {
+const STATUS_TYPE: Record<RunStatus, 'success' | 'danger' | 'info' | 'warning'> = {
   ok: 'success',
   failed: 'danger',
   abandoned: 'info',
+  rollback: 'warning',
 }
 
 const REVIEW_STATUS_TEXT: Record<ReviewStatus, string> = {
@@ -444,6 +446,10 @@ function pretty(value: unknown): string {
 
 .dot.failed {
   background: var(--el-color-danger);
+}
+
+.dot.rollback {
+  background: var(--el-color-warning);
 }
 
 .dot.pending {
