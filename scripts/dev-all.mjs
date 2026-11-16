@@ -4,7 +4,7 @@
 // 后端进程仍在但不响应时，也必须通过健康探测恢复服务。
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, watch } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, watch } from 'node:fs'
 import { request } from 'node:http'
 import { Socket } from 'node:net'
 import { dirname, join } from 'node:path'
@@ -15,6 +15,27 @@ const here = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(here, '..')
 const backendDir = join(projectRoot, 'backend')
 const isWin = process.platform === 'win32'
+
+const devLogFile = join(backendDir, 'logs', 'dev-all.log')
+
+// 守护进程自己的输出（重启原因、子进程退出码）不进 uvicorn 的 app.log，
+// 单独落一份，事后才能对上「实例卡住」和「后端被重启」的时间点。
+try {
+  mkdirSync(join(backendDir, 'logs'), { recursive: true })
+} catch {
+  // 目录建不出来就只打控制台
+}
+for (const [method, tag] of [['log', 'INFO '], ['warn', 'WARN '], ['error', 'ERROR']]) {
+  const original = console[method].bind(console)
+  console[method] = (...args) => {
+    original(...args)
+    try {
+      appendFileSync(devLogFile, `${new Date().toISOString()} ${tag} ${args.map(String).join(' ')}\n`)
+    } catch {
+      // 写不进文件不影响控制台
+    }
+  }
+}
 
 const BACKEND_PORT = 8000
 const WEB_PORT = 5173
@@ -92,6 +113,7 @@ function start(name, command, args, options) {
     ...options,
   })
   children.push({ name, child })
+  console.log(`[dev] ${name} 启动 pid=${child.pid}`)
 
   child.on('error', (error) => {
     console.error(`[dev] ${name} 启动失败：${error.message}`)
