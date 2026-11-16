@@ -17,6 +17,7 @@
 
 - [composed-basic](examples/composed-basic/README.md)：最小可跑示例，两个普通工程。
 - [slot-showcase](examples/slot-showcase/README.md)：全功能示例，三个工程、五种展示、现场参数、跳转与并行分支。
+- [desktop-mvc](examples/desktop-mvc/README.md)：把一个 Tkinter 桌面应用的 Model 与 View 直接当处理、展示模块接入。
 - [code-export-standalone](examples/code-export-standalone/README.md)：无第三方依赖、无资源、无输入，用来查看导出的代码并在本地直接运行。
 
 ## 快速开始

@@ -1,0 +1,304 @@
+{
+  "format": 1,
+  "name": "桌面 MVC 应用接入示例",
+  "nodes": [
+    {
+      "id": "s0",
+      "kind": "start",
+      "title": "开始",
+      "detail": "",
+      "inputs": [
+        {
+          "name": "points",
+          "type": "number",
+          "default": 40
+        }
+      ],
+      "slots": {
+        "constructs": [
+          {
+            "project": "数据拉取",
+            "module": "desktop_app.source",
+            "interface": "Sensor",
+            "function": "Sensor",
+            "arguments": {},
+            "object": "sensor"
+          },
+          {
+            "project": "桌面应用",
+            "module": "desktop_app.model",
+            "interface": "Model",
+            "function": "Model",
+            "arguments": {},
+            "object": "model"
+          },
+          {
+            "project": "桌面应用",
+            "module": "desktop_app.view",
+            "interface": "View",
+            "function": "View",
+            "arguments": {
+              "width": {
+                "lit": 640
+              },
+              "height": {
+                "lit": 220
+              }
+            },
+            "object": "view"
+          },
+          {
+            "project": "判定规则",
+            "module": "desktop_rules",
+            "interface": "Rules",
+            "function": "Rules",
+            "arguments": {
+              "limit": {
+                "lit": 75
+              }
+            },
+            "object": "rules"
+          }
+        ]
+      },
+      "position": {
+        "x": 0,
+        "y": 120
+      }
+    },
+    {
+      "id": "n1",
+      "kind": "investigation",
+      "title": "温度曲线检查",
+      "detail": "取一段温度曲线，平滑后画出来，并按阈值判定是否越线",
+      "fields": {
+        "observation": "设备温度",
+        "acquisition": "传感器读数",
+        "assessment": "峰值超过 75°C"
+      },
+      "slots": {
+        "fetch": {
+          "project": "数据拉取",
+          "module": "desktop_app.source",
+          "interface": "Sensor.read",
+          "function": "read",
+          "arguments": {
+            "points": {
+              "source": "input",
+              "name": "points"
+            },
+            "seed": {
+              "lit": 7
+            }
+          },
+          "object": "sensor"
+        },
+        "process": {
+          "project": "桌面应用",
+          "module": "desktop_app.model",
+          "interface": "Model.smooth",
+          "function": "smooth",
+          "arguments": {
+            "series": {
+              "source": "previous"
+            },
+            "window": {
+              "lit": 3
+            }
+          },
+          "object": "model"
+        },
+        "present": {
+          "project": "桌面应用",
+          "module": "desktop_app.view",
+          "interface": "View.chart",
+          "function": "chart",
+          "arguments": {
+            "series": {
+              "source": "previous"
+            }
+          },
+          "object": "view",
+          "view": "image"
+        },
+        "decide": {
+          "project": "判定规则",
+          "module": "desktop_rules",
+          "interface": "Rules.overheating",
+          "function": "overheating",
+          "arguments": {
+            "series": {
+              "source": "previous"
+            }
+          },
+          "object": "rules"
+        }
+      },
+      "position": {
+        "x": 240,
+        "y": 80
+      }
+    },
+    {
+      "id": "n2",
+      "kind": "investigation",
+      "title": "统计指标复核",
+      "detail": "同一段数据算出峰值、均值，人工确认后再决定是否处置",
+      "fields": {
+        "observation": "统计指标",
+        "acquisition": "复用缓存读数",
+        "assessment": "人工确认"
+      },
+      "slots": {
+        "fetch": {
+          "project": "数据拉取",
+          "module": "desktop_app.source",
+          "interface": "Sensor.read",
+          "function": "read",
+          "arguments": {
+            "points": {
+              "source": "input",
+              "name": "points"
+            },
+            "seed": {
+              "lit": 7
+            }
+          },
+          "object": "sensor"
+        },
+        "process": {
+          "project": "桌面应用",
+          "module": "desktop_app.model",
+          "interface": "Model.summary",
+          "function": "summary",
+          "arguments": {
+            "series": {
+              "source": "previous"
+            }
+          },
+          "object": "model"
+        },
+        "present": {
+          "project": "桌面应用",
+          "module": "desktop_app.view",
+          "interface": "View.metrics",
+          "function": "metrics",
+          "arguments": {
+            "summary": {
+              "source": "previous"
+            }
+          },
+          "object": "view",
+          "view": "metrics"
+        },
+        "decide": {
+          "human": true
+        }
+      },
+      "position": {
+        "x": 480,
+        "y": 80
+      }
+    },
+    {
+      "id": "c1",
+      "kind": "conclusion",
+      "title": "结论：温度过高",
+      "detail": "峰值已超过阈值，需要检查散热风道与风扇转速",
+      "position": {
+        "x": 720,
+        "y": 0
+      }
+    },
+    {
+      "id": "r1",
+      "kind": "remediation",
+      "title": "检查散热风道",
+      "detail": "清理风道、确认风扇转速，复测温度回落情况",
+      "position": {
+        "x": 960,
+        "y": 0
+      }
+    },
+    {
+      "id": "solved",
+      "kind": "problemSolved",
+      "title": "问题解决",
+      "detail": "温度回到阈值以内",
+      "position": {
+        "x": 1200,
+        "y": 80
+      }
+    },
+    {
+      "id": "c2",
+      "kind": "conclusion",
+      "title": "结论：温度正常",
+      "detail": "峰值未越过阈值，本轮不需要处置",
+      "position": {
+        "x": 720,
+        "y": 180
+      }
+    },
+    {
+      "id": "esc",
+      "kind": "escalation",
+      "title": "上升",
+      "detail": "转交设备工程师跟进",
+      "position": {
+        "x": 960,
+        "y": 260
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e0",
+      "from": "s0",
+      "to": "n1"
+    },
+    {
+      "id": "e1",
+      "from": "n1",
+      "to": "n2",
+      "branch": "yes",
+      "order": 1
+    },
+    {
+      "id": "e2",
+      "from": "n1",
+      "to": "c2",
+      "branch": "no",
+      "order": 2
+    },
+    {
+      "id": "e3",
+      "from": "n2",
+      "to": "c1",
+      "branch": "yes",
+      "order": 1
+    },
+    {
+      "id": "e4",
+      "from": "n2",
+      "to": "c2",
+      "branch": "no",
+      "order": 2
+    },
+    {
+      "id": "e5",
+      "from": "c1",
+      "to": "r1"
+    },
+    {
+      "id": "e6",
+      "from": "r1",
+      "to": "solved"
+    },
+    {
+      "id": "e7",
+      "from": "c2",
+      "to": "esc"
+    }
+  ]
+}
