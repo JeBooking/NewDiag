@@ -9,15 +9,15 @@ import logging
 import os
 import subprocess
 import sys
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import artifacts, diagnosis_sdk, node_sdk
-from .composition_runtime import CompositionRuntime
+from . import artifacts, node_sdk
+from .slot_runtime import SlotRuntime
 
-sys.modules.setdefault("diagnosis_sdk", diagnosis_sdk)
 sys.modules.setdefault("node_sdk", node_sdk)
 
 
@@ -164,8 +164,8 @@ class Context:
                        "attachments": meta.get("attachments", []), "nodeKind": step["kind"]}
         if step.get("terminal"):
             self.branch = "default"
-        elif self.config.get("composition") is not None and (step["kind"] == "start" or step.get("compositionOperation")):
-            self.branch = self.composition(step)
+        elif step.get("slots"):
+            self.branch = self.slots(step)
         elif step.get("human"):
             kind = "decision" if step["kind"] == "investigation" else "action"
             answer = self.ask({**self.prompt, "type": kind})
@@ -186,34 +186,40 @@ class Context:
             return "no"
         raise ValueError("判断结果必须为布尔值或 yes/no")
 
-    def composition(self, step):
+    def slots(self, step):
+        """按固定链执行节点槽位；人工输入由平台或终端接管。"""
         def invoke(project, request):
-            return self.invoke(project, '__newdiag_composition__', {**request, 'fileRoot': self.config['fileRoot']})
-        runtime = CompositionRuntime(self.config['composition'], self.root, invoke,
-                                     self.states.get('$composition'))
-        runtime.inputs = self.config['input'].get('global', self.config['input'])
-        runtime.file_root = Path(self.config['fileRoot'])
-        runtime.history = self.history
+            return self.invoke(project, "__newdiag_slot__", {**request, "fileRoot": self.config["fileRoot"]})
+
+        runtime = SlotRuntime(self.root, invoke, self.config.get("fileRoot"), self.states.get("$slots"))
+        runtime.inputs = self.config["input"].get("global", self.config["input"])
         try:
-            self.arguments = {name: runtime.resolve(value, {})
-                              for name, value in step.get('operationArguments', {}).items()}
+            fields = step.get("runtimeInputs") or []
+
             def execute(answer=None):
-                if answer:
-                    self.arguments.update(answer['data'])
-                return runtime.execute(runtime.inputs, step.get('compositionOperation'), self.arguments)
-            fields = step.get('operationInputs', [])
-            value = self.human_step({**self.prompt, 'type': 'parameters', 'fields': fields}, execute) if fields else execute()
+                parameters = dict(answer["data"]) if answer else {}
+                return runtime.run(step, parameters)
+
+            value = self.human_step({**self.prompt, "type": "parameters", "fields": fields}, execute) if fields else execute()
         finally:
-            self.states['$composition'] = runtime.save()
-        if step['kind'] == 'start':
-            self.output = {'initialized': True}
-            return 'default'
-        self.evidence = {'presentation': value['presentation'], 'composition': {'stages': runtime.stages}}
-        if value.get('result') is None:
-            answer = self.ask({**self.prompt, 'type': 'judgment', 'presentation': value['presentation']})
-            value.update(result=answer['result'], reason=answer.get('reason', '人工判断'))
-        self.output = value
-        return self.decision(value)
+            self.states["$slots"] = runtime.save()
+        if step["kind"] == "start":
+            self.output = {"initialized": True}
+            return "default"
+        blocks = value["blocks"]
+        self.evidence = {"presentation": {"blocks": blocks}, "slots": {"stages": runtime.stages}}
+        presentation_payload = {"blocks": blocks}
+        if value["human"]:
+            answer = self.ask({**self.prompt, "type": "decision", "presentation": presentation_payload})
+            self.output = {"presentation": presentation_payload, "result": answer["result"],
+                           "reason": answer.get("reason", "人工判断")}
+            return self.decision(answer["result"])
+        if value["result"] is None:
+            answer = self.ask({**self.prompt, "type": "judgment", "presentation": presentation_payload})
+            value["result"], value["reason"] = answer["result"], answer.get("reason", "人工判断")
+        self.output = {"presentation": presentation_payload, "result": value["result"],
+                       "reason": value["reason"]}
+        return self.decision(value["result"])
 
     def run(self, nodes, entry):
         node = entry
@@ -221,7 +227,10 @@ class Context:
         solved = False
         while node:
             try:
+                started = time.monotonic()
                 targets = nodes[node](self)
+                print(f"节点 {node} 完成 branch={self.branch} 用时={round((time.monotonic() - started) * 1000)}ms",
+                      file=sys.stderr)
                 self.history[node] = artifacts.save(self.root, {"input": self.arguments, "output": self.output})
                 terminal = self.prompt["nodeKind"] in ("problemSolved", "escalation")
                 solved = solved or self.prompt["nodeKind"] == "problemSolved"

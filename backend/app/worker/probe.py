@@ -175,7 +175,7 @@ def _describe(name: str, func) -> dict:
         fingerprint = ''
     return {"name": name, "params": params, "returns": _type_name(signature.return_annotation),
             'doc': inspect.getdoc(func) or '', 'fingerprint': fingerprint,
-            'compositionError': '接口必须同步且支持关键字参数' if inspect.iscoroutinefunction(func)
+            'interfaceError': '接口必须同步且支持关键字参数' if inspect.iscoroutinefunction(func)
                 or any(p.kind == p.POSITIONAL_ONLY for p in signature.parameters.values()) else None,
             'variadicKeywords': any(p.kind == p.VAR_KEYWORD for p in signature.parameters.values())}
 

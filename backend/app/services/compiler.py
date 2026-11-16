@@ -1,7 +1,7 @@
-"""doc → plan 校验与编译（spec 第 4、5 节）。
+"""doc → plan 校验与编译（spec 第 4、5、6 节）。
 
 发布时执行一次，产物不可变；执行期不再读 doc。
-v1.15 起只有一种接入方式：流程组合配置原工程的实例对象、固定资源和排查操作。
+v1.17 起只有一种接入方式：节点槽位，每个槽位填一个外接工程的公开方法。
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 from . import rules
+from .slots import calls_in_node, freeze_slots, slots_of, validate as validate_slots, walk_argument
 from app.worker.input_types import INPUT_TYPES
 
 logger = logging.getLogger(__name__)
@@ -30,12 +31,10 @@ def validate_doc(
     doc: dict,
     functions: dict | None = None,
     strict_binding: bool = True,
-    require_start: bool = True,
 ) -> list[dict]:
     """返回 issue 列表；level=error 才算阻断。
 
-    strict_binding=False 供 commit 使用：组合配置问题一律降级为 warning，半成品能存。
-    require_start=False 供老版本文档重编译使用：没有 start 节点时退回旧的入口算法。
+    strict_binding=False 供 commit 使用：槽位问题降级为 warning，半成品能存。
     """
     issues: list[dict] = []
     if not isinstance(doc, dict):
@@ -62,41 +61,37 @@ def validate_doc(
 
     # 空值不算旧格式：清掉内容的残留字段不该把流程永久锁死
     if doc.get("diagnosis") or doc.get("snapshotFields"):
-        issues.append(_issue(LEVEL_ERROR, "这是旧格式流程：诊断类与快照字段已移除，请用组合配置重新编排"))
+        issues.append(_issue(LEVEL_ERROR, "这是旧格式流程：诊断类与快照字段已移除，请用节点槽位重新编排"))
     for nid, node in nodes_by_id.items():
         kind = node.get("kind")
-        if node.get("runtimeInputs") and not node.get("operation"):
-            issues.append(_issue(LEVEL_ERROR, "节点现场参数需要绑定排查操作", node_id=nid))
+        if node.get("runtimeInputs") and not node.get("slots"):
+            issues.append(_issue(LEVEL_ERROR, "节点现场参数需要先配置槽位", node_id=nid))
         if kind == "dataPreparation":
-            issues.append(_issue(LEVEL_ERROR, "数据准备节点已移除，请改用固定资源并在参数来源里选「资源」", node_id=nid))
+            issues.append(_issue(LEVEL_ERROR, "数据准备节点已移除：取数请配置在开始节点或排查节点的拉取槽", node_id=nid))
         elif kind not in rules.V1_KINDS:
             issues.append(_issue(LEVEL_ERROR, f"v1 不支持的节点类型：{kind}", node_id=nid))
-        legacy = [key for key in ("binding", "pipeline", "method", "params", "outputs") if node.get(key)]
+        legacy = [key for key in ("binding", "pipeline", "method", "params", "outputs",
+                                  "operation", "operationArguments") if node.get(key)]
         if legacy:
             issues.append(_issue(
                 LEVEL_ERROR,
-                f"节点仍在使用已移除的旧接入字段（{', '.join(legacy)}）：请改为选择组合操作",
+                f"节点仍在使用已移除的旧接入字段（{', '.join(legacy)}）：请改为在槽位里选择接口",
                 node_id=nid,
             ))
+        if doc.get("composition"):
+            issues.append(_issue(LEVEL_ERROR, "流程级的对象／资源／操作配置已移除，请改用节点槽位"))
 
     valid_edges = _check_edges(edges, nodes_by_id, issues)
     shaped_edges = [e for e in edges if e.get("from") in nodes_by_id and e.get("to") in nodes_by_id]
     outgoing = _outgoing_map(nodes_by_id, valid_edges)
-    incoming: dict[str, list[str]] = {nid: [] for nid in nodes_by_id}
-    for src, targets in outgoing.items():
-        for dst in targets:
-            incoming[dst].append(src)
-
     _check_node_fields(nodes_by_id, issues)
     _check_out_edges(nodes_by_id, valid_edges, outgoing, issues)
-    entry = _check_start(nodes_by_id, shaped_edges, valid_edges, issues, require_start)
-    if entry is None:
-        entry = _check_entry(nodes_by_id, incoming, issues)
+    entry = _check_start(nodes_by_id, shaped_edges, valid_edges, issues)
     if entry is not None:
         _check_reachability(entry, nodes_by_id, outgoing, issues)
         _check_cycles(entry, outgoing, issues)
     start = StartParams(doc)
-    found = _check_composition(doc, nodes_by_id, valid_edges, start, functions)
+    found = _check_slots(doc, nodes_by_id, start, functions)
     for issue in found:
         if not strict_binding and issue.get("level") == LEVEL_ERROR:
             issue = {**issue, "level": LEVEL_WARNING}
@@ -108,20 +103,32 @@ class NodeDefinition:
     """节点类只编译执行描述，人工等待和持久化仍由调度器负责。"""
 
     def compile(self, node, nodes, edges, start, functions):
-        return {"kind": node["kind"], "next": _next_map(node["id"], node["kind"], edges)}
+        step = {"kind": node["kind"], "next": _next_map(node["id"], node["kind"], edges)}
+        if node.get("runtimeInputs"):
+            # 现场参数在执行前收集，槽位里的 parameter 来源按名字取
+            step["runtimeInputs"] = node["runtimeInputs"]
+        return step
 
 
 class StartNode(NodeDefinition):
-    pass
+    def compile(self, node, nodes, edges, start, functions):
+        step = super().compile(node, nodes, edges, start, functions)
+        slots = {key: value for key, value in slots_of(node).items()
+                 if key in ("constructs", "fetch", "process")}
+        if slots:
+            step["slots"] = slots
+        return step
 
 
 class InvestigationNode(NodeDefinition):
     def compile(self, node, nodes, edges, start, functions):
         step = super().compile(node, nodes, edges, start, functions)
-        if node.get("operation"):
-            step["compositionOperation"] = node["operation"]
-            step["operationArguments"] = node.get("operationArguments", {})
+        slots = {key: value for key, value in slots_of(node).items()
+                 if key in ("fetch", "process", "present", "decide")}
+        if slots:
+            step["slots"] = slots
         else:
+            # 没有任何槽位的历史文档按人工节点执行
             step["human"] = True
         return step
 
@@ -175,7 +182,6 @@ def compile_doc(
     flow_id: str,
     release_no: int,
     functions: dict | None = None,
-    require_start: bool = True,
 ) -> dict:
     """把 doc 编译成 plan。校验不过抛 ValidationError。
 
@@ -183,7 +189,7 @@ def compile_doc(
     """
     issues = [
         i
-        for i in validate_doc(doc, functions, require_start=require_start)
+        for i in validate_doc(doc, functions)
         if i.get("level") == LEVEL_ERROR
     ]
     if issues:
@@ -193,7 +199,7 @@ def compile_doc(
     edges = [e for e in doc.get("edges", []) if isinstance(e, dict)]
     valid_edges = [e for e in edges if e.get("from") in nodes_by_id and e.get("to") in nodes_by_id]
     start = StartParams(doc)
-    entry = start.id or _find_entry(nodes_by_id, valid_edges)
+    entry = start.id
 
     steps: dict[str, dict] = {}
     for nid in sorted(nodes_by_id):
@@ -201,11 +207,6 @@ def compile_doc(
         steps[nid] = NODE_DEFINITIONS[node["kind"]].compile(
             node, nodes_by_id, valid_edges, start, functions,
         )
-        if node.get("operation") and doc.get("composition"):
-            operation = next(item for item in doc["composition"]["operations"] if item["id"] == node["operation"])
-            declared = {item["name"]: item for item in node.get("runtimeInputs", [])}
-            steps[nid]["operationInputs"] = [declared.get(name, {"name": name, "type": "json", "required": True})
-                for name in operation.get("parameters", []) if name not in node.get("operationArguments", {})]
 
     logger.info(
         "编译 flow=%s release=%s：%d 个节点，%d 个人工节点",
@@ -223,9 +224,7 @@ def compile_doc(
         "steps": steps,
         "signature": {},
     }
-    if doc.get("composition") is not None:
-        from .composition import freeze
-        plan["composition"] = freeze(doc["composition"], functions)
+    freeze_slots(plan, functions)
     return plan
 
 
@@ -354,20 +353,18 @@ def _check_start(
     shaped_edges: list[dict],
     valid_edges: list[dict],
     issues: list[dict],
-    require_start: bool,
 ) -> str | None:
-    """开始节点：全局唯一、无入边、至少一条出边、不绑函数。
+    """开始节点：全局唯一、无入边、至少一条出边。
 
-    返回入口 id；没有开始节点时返回 None，由 _check_entry 走旧规则。
+    返回入口 id；没有开始节点时返回 None。
     """
     starts = sorted(
         nid for nid, node in nodes_by_id.items() if rules.is_start_kind(node.get("kind", ""))
     )
     if not starts:
-        if require_start:
-            issues.append(
-                _issue(LEVEL_ERROR, "缺少开始节点：流程必须有且只有一个开始节点，请新建后连到第一个排查节点")
-            )
+        issues.append(
+            _issue(LEVEL_ERROR, "缺少开始节点：流程必须有且只有一个开始节点，请新建后连到第一个排查节点")
+        )
         return None
 
     if len(starts) > 1:
@@ -416,26 +413,6 @@ def _check_start_inputs(nid: str, node: dict, issues: list[dict]) -> None:
             issues.append(_issue(LEVEL_ERROR, f"启动参数 {name} 重复", node_id=nid))
             continue
         seen.add(name)
-
-
-def _check_entry(
-    nodes_by_id: dict[str, dict], incoming: dict[str, list[str]], issues: list[dict]
-) -> str | None:
-    """旧文档（没有开始节点）的入口规则：入度为 0 且只允许一个。"""
-    entries = [nid for nid in nodes_by_id if not incoming.get(nid)]
-    if not entries:
-        issues.append(_issue(LEVEL_ERROR, "没有入口节点（缺少入度为 0 的节点）"))
-        return None
-    if len(entries) > 1:
-        issues.append(
-            _issue(LEVEL_ERROR, f"入口节点必须恰好一个，当前有 {len(entries)} 个：{', '.join(entries)}")
-        )
-        return None
-    entry = entries[0]
-    if nodes_by_id[entry].get("kind") != "investigation":
-        issues.append(_issue(LEVEL_ERROR, "入口节点必须是排查节点", node_id=entry))
-        return None
-    return entry
 
 
 def _check_reachability(
@@ -498,37 +475,18 @@ def _check_cycles(entry: str, outgoing: dict[str, list[str]], issues: list[dict]
             )
 
 
-def _check_composition(doc, nodes, edges, start, functions):
-    """组合配置的接口、参数来源和上游节点引用校验。"""
-    composition = doc.get("composition")
-    if composition is None:
-        if any(node.get("operation") for node in nodes.values()):
-            return [_issue(LEVEL_ERROR, "选择排查操作前必须配置组合实例")]
-        return []
-    from .composition import configuration_expressions, validate, walk_expression
-
-    errors = validate(composition, list(nodes.values()), functions)
+def _check_slots(doc, nodes, start, functions):
+    """槽位校验：接口是否可探测、参数来源是否合法、启动输入是否已声明。"""
+    errors = validate_slots(doc, functions)
     declared = start.global_names()
-
-    def check_inputs(expression):
-        for value in walk_expression(expression):
-            if value.get("source") == "input" and value.get("name") not in declared:
-                errors.append(f"启动输入 {value.get('name')} 尚未在开始节点声明")
-
-    if isinstance(composition, dict) and not errors:
-        for value in configuration_expressions(composition):
-            check_inputs(value)
-        for node in nodes.values():
-            operation = next((item for item in composition["operations"] if item["id"] == node.get("operation")), None)
-            expressions = list(node.get("operationArguments", {}).values())
-            if operation:
-                expressions += list(configuration_expressions({"operations": [operation]}))
-            ancestors = set(_upstream_ids(node["id"], edges))
-            for value in expressions:
-                check_inputs(value)
-                for source in walk_expression(value):
-                    if source.get("source") == "node" and source.get("name") not in ancestors:
-                        errors.append(f"节点 {node['id']} 只能引用上游节点结果：{source.get('name')}")
+    for node in nodes.values():
+        for name, call in calls_in_node(node):
+            for value in call.get("arguments", {}).values():
+                for item in walk_argument(value):
+                    if item.get("source") == "input" and item.get("name") not in declared:
+                        errors.append(
+                            f"节点 {node.get('id')} 的{name}槽引用了未在开始节点声明的启动输入 {item.get('name')}"
+                        )
     return [_issue(LEVEL_ERROR, message) for message in errors]
 
 
@@ -556,7 +514,7 @@ def _find_start_node(doc: dict) -> dict | None:
 
 
 def _collect_start_params(doc: dict, start: dict | None) -> list[dict]:
-    """开始节点的 inputs；旧文档的 snapshotFields 一并当作全局参数。"""
+    """开始节点声明的启动参数。"""
     items: list[dict] = []
     seen: set[str] = set()
     raw = start.get("inputs") if start else None
@@ -568,21 +526,7 @@ def _collect_start_params(doc: dict, start: dict | None) -> list[dict]:
             continue
         seen.add(name)
         items.append({"name": name})
-    for field in _snapshot_fields(doc):
-        if field in seen:
-            continue
-        seen.add(field)
-        items.append({"name": field})
     return items
-
-
-def _snapshot_fields(doc: dict) -> list[str]:
-    raw = doc.get("snapshotFields")
-    if isinstance(raw, dict):
-        return [str(k) for k in raw]
-    if isinstance(raw, list):
-        return [str(v) for v in raw if isinstance(v, str)]
-    return []
 
 
 def _upstream_ids(node_id: str, edges: list[dict]) -> list[str]:
@@ -609,32 +553,6 @@ def _upstream_ids(node_id: str, edges: list[dict]) -> list[str]:
 def _next_map(node_id: str, kind: str, edges: list[dict]) -> dict[str, list[str]]:
     groups = rules.outgoing_groups(edges, node_id, kind)
     return {branch: [e["to"] for e in group] for branch, group in groups.items()}
-
-
-def _find_entry(nodes_by_id: dict[str, dict], edges: list[dict]) -> str:
-    """没有开始节点时的旧算法：入度为 0 且可达节点最多的那个。"""
-    incoming = {nid: 0 for nid in nodes_by_id}
-    for edge in edges:
-        if edge.get("to") in incoming:
-            incoming[edge["to"]] += 1
-    roots = sorted(nid for nid in nodes_by_id if incoming[nid] == 0)
-    if not roots:
-        raise ValidationError([_issue(LEVEL_ERROR, "没有入口节点")])
-
-    outgoing: dict[str, list[str]] = {nid: [] for nid in nodes_by_id}
-    for edge in edges:
-        outgoing[edge["from"]].append(edge["to"])
-
-    def reachable(nid: str) -> int:
-        seen, queue = {nid}, [nid]
-        while queue:
-            for nxt in outgoing.get(queue.pop(), []):
-                if nxt not in seen:
-                    seen.add(nxt)
-                    queue.append(nxt)
-        return len(seen)
-
-    return min(roots, key=lambda nid: (-reachable(nid), nid))
 
 
 def _outgoing_map(nodes_by_id: dict[str, dict], edges: list[dict]) -> dict[str, list[str]]:

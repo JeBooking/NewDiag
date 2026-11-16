@@ -1,4 +1,4 @@
-"""不可变 JSON 产物、字段索引及 Python 对象快照，避免大结果反复经过会话协议。"""
+"""不可变 JSON 产物与 Python 对象快照，避免大结果反复经过会话协议。"""
 
 from __future__ import annotations
 
@@ -12,11 +12,6 @@ import sqlite3
 import uuid
 from pathlib import Path
 from contextlib import closing
-
-if __package__:
-    from .data_store import Data
-else:
-    from data_store import Data
 
 logger = logging.getLogger(__name__)
 _ID = re.compile(r"^[0-9a-f]{32}$")
@@ -106,17 +101,14 @@ def load(root, reference):
     return value
 
 
-def save_python(root, value, *, fixed=None):
+def save_python(root, value):
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     identifier = uuid.uuid4().hex
     pending = root / (identifier + ".part")
     pending.mkdir()
     with (pending / "object.pkl").open("wb") as target:
-        writer = _DataPickler(target, protocol=pickle.HIGHEST_PROTOCOL)
-        writer.root = root
-        writer.fixed = fixed or {}
-        writer.dump(value)
+        pickle.dump(value, target, protocol=pickle.HIGHEST_PROTOCOL)
     digest = _python_digest(pending / "object.pkl")
     (pending / "object.json").write_text(json.dumps({
         "format": "python-pickle/v1", "sha256": digest,
@@ -126,7 +118,7 @@ def save_python(root, value, *, fixed=None):
     return {"$artifact": identifier, "path": []}
 
 
-def load_python(root, reference, *, cache=None):
+def load_python(root, reference):
     directory = _directory(root, reference)
     if reference["path"]:
         raise ValueError("Python 对象快照不支持 JSON 字段路径")
@@ -136,41 +128,12 @@ def load_python(root, reference, *, cache=None):
         if (metadata.get("format") != "python-pickle/v1"
                 or metadata.get("sha256") != _python_digest(target)):
             raise ValueError("对象快照校验不一致")
-        # 只恢复本实例业务进程生成的产物，不把上传附件当作 Python 快照读取。
         with target.open("rb") as source:
-            reader = _DataUnpickler(source)
-            reader.root = Path(root).resolve()
-            reader.objects = {}
-            reader.fixed = cache if cache is not None else {}
-            value = reader.load()
+            value = pickle.load(source)
     except Exception as exc:
         raise ValueError(f"Python 对象快照缺失、损坏或无法恢复：{exc}") from exc
     logger.info("Python 对象快照恢复 id=%s", reference["$artifact"])
     return value
-
-
-class _DataPickler(pickle.Pickler):
-    def persistent_id(self, value):
-        saved = self.fixed.get(id(value))
-        if saved is not None and saved[0] is value:
-            return ('newdiag-fixed/v1', saved[1]['$artifact'], saved[1])
-        if isinstance(value, Data):
-            return ("newdiag-data/v1", id(value), value.export(self.root, save_python))
-        return None
-
-
-class _DataUnpickler(pickle.Unpickler):
-    def persistent_load(self, identity):
-        kind, key, references = identity
-        if kind == 'newdiag-fixed/v1':
-            if key not in self.fixed:
-                self.fixed[key] = load_python(self.root, references, cache=self.fixed)
-            return self.fixed[key]
-        if kind != "newdiag-data/v1":
-            raise pickle.UnpicklingError("未知数据引用协议")
-        if key not in self.objects:
-            self.objects[key] = Data.restore(self.root, references, load_python)
-        return self.objects[key]
 
 
 def _python_digest(path):

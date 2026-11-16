@@ -73,23 +73,20 @@ def prepare(db, instance, release, runtime):
         logger.info("实例 %s 固定工程源码：工程=%s 源=%s 副本=%s module=%s python=%s",
                     instance.id, name, source, target, project.module, project.python or "后端默认")
     from types import SimpleNamespace
-    from .composition import probe_configuration
-    if doc.get("composition") is not None:
-        signatures = probe_configuration(doc["composition"], {
-            name: SimpleNamespace(**spec) for name, spec in projects.items()
-        })
-        errors = [f"{name}: {entry['error']}" for name, entry in signatures.items() if isinstance(entry, dict)]
-        if errors:
-            raise ValueError("组合接口探测失败：" + "；".join(errors))
-    else:
-        signatures = {}
+    from .slots import probe_slots
+    signatures = probe_slots(doc, {
+        name: SimpleNamespace(**spec) for name, spec in projects.items()
+    }) if projects else {}
+    errors = [f"{name}: {entry['error']}" for name, entry in signatures.items() if isinstance(entry, dict)]
+    if errors:
+        raise ValueError("槽位接口探测失败：" + "；".join(errors))
     plan = compile_doc(doc, instance.flow_id, release.version_no, functions=signatures)
     package = Path(__file__).resolve().parents[1] / "worker"
     shutil.copytree(package, directory / "runtime", ignore=shutil.ignore_patterns("__pycache__"))
     (directory / "flow.py").write_text(generate(plan), encoding="utf-8")
     snapshot = db.get(models.Snapshot, instance.snapshot_id)
     configuration = {
-        "projects": projects, "composition": plan.get("composition"), "runtime": runtime,
+        "projects": projects, "runtime": runtime,
         "input": json.loads(snapshot.payload_json) if snapshot else {},
         "artifactRoot": str(data_dir() / "artifacts" / hashlib.sha256(instance.id.encode()).hexdigest()),
         "fileRoot": str(data_dir() / "files"),

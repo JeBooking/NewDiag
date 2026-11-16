@@ -84,7 +84,7 @@ def build_code_export(instance_id: str, inputs: list[dict]):
                        if key in field})
         bucket = context['scope'].setdefault(field['function'], {}) if field.get('scope') == 'function' else context['global']
         bucket[field['name']] = None
-    template = {key: configuration.get(key) for key in ('composition', 'meta')}
+    template = {key: configuration.get(key) for key in ('meta',)}
     template.update(projects=normalized, input=context, runtime={'mode': 'serial', 'maxParallel': 4},
                     artifactRoot='local-artifacts', fileRoot='files')
     archive = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode='w+b')

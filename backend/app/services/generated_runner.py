@@ -136,7 +136,11 @@ class GeneratedRunner(Scheduler):
             threading.Thread(target=self._stderr, args=(handle,), daemon=True).start()
             threading.Thread(target=self._pump, args=(handle,), daemon=True).start()
             threading.Thread(target=self._watch, args=(handle,), daemon=True).start()
-            logger.info("实例 %s 分支启动 pid=%s 活跃=%s 上限=%s", instance.id, proc.pid, len(handles), limit)
+            logger.info(
+                "实例 %s 分支启动 token=%s node=%s gen=%s pid=%s 模式=%s 活跃=%s 上限=%s",
+                instance.id, token.id, token.node_id, token.generation, proc.pid,
+                options["mode"], len(handles), limit,
+            )
         self._update_status(db, instance)
         db.commit()
 
@@ -174,6 +178,7 @@ class GeneratedRunner(Scheduler):
                 stop_tree(handle.process)
         finally:
             handle.process.wait()
+            code = handle.process.returncode
             with self._instance_lock(handle.instance):
                 self._acknowledge(handle, "诊断进程已退出")
                 handles = self.branches.get(handle.instance, [])
@@ -181,16 +186,29 @@ class GeneratedRunner(Scheduler):
                     handles.remove(handle)
                 with self._open() as db:
                     instance = db.get(models.Instance, handle.instance)
-                    if instance is None or handle.expected_exit:
-                        return
                     token = db.get(models.Token, handle.token)
+                    node = token.node_id if token else "-"
+                    if instance is None or handle.expected_exit:
+                        logger.info("实例 %s 分支退出 token=%s node=%s code=%s：%s",
+                                    handle.instance, handle.token, node, code,
+                                    "预期退出" if handle.expected_exit else "实例已删除")
+                        return
                     if token and token.status in ("running", "waiting"):
+                        tail = (handle.error or "诊断进程意外退出").strip().splitlines()
+                        logger.warning(
+                            "实例 %s 分支意外退出 token=%s node=%s code=%s，标记为失败：%s",
+                            instance.id, token.id, node, code, tail[-1] if tail else "",
+                        )
                         token.status = "failed"
                         self._write_run(db, instance, token, status="failed",
                                         error="execution/crash: " + (handle.error or "诊断进程意外退出"))
                         for review in db.scalars(select(models.Review).where(
                                 models.Review.token_id == token.id, models.Review.status == "pending")):
                             review.status = "cancelled"
+                    else:
+                        logger.info("实例 %s 分支正常退出 token=%s node=%s code=%s status=%s",
+                                    instance.id, handle.token, node, code,
+                                    token.status if token else "-")
                     for owned in handle.owned:
                         pending = db.get(models.Token, owned)
                         if pending and pending.status == "queued":
@@ -447,11 +465,11 @@ class GeneratedRunner(Scheduler):
             data_file = saved.with_name(f"{state.get('branch', selected.id)}.data.json")
             if data_file.is_file():
                 latest = json.loads(data_file.read_text(encoding="utf-8"))
-                if plan.get('composition') is not None:
-                    from app.services.composition import rollback_state
+                if plan.get('steps') and any(step.get('slots') for step in plan['steps'].values()):
+                    from app.services.slots import merge_slot_state
                     configuration = json.loads((self._directory(instance_id) / 'configuration.json').read_text(encoding='utf-8'))
-                    latest['$composition'] = rollback_state(configuration['artifactRoot'],
-                        state.get('states', {}).get('$composition'), latest.get('$composition'))
+                    latest['$slots'] = merge_slot_state(configuration['artifactRoot'],
+                        state.get('states', {}).get('$slots'), latest.get('$slots'))
                 state["states"] = latest
             retained, cursor = set(), selected
             by_id = {item.id: item for item in tokens}
@@ -461,6 +479,15 @@ class GeneratedRunner(Scheduler):
             self._stop(instance_id)
             self._abandon(db, instance, retained)
             generation = max(item.generation for item in tokens) + 1
+            # 回退本身也是一步：写进运行记录，轨迹里才能看到「从哪退、退到哪、为什么」。
+            self._write_run(
+                db, instance, selected, status="rollback",
+                args={"reason": reason or "", "branch": branch, "mode": mode},
+                evidence={"target": selected.node_id, "targetTokenId": selected.id,
+                          "successors": targets, "generation": generation},
+                node_id=selected.node_id,
+                generation=generation,
+            )
             children = self._create_tokens(db, instance, plan, selected, targets, branch, generation)
             for child in children:
                 self._save_launch(instance_id, child, state)

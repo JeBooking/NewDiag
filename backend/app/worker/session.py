@@ -7,7 +7,7 @@ config: {"path": ..., "module": ..., "factory": ...}
 请求 {"id": "1", "function": "judge", "args": {...}}
 响应 {"id": "1", "ok": true, "value": ...} / {"id": "1", "ok": false, "error": "..."}
 响应可带 "files": [{hash, name, media_type, size}]，列出本次调用新落盘的图片，供父进程登记；
-没有新文件时省略该字段，旧客户端忽略即可。
+没有新文件时省略该字段。
 关闭 {"id": "0", "op": "shutdown"}
 """
 
@@ -23,14 +23,12 @@ import traceback
 from contextlib import redirect_stdout
 
 if __package__:
-    from . import diagnosis_sdk, node_sdk
-    from .composition import CompositionRuntime
+    from . import node_sdk
+    from .objects import ProjectObjects
     sys.modules.setdefault("node_sdk", node_sdk)
-    sys.modules.setdefault("diagnosis_sdk", diagnosis_sdk)
 else:
-    import diagnosis_sdk
     import node_sdk
-    from composition import CompositionRuntime
+    from objects import ProjectObjects
 
 MAX_DEPTH = 5
 
@@ -46,7 +44,7 @@ def main() -> int:
 
     with redirect_stdout(sys.stderr):
         target = _bootstrap(config)
-    composition = CompositionRuntime()
+    objects = ProjectObjects()
 
     for line in sys.stdin:
         line = line.strip()
@@ -67,8 +65,8 @@ def main() -> int:
                 raise ValueError("args 必须是对象")
             node_sdk.configure_files(args.get("fileRoot"))
             with redirect_stdout(sys.stderr):
-                if function_name == '__newdiag_composition__':
-                    value = composition.execute(target, args)
+                if function_name == "__newdiag_slot__":
+                    value = objects.execute(target, args)
                 else:
                     func = _resolve_callable(target, function_name)
                     value = _json_safe(func(**args))
@@ -79,7 +77,7 @@ def main() -> int:
                 response["files"] = files
             _write(response)
         except BaseException:  # noqa: BLE001 - 业务异常不能带崩子进程
-            composition.reference = object()
+            objects.reference = object()
             _write({"id": request_id, "ok": False, "error": traceback.format_exc()})
     return 0
 

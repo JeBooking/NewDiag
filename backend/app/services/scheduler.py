@@ -32,9 +32,6 @@ ACTIVE_TOKEN = ("queued", "running")
 # 失败分类：route/* 属于正常排除，execution/* 属于真出错
 ERR_MISSING_STEP = "plan/step-missing"
 
-YES_VALUES = {"yes", "y", "true", "是"}
-NO_VALUES = {"no", "n", "false", "否"}
-
 # 业务生成的图片只登记位图：文件名由摘要加白名单扩展名组成，其它一律不认。
 GENERATED_FILE_RE = re.compile(r"^[0-9a-f]{64}\.(?:png|jpe?g|webp|gif)$")
 GENERATED_MEDIA = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
@@ -55,20 +52,13 @@ class Scheduler:
         # 传进来的是模块级 SessionLocal 时，跟着 db.configure() 换库走
         self._follow_module = session_factory is db_module.SessionLocal
         self._timeout = timeout
-        self._threads: dict[str, threading.Thread] = {}
-        self._wake: set[str] = set()
         self._lock = threading.Lock()
         self._operation_locks: dict[str, threading.RLock] = {}
         self._termination_locks: dict[str, threading.Lock] = {}
-        self._cancelled: set[str] = set()
 
     def _instance_lock(self, instance_id: str):
         with self._lock:
             return self._operation_locks.setdefault(instance_id, threading.RLock())
-
-    def _is_cancelled(self, instance_id: str) -> bool:
-        with self._lock:
-            return instance_id in self._cancelled
 
     def _open(self):
         factory = db_module.SessionLocal if self._follow_module else self._session_factory
@@ -270,20 +260,6 @@ class Scheduler:
         plan = _loads(release.plan_json)
         return plan if isinstance(plan, dict) else {}
 
-    def _node_meta(self, db, instance, node_id: str) -> dict:
-        release = db.get(models.Release, instance.release_id)
-        if release is None:
-            return {}
-        revision = db.get(models.Revision, release.revision_id)
-        if revision is None:
-            return {}
-        from app.services.flow_format import expand
-        doc = expand(_loads(revision.json) or {})
-        for node in doc.get("nodes") or []:
-            if node.get("id") == node_id:
-                return node
-        return {}
-
     def _write_run(
         self,
         db,
@@ -298,6 +274,7 @@ class Scheduler:
         started: str | None = None,
         node_id: str | None = None,
         attempt: int = 1,
+        generation: int | None = None,
     ):
         stamp = started or now_iso()
         run = models.Run(
@@ -305,7 +282,7 @@ class Scheduler:
             instance_id=instance.id,
             token_id=token.id if token is not None else None,
             node_id=node_id or (token.node_id if token is not None else "__instance__"),
-            generation=token.generation if token is not None else 1,
+            generation=generation or (token.generation if token is not None else 1),
             attempt=attempt,
             status=status,
             input_json=_dumps(args),
@@ -332,87 +309,6 @@ def _dumps(value):
     if value is None:
         return None
     return json.dumps(value, ensure_ascii=False, default=repr)
-
-
-def _snapshot_value(snapshot: dict, function: str, name: str) -> tuple[bool, object]:
-    """启动参数取值：该函数的作用域 > 全局 > 旧扁平载荷。
-
-    新快照形如 {"global": {...}, "scope": {"judge_voltage": {...}}}，
-    旧快照是扁平 {"voltage": 12}，两种都要能取到。
-    """
-    scope = snapshot.get("scope")
-    if function and isinstance(scope, dict):
-        section = scope.get(function)
-        if isinstance(section, dict) and name in section:
-            return True, section[name]
-
-    globals_ = snapshot.get("global")
-    if isinstance(globals_, dict):
-        found, value = _lookup(globals_, name)
-        if found:
-            return True, value
-
-    layered = isinstance(globals_, dict) or isinstance(scope, dict)
-    if layered and name.split(".", 1)[0] in ("global", "scope"):
-        return False, None  # 分层载荷里这两层不是字段名，避免整层被打包传进函数
-    return _lookup(snapshot, name)
-
-
-def _lookup(root, path: str) -> tuple[bool, object]:
-    current = root
-    if not path:
-        return True, current
-    for part in path.split("."):
-        if not part:
-            continue
-        if isinstance(current, dict):
-            if part not in current:
-                return False, None
-            current = current[part]
-        elif isinstance(current, (list, tuple)):
-            try:
-                current = current[int(part)]
-            except (ValueError, IndexError):
-                return False, None
-        else:
-            return False, None
-    return True, current
-
-
-def _branch_of(step: dict, value) -> str | None:
-    if step.get("kind") != "investigation":
-        return "default"
-    if value is True:
-        return "yes"
-    if value is False:
-        return "no"
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in YES_VALUES:
-            return "yes"
-        if text in NO_VALUES:
-            return "no"
-    return None
-
-
-def _opposite(branch: str | None) -> str:
-    return "yes" if branch == "no" else "no"
-
-
-def _descendants(tokens: list, root: str) -> set[str]:
-    children: dict[str, list[str]] = {}
-    for token in tokens:
-        if token.parent_token_id:
-            children.setdefault(token.parent_token_id, []).append(token.id)
-    found: set[str] = set()
-    queue = list(children.get(root, []))
-    while queue:
-        current = queue.pop()
-        if current in found:
-            continue
-        found.add(current)
-        queue.extend(children.get(current, []))
-    return found
 
 
 scheduler = Scheduler(SessionLocal)

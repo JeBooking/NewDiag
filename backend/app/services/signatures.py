@@ -23,17 +23,15 @@ PROBE_TIMEOUT = 30.0
 
 
 def probe_doc(doc: dict) -> dict:
-    """探测组合配置引用的公开接口。
+    """探测槽位引用的公开接口。
 
     返回 {工程:模块:接口: [{"name","type","required","default"}...]}；
     单个工程探测失败时该工程记 {"error": "..."}。
     """
-    composition = doc.get("composition")
-    if not isinstance(composition, dict):
-        return {}
-    from .composition import probe_configuration
+    from .slots import calls_in, probe_slots
+
     started = time.perf_counter()
-    result = probe_configuration(composition)
+    result = probe_slots(doc)
     failed = [k for k, v in result.items() if isinstance(v, dict) and v.get("error")]
     logger.info(
         "签名探测：%d 个接口，%d 个失败，%.0fms%s",
@@ -46,12 +44,10 @@ def probe_doc(doc: dict) -> dict:
 
 
 def projects_in(doc: dict) -> set[str]:
-    """doc 组合配置引用到的工程名。"""
-    composition = doc.get("composition")
-    if not isinstance(composition, dict):
-        return set()
-    from .composition import calls_in
-    return {str(call.get("project") or "") for call in calls_in(composition)} - {""}
+    """doc 槽位引用到的工程名。"""
+    from .slots import calls_in
+
+    return {str(call.get("project") or "") for _, call in calls_in(doc)} - {""}
 
 
 def collect_signatures(
@@ -62,15 +58,17 @@ def collect_signatures(
     probed 传 probe_doc 的结果时复用参数表，不再起子进程。
     取不到的项目记空字符串，不抛异常——发布/启动不应被工程环境问题整死。
     """
-    composition = plan.get("composition")
-    if composition is None:
+    from .slots import plan_interfaces, probe_plan
+
+    keys = plan_interfaces(plan)
+    if not keys:
         return {}
-    from .composition import probe_configuration
-    values = probed if probed is not None else probe_configuration(composition)
+    values = probed if probed is not None else probe_plan(plan)
     result: dict[str, str] = {}
-    for key, value in values.items():
+    for key in sorted(keys):
         if cancelled is not None and cancelled():
             break
+        value = values.get(key)
         result[key] = _hash_params(key, value) if isinstance(value, list) else ""
     return result
 
