@@ -29,9 +29,9 @@ Branch = Literal["yes", "no"]
 InstanceStatus = Literal["running", "waiting", "paused", "success", "failed", "escalated", "terminated"]
 TokenStatus = Literal["queued", "running", "waiting", "done", "failed", "abandoned"]
 RunStatus = Literal["ok", "failed", "abandoned", "rollback"]
-ReviewKind = Literal["decision", "action"]
+ReviewKind = Literal["decision", "action", "failure"]
 ReviewStatus = Literal["pending", "done", "cancelled"]
-ReviewResult = Literal["yes", "no", "done", "rollback", "continue"]
+ReviewResult = Literal["yes", "no", "done", "rollback", "continue", "stop"]
 
 
 def to_camel(name: str) -> str:

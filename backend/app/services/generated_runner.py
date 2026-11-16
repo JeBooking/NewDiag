@@ -42,6 +42,8 @@ class Branch:
     visits: set = field(default_factory=set)
     waiting: bool = False
     expected_exit: bool = False
+    # 执行报错已挂起、等人选择回退或结束；此时进程退出是预期内的
+    failed: bool = False
     touched: float = field(default_factory=time.monotonic)
     error: str = ""
     origin: str = ""
@@ -193,18 +195,20 @@ class GeneratedRunner(Scheduler):
                                     handle.instance, handle.token, node, code,
                                     "预期退出" if handle.expected_exit else "实例已删除")
                         return
-                    if token and token.status in ("running", "waiting"):
+                    if handle.failed:
+                        logger.info("实例 %s 分支报错已挂起，等待人工选择 token=%s node=%s code=%s",
+                                    instance.id, handle.token, node, code)
+                    elif token and token.status in ("running", "waiting"):
                         tail = (handle.error or "诊断进程意外退出").strip().splitlines()
                         logger.warning(
-                            "实例 %s 分支意外退出 token=%s node=%s code=%s，标记为失败：%s",
+                            "实例 %s 分支意外退出 token=%s node=%s code=%s，转人工：%s",
                             instance.id, token.id, node, code, tail[-1] if tail else "",
                         )
-                        token.status = "failed"
-                        self._write_run(db, instance, token, status="failed",
-                                        error="execution/crash: " + (handle.error or "诊断进程意外退出"))
                         for review in db.scalars(select(models.Review).where(
                                 models.Review.token_id == token.id, models.Review.status == "pending")):
                             review.status = "cancelled"
+                        self._fail_node(db, instance, token, handle,
+                                        "execution/crash: " + (handle.error or "诊断进程意外退出"))
                     else:
                         logger.info("实例 %s 分支正常退出 token=%s node=%s code=%s status=%s",
                                     instance.id, handle.token, node, code,
@@ -297,13 +301,29 @@ class GeneratedRunner(Scheduler):
             if kind == "error":
                 handle.states = event.get("states", handle.states)
                 self._save_latest_data(handle)
-                token.status = "failed"
-                self._write_run(db, instance, token, status="failed", error=event["message"],
+                self._fail_node(db, instance, token, handle, event["message"],
                                 args=event.get("arguments"), started=event.get("startedAt"))
+                self._update_status(db, instance)
             db.commit()
             if kind == "error":
                 self._acknowledge(handle, event["message"])
             return {}
+
+    def _fail_node(self, db, instance, token, handle, message, *, args=None, started=None):
+        """执行报错不等于排查失败：挂起这次到访，等人选回退还是结束流程。
+
+        缺分支走的是 another 路径（route/*），仍然按排查失败直接收尾，不进这个待办。
+        """
+        self._write_run(db, instance, token, status="failed", error=message, args=args, started=started)
+        token.status = "waiting"
+        handle.failed = True
+        handle.waiting = True
+        db.add(models.Review(
+            id=new_id(), instance_id=instance.id, token_id=token.id, node_id=token.node_id,
+            kind="failure", status="pending",
+            request_json=_dumps({"type": "failure", "title": "执行报错", "detail": message,
+                                 "nodeKind": "investigation"}),
+        ))
 
     def _acknowledge(self, handle, error=""):
         receipt = handle.submission
@@ -341,6 +361,12 @@ class GeneratedRunner(Scheduler):
                 instance.status = "waiting"
         elif any(token.status == "queued" for token in tokens):
             instance.status = "running"
+        elif db.scalar(select(models.Review.id).where(
+                models.Review.instance_id == instance.id, models.Review.kind == "failure",
+                models.Review.status == "pending")):
+            # 报错待办没处理完就不能收敛成终态，否则实例一进来就显示「失败」
+            instance.status = "waiting"
+            instance.ended_at = None
         else:
             plan = self._plan(db, instance)
             instance.status = "success" if self._success_token(tokens, plan) else (
@@ -364,12 +390,14 @@ class GeneratedRunner(Scheduler):
             review = db.get(models.Review, review_id)
             if review is None or review.instance_id != instance_id or review.status != "pending":
                 raise ValueError("待办已处理或不存在")
+            request = _loads(review.request_json)
+            if request.get("type") == "failure":
+                return self._resolve_failure(db, instance, review, decision)
             handle = next((item for item in self.branches.get(instance_id, []) if item.token == review.token_id), None)
             if handle is None:
                 raise ValueError("等待进程已结束")
             if not handle.waiting or handle.submission:
                 raise ValueError("该分支正在处理上一次提交")
-            request = _loads(review.request_json)
             phase = request.get("type")
             response = dict(decision)
             if phase in ("parameters", "acquisition"):
@@ -407,6 +435,30 @@ class GeneratedRunner(Scheduler):
                 self._reply(handle, response)
             return receipt
 
+    def _resolve_failure(self, db, instance, review, decision):
+        """报错待办：只有「结束流程」走这里，回退由回退接口负责。"""
+        if decision.get("result") != "stop":
+            raise ValueError("执行报错请选择回退或结束流程")
+        review.status, review.decision_json = "done", _dumps(decision)
+        review.decided_at, review.decided_by = now_iso(), "local"
+        token = db.get(models.Token, review.token_id)
+        if token is not None:
+            token.status = "failed"
+        runtime = _loads(instance.runtime_json) or {}
+        if runtime.get("mode") == "serial":
+            self._stop(instance.id)
+            self._abandon(db, instance, set())
+            for other in db.scalars(select(models.Review).where(
+                    models.Review.instance_id == instance.id, models.Review.status == "pending")):
+                other.status, other.decided_at = "cancelled", now_iso()
+            instance.status, instance.ended_at = "failed", now_iso()
+            logger.info("实例 %s 执行报错，串行结束：%s", instance.id, review.node_id)
+        else:
+            self._settle_generated(db, instance)
+            logger.info("实例 %s 执行报错，并行分支继续：%s", instance.id, review.node_id)
+        db.commit()
+        return None
+
     def _stop(self, instance_id):
         for handle in self.branches.pop(instance_id, []):
             handle.expected_exit = True
@@ -440,7 +492,10 @@ class GeneratedRunner(Scheduler):
     def rollback(self, instance_id, target, branch, reason, *, target_token_id=None, mode="branch"):
         with self._open() as db:
             instance = db.get(models.Instance, instance_id)
-            if instance.status not in ("waiting", "paused", "failed"):
+            failing = db.scalar(select(models.Review.id).where(
+                models.Review.instance_id == instance_id, models.Review.kind == "failure",
+                models.Review.status == "pending"))
+            if instance.status not in ("waiting", "paused", "failed") and failing is None:
                 raise ValueError("请在人工待办或排查结束后回退")
             tokens = self._tokens(db, instance_id)
             candidates = [item for item in tokens if item.id == target_token_id] if target_token_id else [

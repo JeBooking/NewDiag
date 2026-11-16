@@ -223,7 +223,7 @@ export interface RunRecord {
   endedAt?: string
 }
 
-export type ReviewKind = 'decision' | 'action'
+export type ReviewKind = 'decision' | 'action' | 'failure'
 export type ReviewStatus = 'pending' | 'done' | 'cancelled'
 
 export interface ReviewTask {
@@ -239,7 +239,7 @@ export interface ReviewTask {
     attachments?: AttachmentRef[]
     instructions?: string
     nodeKind?: NodeKind
-    type?: 'decision' | 'action' | 'after_success' | 'judgment' | 'parameters'
+    type?: 'decision' | 'action' | 'after_success' | 'judgment' | 'parameters' | 'failure'
     fields?: ManualField[]
     presentation?: unknown
   }
@@ -250,7 +250,7 @@ export interface ReviewTask {
 }
 
 export interface ReviewDecision {
-  result: 'yes' | 'no' | 'done' | 'rollback' | 'continue'
+  result: 'yes' | 'no' | 'done' | 'rollback' | 'continue' | 'stop'
   target?: string
   reason?: string
   data?: Record<string, unknown>

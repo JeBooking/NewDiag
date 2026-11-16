@@ -455,7 +455,8 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 1. 有 `running` token → `running`
 2. 有 `waiting` token → `waiting`
 3. 有 `queued` token：串行且已到达 problemSolved → `paused`，否则 `running`
-4. 无活跃 token 时，有 problemSolved → `success`，否则有 escalation → `escalated`，否则 `failed`
+4. 有未处理的 `failure` 待办 → `waiting`（等人决定回退还是结束）
+5. 无活跃 token 时，有 problemSolved → `success`，否则有 escalation → `escalated`，否则 `failed`
 
 优先级 `success > escalated > failed`；进入终止态时写 `ended_at`。
 
@@ -471,9 +472,21 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 | 槽位参数需要现场填写 | parameters | 填字段后提交 |
 | 排查动作、处置措施 | action | 完成 / 回退 |
 | 串行成功但还有同级思路 | after_success | 结束 / 继续 |
+| 排查节点执行报错 | failure | 回退到某个已完成节点 / 结束流程 |
 
 - 现场参数的业务校验失败保留同一待办，可修正后重试
 - 动作节点没有「不 OK」；没做成就是回退
+- 报错待办未处理时实例停在 `waiting`，不收敛成终态；回退走同一套回退接口，回退会取消该待办
+- 「结束流程」在串行下结束整个实例（终态 `failed` 并保留错误），在并行下只结束出错分支，其他思路继续
+
+### 两类失败要分开
+
+| 情况 | 含义 | 处理 |
+|---|---|---|
+| 判定后没有对应分支（`route/*`） | 这条排查思路不成立，不是程序出错 | 该分支直接 `failed`，按现有收敛规则收尾，不出待办 |
+| 业务接口抛异常（`execution/*`） | 程序执行出错 | 挂起该分支并生成 `failure` 待办，由人选择回退或结束 |
+
+界面上两者分别显示「排查失败」与「执行报错」，不再统一叫失败。
 
 ### 启动上下文
 
@@ -487,7 +500,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 - 协议：stdin/stdout 上的 JSON 行；请求 `{id, function, args}` 或 `{id, function:"__newdiag_slot__", args:{op,...}}`；响应 `{id, ok, value|error}`，可选 `files` 列本次新落盘的图片
 - `op`：`construct` 构造对象、`call` 调用方法、`restore` 取状态引用
 - stdio 一律 UTF-8：父进程以 `PYTHONIOENCODING=utf-8` 启动，子进程重设三路流编码；不设置 `PYTHONUTF8`，避免打挂读 GBK 文件的业务脚本
-- 业务异常不重试，直接记 `execution/exception`
+- 业务异常不重试，记 `execution/exception` 并转为 `failure` 待办；缺分支走 `route/*`，按排查失败直接收尾
 
 ### 手动终止
 

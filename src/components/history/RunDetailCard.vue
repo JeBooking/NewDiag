@@ -27,6 +27,15 @@ const STATUS_TYPE: Record<RunStatus, 'success' | 'danger' | 'info' | 'warning'> 
   rollback: 'warning',
 }
 
+/** 同一条时间线口径：执行报错和排查失败分开显示 */
+function statusText(run: RunRecord): string {
+  if (run.status !== 'failed') return STATUS_TEXT[run.status]
+  const error = String(run.error ?? '')
+  if (error.startsWith('route/')) return '排查失败'
+  if (error.startsWith('execution/')) return '执行报错'
+  return STATUS_TEXT.failed
+}
+
 const REVIEW_STATUS_TEXT: Record<ReviewStatus, string> = {
   pending: '等待处理',
   done: '已处理',
@@ -130,7 +139,7 @@ const verdict = computed(() => {
 
 const headTag = computed(() => {
   const run = currentRun.value
-  if (run) return { text: STATUS_TEXT[run.status], type: STATUS_TYPE[run.status] }
+  if (run) return { text: statusText(run), type: STATUS_TYPE[run.status] }
   const review = currentReview.value
   if (review) {
     return { text: REVIEW_STATUS_TEXT[review.status], type: REVIEW_STATUS_TYPE[review.status] }
