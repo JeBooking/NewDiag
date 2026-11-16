@@ -1,0 +1,661 @@
+{
+  "format": 1,
+  "name": "槽位方案全功能示例",
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始",
+      "detail": "声明启动参数并构造三个工程的对象",
+      "position": {
+        "x": 0,
+        "y": 240
+      },
+      "inputs": [
+        {
+          "name": "dataset",
+          "type": "text",
+          "default": "vib-2026-05"
+        },
+        {
+          "name": "device",
+          "type": "text",
+          "default": "M-1"
+        },
+        {
+          "name": "points",
+          "type": "number",
+          "default": 24
+        },
+        {
+          "name": "threshold",
+          "type": "number",
+          "default": 6
+        }
+      ],
+      "slots": {
+        "constructs": [
+          {
+            "object": "center",
+            "project": "示例数据源",
+            "module": "feeder",
+            "interface": "DataCenter",
+            "function": "DataCenter",
+            "arguments": {
+              "dataset": {
+                "source": "input",
+                "name": "dataset"
+              },
+              "device": {
+                "source": "input",
+                "name": "device"
+              }
+            }
+          },
+          {
+            "object": "processor",
+            "project": "示例处理展示",
+            "module": "render",
+            "interface": "Processor",
+            "function": "Processor",
+            "arguments": {}
+          },
+          {
+            "object": "renderer",
+            "project": "示例处理展示",
+            "module": "render",
+            "interface": "Renderer",
+            "function": "Renderer",
+            "arguments": {}
+          },
+          {
+            "object": "judge",
+            "project": "示例判断",
+            "module": "rules",
+            "interface": "Judge",
+            "function": "Judge",
+            "arguments": {
+              "limit": {
+                "source": "input",
+                "name": "threshold"
+              }
+            }
+          },
+          {
+            "object": "temp_judge",
+            "project": "示例判断",
+            "module": "rules",
+            "interface": "Judge",
+            "function": "Judge",
+            "arguments": {
+              "limit": {
+                "lit": 80
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "catalog",
+      "kind": "investigation",
+      "title": "确认可用通道",
+      "detail": "本节点取一次通道目录，直接展示成表格并由人确认",
+      "position": {
+        "x": 260,
+        "y": 240
+      },
+      "fields": {
+        "observation": "通道目录",
+        "acquisition": "DataCenter.catalog",
+        "assessment": "通道不全或缺少振动通道时为异常"
+      },
+      "slots": {
+        "present": {
+          "object": "renderer",
+          "project": "示例处理展示",
+          "module": "render",
+          "interface": "Renderer.table",
+          "function": "table",
+          "view": "table",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        },
+        "decide": {
+          "human": true
+        },
+        "fetch": {
+          "object": "center",
+          "project": "示例数据源",
+          "module": "feeder",
+          "interface": "DataCenter.catalog",
+          "function": "catalog",
+          "arguments": {}
+        }
+      }
+    },
+    {
+      "id": "vibration",
+      "kind": "investigation",
+      "title": "振动曲线检查",
+      "detail": "按现场点数取振动数据，平滑后画曲线，由判断模块给结论",
+      "position": {
+        "x": 520,
+        "y": 240
+      },
+      "fields": {
+        "observation": "振动曲线",
+        "acquisition": "DataCenter.fetch → Processor.smooth",
+        "assessment": "峰值超过启动阈值判为异常"
+      },
+      "slots": {
+        "fetch": {
+          "object": "center",
+          "project": "示例数据源",
+          "module": "feeder",
+          "interface": "DataCenter.fetch",
+          "function": "fetch",
+          "arguments": {
+            "channel": {
+              "lit": "vibration"
+            },
+            "points": {
+              "source": "input",
+              "name": "points"
+            }
+          }
+        },
+        "process": {
+          "object": "processor",
+          "project": "示例处理展示",
+          "module": "render",
+          "interface": "Processor.smooth",
+          "function": "smooth",
+          "arguments": {
+            "raw": {
+              "source": "previous"
+            },
+            "window": {
+              "lit": 3
+            }
+          }
+        },
+        "present": {
+          "object": "renderer",
+          "project": "示例处理展示",
+          "module": "render",
+          "interface": "Renderer.line",
+          "function": "line",
+          "view": "line",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        },
+        "decide": {
+          "object": "judge",
+          "project": "示例判断",
+          "module": "rules",
+          "interface": "Judge.check",
+          "function": "check",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "snapshot",
+      "kind": "investigation",
+      "title": "波形截图归档",
+      "detail": "用同样的参数再取一次振动数据（命中缓存），画成 PNG 展示",
+      "position": {
+        "x": 780,
+        "y": 240
+      },
+      "fields": {
+        "observation": "波形截图",
+        "acquisition": "Renderer.png",
+        "assessment": "出现削顶或断点时人工判为异常"
+      },
+      "slots": {
+        "present": {
+          "object": "renderer",
+          "project": "示例处理展示",
+          "module": "render",
+          "interface": "Renderer.png",
+          "function": "png",
+          "view": "image",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        },
+        "decide": {
+          "human": true
+        },
+        "fetch": {
+          "object": "center",
+          "project": "示例数据源",
+          "module": "feeder",
+          "interface": "DataCenter.fetch",
+          "function": "fetch",
+          "arguments": {
+            "channel": {
+              "lit": "vibration"
+            },
+            "points": {
+              "source": "input",
+              "name": "points"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "resample",
+      "kind": "investigation",
+      "title": "现场指定通道复检",
+      "detail": "通道与点数由现场填写，取数后出指标卡，再由判断模块判定",
+      "position": {
+        "x": 1040,
+        "y": 240
+      },
+      "fields": {
+        "observation": "复检通道的指标",
+        "acquisition": "DataCenter.fetch（参数来自现场）",
+        "assessment": "峰值超过启动阈值判为异常"
+      },
+      "runtimeInputs": [
+        {
+          "name": "channel",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "points",
+          "type": "number",
+          "required": false,
+          "default": 12
+        }
+      ],
+      "slots": {
+        "fetch": {
+          "object": "center",
+          "project": "示例数据源",
+          "module": "feeder",
+          "interface": "DataCenter.fetch",
+          "function": "fetch",
+          "arguments": {
+            "channel": {
+              "source": "parameter",
+              "name": "channel"
+            },
+            "points": {
+              "source": "parameter",
+              "name": "points"
+            }
+          }
+        },
+        "present": {
+          "object": "renderer",
+          "project": "示例处理展示",
+          "module": "render",
+          "interface": "Renderer.metrics",
+          "function": "metrics",
+          "view": "metrics",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        },
+        "decide": {
+          "object": "judge",
+          "project": "示例判断",
+          "module": "rules",
+          "interface": "Judge.check",
+          "function": "check",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "temperature",
+      "kind": "investigation",
+      "title": "轴承温度检查",
+      "detail": "与振动排查并列的另一条思路，使用独立阈值的判断对象",
+      "position": {
+        "x": 260,
+        "y": 520
+      },
+      "fields": {
+        "observation": "轴承温度",
+        "acquisition": "DataCenter.fetch(channel=temperature)",
+        "assessment": "超过 80℃ 判为异常"
+      },
+      "slots": {
+        "fetch": {
+          "object": "center",
+          "project": "示例数据源",
+          "module": "feeder",
+          "interface": "DataCenter.fetch",
+          "function": "fetch",
+          "arguments": {
+            "channel": {
+              "lit": "temperature"
+            }
+          }
+        },
+        "present": {
+          "object": "renderer",
+          "project": "示例处理展示",
+          "module": "render",
+          "interface": "Renderer.metrics",
+          "function": "metrics",
+          "view": "metrics",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        },
+        "decide": {
+          "object": "temp_judge",
+          "project": "示例判断",
+          "module": "rules",
+          "interface": "Judge.check",
+          "function": "check",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "review",
+      "kind": "investigation",
+      "title": "复核判定依据",
+      "detail": "取同一段振动数据，把判定依据拼成文字展示",
+      "position": {
+        "x": 1300,
+        "y": 240
+      },
+      "fields": {
+        "observation": "判定依据文字",
+        "acquisition": "Judge.describe",
+        "assessment": "依据与现场不一致时上升"
+      },
+      "slots": {
+        "present": {
+          "object": "judge",
+          "project": "示例判断",
+          "module": "rules",
+          "interface": "Judge.describe",
+          "function": "describe",
+          "view": "text",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        },
+        "decide": {
+          "human": true
+        },
+        "fetch": {
+          "object": "center",
+          "project": "示例数据源",
+          "module": "feeder",
+          "interface": "DataCenter.fetch",
+          "function": "fetch",
+          "arguments": {
+            "channel": {
+              "lit": "vibration"
+            },
+            "points": {
+              "source": "input",
+              "name": "points"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "c1",
+      "kind": "conclusion",
+      "title": "通道不完整",
+      "detail": "数据中心缺少振动通道，无法继续排查",
+      "position": {
+        "x": 520,
+        "y": 60
+      }
+    },
+    {
+      "id": "c2",
+      "kind": "conclusion",
+      "title": "振动超限",
+      "detail": "振动峰值超过阈值，按轴承磨损处理",
+      "position": {
+        "x": 1300,
+        "y": 60
+      }
+    },
+    {
+      "id": "c3",
+      "kind": "conclusion",
+      "title": "温度偏高",
+      "detail": "轴承温度超过 80℃，优先处理散热",
+      "position": {
+        "x": 520,
+        "y": 680
+      }
+    },
+    {
+      "id": "r1",
+      "kind": "remediation",
+      "title": "补采通道数据",
+      "detail": "让数据团队补齐振动通道后重新诊断",
+      "position": {
+        "x": 780,
+        "y": 60
+      }
+    },
+    {
+      "id": "r2",
+      "kind": "remediation",
+      "title": "更换轴承并复测",
+      "detail": "更换后按同样参数复测振动",
+      "position": {
+        "x": 1560,
+        "y": 60
+      }
+    },
+    {
+      "id": "r3",
+      "kind": "remediation",
+      "title": "清理散热并复测",
+      "detail": "清理风扇与散热片后复测温度",
+      "position": {
+        "x": 780,
+        "y": 680
+      }
+    },
+    {
+      "id": "j1",
+      "kind": "jump",
+      "title": "转交振动专项",
+      "detail": "通道补齐后转交另一条诊断链路继续",
+      "position": {
+        "x": 1040,
+        "y": 60
+      }
+    },
+    {
+      "id": "solved",
+      "kind": "problemSolved",
+      "title": "问题解决",
+      "detail": "复测通过",
+      "position": {
+        "x": 1820,
+        "y": 60
+      }
+    },
+    {
+      "id": "escalation",
+      "kind": "escalation",
+      "title": "上升",
+      "detail": "现场无法处理，转交厂家工程师",
+      "position": {
+        "x": 1560,
+        "y": 520
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "s1",
+      "from": "start",
+      "to": "catalog",
+      "order": 1
+    },
+    {
+      "id": "s2",
+      "from": "start",
+      "to": "temperature",
+      "order": 2
+    },
+    {
+      "id": "cat-yes",
+      "from": "catalog",
+      "to": "c1",
+      "branch": "yes",
+      "order": 1
+    },
+    {
+      "id": "cat-no",
+      "from": "catalog",
+      "to": "vibration",
+      "branch": "no",
+      "order": 2
+    },
+    {
+      "id": "c1-r1",
+      "from": "c1",
+      "to": "r1"
+    },
+    {
+      "id": "r1-j1",
+      "from": "r1",
+      "to": "j1"
+    },
+    {
+      "id": "j1-vib",
+      "from": "j1",
+      "to": "vibration"
+    },
+    {
+      "id": "vib-yes",
+      "from": "vibration",
+      "to": "c2",
+      "branch": "yes",
+      "order": 1
+    },
+    {
+      "id": "vib-no",
+      "from": "vibration",
+      "to": "snapshot",
+      "branch": "no",
+      "order": 2
+    },
+    {
+      "id": "c2-r2",
+      "from": "c2",
+      "to": "r2"
+    },
+    {
+      "id": "r2-solved",
+      "from": "r2",
+      "to": "solved"
+    },
+    {
+      "id": "snap-yes",
+      "from": "snapshot",
+      "to": "c2",
+      "branch": "yes",
+      "order": 1
+    },
+    {
+      "id": "snap-no",
+      "from": "snapshot",
+      "to": "resample",
+      "branch": "no",
+      "order": 2
+    },
+    {
+      "id": "res-yes",
+      "from": "resample",
+      "to": "c2",
+      "branch": "yes",
+      "order": 1
+    },
+    {
+      "id": "res-no",
+      "from": "resample",
+      "to": "review",
+      "branch": "no",
+      "order": 2
+    },
+    {
+      "id": "rev-yes",
+      "from": "review",
+      "to": "escalation",
+      "branch": "yes",
+      "order": 1
+    },
+    {
+      "id": "rev-no",
+      "from": "review",
+      "to": "escalation",
+      "branch": "no",
+      "order": 2
+    },
+    {
+      "id": "temp-yes",
+      "from": "temperature",
+      "to": "c3",
+      "branch": "yes",
+      "order": 1
+    },
+    {
+      "id": "temp-no",
+      "from": "temperature",
+      "to": "escalation",
+      "branch": "no",
+      "order": 2
+    },
+    {
+      "id": "c3-r3",
+      "from": "c3",
+      "to": "r3"
+    },
+    {
+      "id": "r3-solved",
+      "from": "r3",
+      "to": "solved"
+    }
+  ]
+}
