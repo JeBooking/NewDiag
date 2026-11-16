@@ -31,7 +31,6 @@ function coerceDoc(raw: unknown, name: string): FlowDoc {
     name: typeof record.name === 'string' && record.name ? record.name : name,
     nodes: Array.isArray(record.nodes) ? record.nodes : [],
     edges: Array.isArray(record.edges) ? record.edges : [],
-    composition: record.composition,
   }
 }
 

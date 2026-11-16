@@ -18,7 +18,7 @@ import { layoutDoc } from '@/components/canvas/autolayout'
 import FlowPanel from '@/components/panels/FlowPanel.vue'
 import NodePanel from '@/components/panels/NodePanel.vue'
 import { useLint } from '@/components/canvas/lint'
-import type { Composition, DocNode, FlowDoc, LintIssue } from '@/domain/types'
+import type { DocNode, FlowDoc, LintIssue } from '@/domain/types'
 import { errorText, isApiError } from '@/services/api'
 import { updateFlow } from '@/services/flows'
 import { useEditorStore } from '@/stores/editor'
@@ -235,12 +235,6 @@ function startRun(): void {
     return
   }
   router.push({ name: 'flow-run', params: { id: flowId.value } })
-}
-
-function updateComposition(composition: Composition | undefined): void {
-  const doc = editor.doc
-  if (!doc) return
-  editor.applyDoc({ ...doc, composition })
 }
 
 async function patchMeta(patch: { name?: string }): Promise<void> {
@@ -470,11 +464,9 @@ onBeforeRouteLeave(async () => {
           <FlowPanel
             v-else-if="editor.flow"
             :flow="editor.flow"
-            :composition="editor.doc?.composition"
             :readonly="editor.readonly"
             :publishing="editor.publishing"
             @update-meta="patchMeta"
-            @update-composition="updateComposition"
             @publish="publish"
           />
         </aside>

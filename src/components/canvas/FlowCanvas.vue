@@ -249,12 +249,14 @@ function projectAll(preservePositions: boolean) {
   ) => {
     const isStart = meta.kind === 'start'
     const status = props.status[meta.id] ?? null
+    // 节点上只表达「到这一步要不要人」：判定槽选了方法才算自动，其余都算人工。
+    // 槽位数量、接口名这类编排细节不进画布。
+    const auto = Boolean(meta.slots?.decide) && meta.slots?.decide?.human !== true
     const data: NodeCardData = {
       kind: meta.kind,
       title: meta.title ?? '',
       detail: meta.detail ?? '',
-      hasBinding: Boolean(meta.operation),
-      executionLabel: meta.operation ? '组合操作' : undefined,
+      hasBinding: auto,
       hasTarget: !isStart && meta.id !== entry,
       paramCount: isStart ? (meta.inputs?.length ?? 0) : undefined,
       issues: byNode.get(meta.id) ?? [],

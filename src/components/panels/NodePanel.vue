@@ -6,14 +6,15 @@ import type {
   FlowDoc,
   InvestigationFields,
   ManualField,
+  NodeSlots,
   ParamType,
+  SlotCall,
   StartParam,
-  CompositionArgument,
 } from '@/domain/types'
 import { KIND_META } from '@/domain/kinds'
 import AttachmentField from './AttachmentField.vue'
 import ParamValueInput from './ParamValueInput.vue'
-import CompositionArgumentEditor from '@/components/panels/CompositionArgumentEditor.vue'
+import SlotCallEditor from '@/components/panels/SlotCallEditor.vue'
 import { PARAM_TYPES, parameterType as normalizeType } from '@/domain/parameters'
 
 const props = defineProps<{
@@ -37,43 +38,69 @@ const fields = computed<InvestigationFields>(
   () => props.node.fields ?? { observation: '', acquisition: '', assessment: '' },
 )
 const isStart = computed(() => props.node.kind === 'start')
-const operationParameters = computed(() => props.doc?.composition?.operations
-  .find((item) => item.id === props.node.operation)?.parameters ?? [])
 
-function changeOperation(value: unknown): void {
-  emit('update', {
-    operation: typeof value === 'string' && value ? value : undefined,
-    operationArguments: {},
-    runtimeInputs: undefined,
-  })
+/** 开始节点声明的对象名与启动参数，是其余槽位的可选值来源 */
+const startNode = computed(() => props.doc?.nodes?.find((item) => item.kind === 'start'))
+const objectNames = computed(() =>
+  (startNode.value?.slots?.constructs ?? []).map((item) => item.object).filter((name): name is string => Boolean(name)))
+const startInputs = computed(() => (startNode.value?.inputs ?? []).map((item) => item.name))
+const parameters = computed(() => (props.node.runtimeInputs ?? []).map((item) => item.name))
+const slots = computed<NodeSlots>(() => props.node.slots ?? {})
+const hasFetch = computed(() => Boolean(slots.value.fetch))
+const hasProcess = computed(() => Boolean(slots.value.process))
+const constructs = computed<SlotCall[]>(() => (isStart.value ? slots.value.constructs ?? [] : []))
+
+function patchSlots(patch: Partial<NodeSlots>): void {
+  emit('update', { slots: { ...slots.value, ...patch } })
 }
 
-function setOperationSource(name: string, manual: unknown): void {
-  const argumentsMap = { ...props.node.operationArguments }
-  const fields = (props.node.runtimeInputs ?? []).filter((item) => item.name !== name)
-  if (manual) {
-    delete argumentsMap[name]
-    fields.push({ name, type: 'json', required: true })
-  } else argumentsMap[name] = { lit: null }
-  emit('update', { operationArguments: argumentsMap, runtimeInputs: fields })
+/** 槽位里出现「现场填写」时自动登记成节点现场参数，避免两处各填一遍 */
+function syncParameters(next: NodeSlots): void {
+  const names = new Set<string>()
+  for (const call of [next.fetch, next.process, next.present, next.decide]) {
+    for (const value of Object.values(call?.arguments ?? {})) collect(value, names)
+  }
+  const existing = props.node.runtimeInputs ?? []
+  const merged: ManualField[] = [...existing.filter((item) => names.has(item.name))]
+  for (const name of names) {
+    if (!merged.some((item) => item.name === name)) merged.push({ name, type: 'json', required: true })
+  }
+  emit('update', { slots: next, runtimeInputs: merged.length ? merged : undefined })
 }
-function setOperationType(name: string, type: ParamType): void {
-  const fields = (props.node.runtimeInputs ?? []).filter((item) => item.name !== name)
-  emit('update', { runtimeInputs: [...fields, { name, type, required: true }] })
+
+function collect(value: unknown, names: Set<string>): void {
+  if (!value || typeof value !== 'object') return
+  const argument = value as Record<string, unknown>
+  if (argument.source === 'parameter' && typeof argument.name === 'string' && argument.name) {
+    names.add(argument.name)
+  }
+  for (const item of (argument.items as unknown[]) ?? []) collect(item, names)
+  for (const item of Object.values((argument.fields as Record<string, unknown>) ?? {})) collect(item, names)
 }
-function setOperationArgument(name: string, value: CompositionArgument): void {
-  emit('update', { operationArguments: { ...props.node.operationArguments, [name]: value } })
+
+function updateSlot(name: keyof NodeSlots, value: SlotCall | undefined): void {
+  const next = { ...slots.value, [name]: value }
+  if (!value) delete next[name]
+  syncParameters(next)
+}
+
+function setConstruct(index: number, value: SlotCall | undefined): void {
+  const list = [...constructs.value]
+  if (value) list[index] = value
+  else list.splice(index, 1)
+  syncParameters({ ...slots.value, constructs: list })
+}
+
+function addConstruct(): void {
+  syncParameters({ ...slots.value, constructs: [...constructs.value, {
+    object: `app${constructs.value.length + 1}`, project: '', interface: '', function: '', arguments: {},
+  }] })
 }
 
 /** 只有同组内多于一条出边时才需要排序；不同分支之间互不影响 */
 const orderGroups = computed(() =>
   (props.successorGroups ?? []).filter((group) => group.items.length > 1),
 )
-
-const codeHint = computed(() => {
-  if (props.doc?.composition) return '复用流程中配置的排查操作，共享启动资源与按需缓存'
-  return '未配置组合实例：执行到此节点时由人工判断'
-})
 
 function asText(value: unknown): string {
   return typeof value === 'string' ? value : String(value ?? '')
@@ -178,7 +205,7 @@ function patchRuntimeInputs(value: ManualField[]): void {
 
     <template v-if="isStart">
       <div class="section-title">启动参数</div>
-      <div class="section-hint">发布时冻结成执行页表单；组合配置里的参数来源选「启动输入」即可引用</div>
+      <div class="section-hint">发布时冻结成执行页表单；槽位里的参数来源选「启动输入」即可引用</div>
       <div v-if="!inputs.length" class="section-hint muted">还没有启动参数</div>
       <template v-if="!readonly">
         <label for="input-name" class="label">新增启动参数</label>
@@ -221,6 +248,22 @@ function patchRuntimeInputs(value: ManualField[]): void {
           @update:model-value="setInputValue(item.name, $event)"
         />
       </div>
+
+      <div class="section-title">接入</div>
+      <div class="section-hint">每个槽位填一个外接工程的公开方法；参数只有启动输入和现场填写两种来源，拉取与处理的返回值供下一槽使用。</div>
+
+      <SlotCallEditor v-for="(call, index) in constructs" :key="`c${index}`"
+        :title="`构造 ${index + 1}`" hint="开始节点实例化外接工程的对象，其余槽位按对象名引用"
+        :value="call" construct :required="index === 0" :inputs="startInputs" :parameters="[]"
+        :readonly="readonly" @update="setConstruct(index, $event)" />
+      <el-button v-if="!readonly" size="small" @click="addConstruct">添加构造对象</el-button>
+
+      <SlotCallEditor title="拉取数据" hint="可选；取到的数据由方法自己存进对象，后续节点从对象里取" allow-cache
+        :value="slots.fetch" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+        :readonly="readonly" @update="updateSlot('fetch', $event)" />
+      <SlotCallEditor title="处理数据" hint="可选；上一槽的返回值用「上一槽结果」接收"
+        :value="slots.process" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+        :allow-previous="hasFetch" :readonly="readonly" @update="updateSlot('process', $event)" />
     </template>
 
     <template v-else>
@@ -259,29 +302,24 @@ function patchRuntimeInputs(value: ManualField[]): void {
         />
       </template>
 
-      <div class="section-title">排查操作</div>
-      <div class="section-hint">{{ codeHint }}</div>
-      <template v-if="node.kind === 'investigation' && doc?.composition">
-        <el-select :model-value="node.operation" :disabled="readonly" clearable
-          aria-label="排查操作" placeholder="选择操作；留空由人工判断" @change="changeOperation">
-          <el-option v-for="operation in doc.composition.operations" :key="operation.id"
-            :label="operation.id" :value="operation.id" />
-        </el-select>
-        <div v-for="name in operationParameters" :key="name">
-          <label>{{ name }}</label>
-          <el-checkbox :model-value="!(name in (node.operationArguments ?? {}))" :disabled="readonly"
-            @change="setOperationSource(name, $event)">执行到此节点时填写</el-checkbox>
-          <el-select v-if="!(name in (node.operationArguments ?? {}))"
-            :model-value="node.runtimeInputs?.find((field) => field.name === name)?.type ?? 'json'"
-            :disabled="readonly" :aria-label="`${name} 输入类型`" @change="setOperationType(name, $event)">
-            <el-option v-for="option in PARAM_TYPES" :key="option.value" :label="option.label" :value="option.value" />
-          </el-select>
-          <CompositionArgumentEditor v-else :key="`${node.id}:${name}`"
-            :value="node.operationArguments?.[name]" :composition="doc.composition"
-            :readonly="readonly" @update="setOperationArgument(name, $event)" />
-        </div>
+      <template v-if="node.kind === 'investigation'">
+        <div class="section-title">接入</div>
+        <div class="section-hint">固定链：拉取 → 处理 → 展示 → 判定。上一槽的返回值用「上一槽结果」接收；不填拉取与处理时，方法自己用对象里的数据。</div>
+        <SlotCallEditor title="拉取数据" hint="可选；取到的数据由方法自己存进对象，后续节点从对象里取" allow-cache
+          :value="slots.fetch" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+          :readonly="readonly" @update="updateSlot('fetch', $event)" />
+        <SlotCallEditor title="处理数据" hint="可选；接收本节点拉取的结果"
+          :value="slots.process" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+          :allow-previous="hasFetch" :readonly="readonly" @update="updateSlot('process', $event)" />
+        <SlotCallEditor title="展示数据" hint="必填；用本节点拉取或处理的结果来画" required show-view
+          :value="slots.present" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+          :allow-previous="hasFetch || hasProcess" :readonly="readonly" @update="updateSlot('present', $event)" />
+        <SlotCallEditor title="判定结果" hint="必填；用本节点拉取或处理的结果来判" required allow-human
+          :value="slots.decide" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+          :allow-previous="hasFetch || hasProcess" :readonly="readonly" @update="updateSlot('decide', $event)" />
+
         <div v-if="node.runtimeInputs?.length" class="section-hint">
-          现场参数：{{ node.runtimeInputs.map((item) => item.name).join('、') }}
+          现场参数：{{ node.runtimeInputs.map((item) => `${item.name}（${item.type}）`).join('、') }}
         </div>
       </template>
 

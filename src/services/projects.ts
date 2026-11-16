@@ -36,7 +36,7 @@ export interface ProjectFunction {
   name: string
   doc?: string | null
   kind?: string
-  compositionError?: string | null
+  interfaceError?: string | null
   variadicKeywords?: boolean
   params: ProjectFunctionParam[]
   returns?: string | null
@@ -102,7 +102,7 @@ function normalizeFunction(raw: unknown): ProjectFunction | null {
     name,
     doc: text(item.doc) ?? text(item.description) ?? null,
     kind: text(item.kind),
-    compositionError: text(item.compositionError),
+    interfaceError: text(item.interfaceError),
     variadicKeywords: item.variadicKeywords === true,
     params,
     returns: text(item.returns) ?? null,

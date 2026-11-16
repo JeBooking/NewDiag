@@ -1,7 +1,7 @@
 import { onScopeDispose, ref, watch, type Ref } from 'vue'
 import { KIND_META, isKnownKind, isTerminalKind } from '@/domain/kinds'
 import { canConnect, isSingleSuccessor, needsBranch } from '@/domain/rules'
-import type { DocEdge, DocNode, FlowDoc, InvestigationFields, LintIssue } from '@/domain/types'
+import type { DocEdge, DocNode, FlowDoc, InvestigationFields, LintIssue, SlotCall } from '@/domain/types'
 
 const FIELD_LABELS: Array<[keyof InvestigationFields, string]> = [
   ['observation', '观察对象'],
@@ -94,16 +94,67 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
       issues.push({ id: `node:${node.id}:kind`, level: 'error', nodeId: node.id,
         message: `节点类型「${node.kind}」已移除，请重新编排这个节点` })
     }
-    if (node.operation && !doc.composition) {
-      issues.push({ id: `node:${node.id}:composition`, nodeId: node.id,
-        level: 'error', message: '选择排查操作前必须配置组合实例' })
-    }
   }
-  if (doc.composition) {
-    const operations = new Set(doc.composition.operations.map((item) => item.id))
-    for (const node of nodes) {
-      if (node.operation && !operations.has(node.operation)) {
-        issues.push({ id: `node:${node.id}:operation`, nodeId: node.id, level: 'error', message: '所选排查操作不存在' })
+  const startSlots = nodes.find((n) => n.kind === 'start')?.slots
+  const objectNames = new Set(
+    (startSlots?.constructs ?? []).map((item) => item.object).filter(Boolean) as string[],
+  )
+  const parameterNames = (node: DocNode) => new Set((node.runtimeInputs ?? []).map((item) => item.name))
+  const usesPrevious = (value: unknown): boolean => {
+    if (!value || typeof value !== 'object') return false
+    const argument = value as Record<string, unknown>
+    if (argument.source === 'previous') return true
+    return ((argument.items as unknown[]) ?? []).some(usesPrevious)
+      || Object.values((argument.fields as Record<string, unknown>) ?? {}).some(usesPrevious)
+  }
+  const previousIn = (call?: SlotCall): boolean =>
+    Boolean(call) && Object.values(call?.arguments ?? {}).some(usesPrevious)
+  const collectSources = (value: unknown, names: Set<string>): void => {
+    if (!value || typeof value !== 'object') return
+    const argument = value as Record<string, unknown>
+    if (argument.source === 'parameter' && typeof argument.name === 'string') names.add(argument.name)
+    for (const item of (argument.items as unknown[]) ?? []) collectSources(item, names)
+    for (const item of Object.values((argument.fields as Record<string, unknown>) ?? {})) collectSources(item, names)
+  }
+  for (const node of nodes) {
+    const slots = node.slots ?? {}
+    if (node.kind === 'investigation') {
+      if (!slots.present) {
+        issues.push({ id: `node:${node.id}:present`, nodeId: node.id, level: 'error',
+          message: '排查节点缺少展示槽：必须选择展示方法和展示类型' })
+      } else if (!slots.present.view) {
+        issues.push({ id: `node:${node.id}:view`, nodeId: node.id, level: 'error',
+          message: '展示槽还没有选择展示类型' })
+      }
+      if (!slots.decide) {
+        issues.push({ id: `node:${node.id}:decide`, nodeId: node.id, level: 'error',
+          message: '排查节点缺少判定槽：选判定方法或人工判断' })
+      }
+    }
+    if (previousIn(slots.process) && !slots.fetch) {
+      issues.push({ id: `node:${node.id}:previous:process`, nodeId: node.id, level: 'error',
+        message: '处理槽要用上一槽结果，但这个节点没有拉取槽' })
+    }
+    if ((previousIn(slots.present) || previousIn(slots.decide)) && !slots.fetch && !slots.process) {
+      issues.push({ id: `node:${node.id}:previous:value`, nodeId: node.id, level: 'error',
+        message: '要用上一槽结果，但这个节点没有拉取或处理槽：下一节点的数据要自己取' })
+    }
+    const calls = [...(slots.constructs ?? []),
+      ...[slots.fetch, slots.process, slots.present, slots.decide].filter(Boolean)]
+    for (const call of calls) {
+      if (!call || call.human === true) continue
+      if (call.object && !objectNames.has(call.object)) {
+        issues.push({ id: `node:${node.id}:object`, nodeId: node.id, level: 'error',
+          message: `槽位引用了未声明的对象「${call.object}」` })
+      }
+      const names = new Set<string>()
+      for (const value of Object.values(call.arguments ?? {})) collectSources(value, names)
+      const declared = parameterNames(node)
+      for (const name of names) {
+        if (!declared.has(name)) {
+          issues.push({ id: `node:${node.id}:parameter:${name}`, nodeId: node.id, level: 'error',
+            message: `槽位引用了未声明的现场参数「${name}」` })
+        }
       }
     }
   }

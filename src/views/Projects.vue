@@ -293,7 +293,7 @@ function signatureText(fn: ProjectFunction): string {
           <el-input v-model="form.python" placeholder="python" />
         </el-form-item>
         <el-form-item label="工厂函数">
-          <el-input v-model="form.factory" placeholder="组合接入留空；旧实例工厂按需填写" />
+          <el-input v-model="form.factory" placeholder="槽位接入留空，对象在流程里构造" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -318,7 +318,7 @@ function signatureText(fn: ProjectFunction): string {
           <el-input v-model="editForm.python" placeholder="留空则使用后端默认解释器" />
         </el-form-item>
         <el-form-item label="工厂函数">
-          <el-input v-model="editForm.factory" placeholder="组合接入留空；旧实例工厂按需填写" />
+          <el-input v-model="editForm.factory" placeholder="槽位接入留空，对象在流程里构造" />
         </el-form-item>
       </el-form>
       <template #footer>

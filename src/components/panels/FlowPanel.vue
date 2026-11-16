@@ -1,18 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { Composition, FlowDetail } from '@/domain/types'
-import CompositionEditor from '@/components/panels/CompositionEditor.vue'
+import type { FlowDetail } from '@/domain/types'
 
 const props = defineProps<{
   flow: FlowDetail
   readonly?: boolean
   publishing?: boolean
-  composition?: Composition
 }>()
 const emit = defineEmits<{
   (e: 'update-meta', patch: { name?: string }): void
   (e: 'publish'): void
-  (e: 'update-composition', value: Composition | undefined): void
 }>()
 
 const name = ref(props.flow.name)
@@ -54,11 +51,6 @@ function commitName(): void {
       @blur="commitName"
       @keyup.enter="commitName"
     />
-
-    <div class="section-title">工程组合</div>
-    <div class="section-hint">配置原工程的对象、固定资源和排查操作；启动参数在开始节点配置。</div>
-    <CompositionEditor :value="composition ?? { objects: [], resources: [], operations: [] }"
-      :readonly="readonly" @update="emit('update-composition', $event)" />
 
     <div class="section-title">版本</div>
     <div class="kv">
