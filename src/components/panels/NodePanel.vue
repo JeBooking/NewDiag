@@ -45,6 +45,7 @@ const objectNames = computed(() =>
   (startNode.value?.slots?.constructs ?? []).map((item) => item.object).filter((name): name is string => Boolean(name)))
 const startInputs = computed(() => (startNode.value?.inputs ?? []).map((item) => item.name))
 const parameters = computed(() => (props.node.runtimeInputs ?? []).map((item) => item.name))
+const opened = ref(['basic', 'inputs', 'slots', 'order', 'attachments'])
 const slots = computed<NodeSlots>(() => props.node.slots ?? {})
 const hasFetch = computed(() => Boolean(slots.value.fetch))
 const hasProcess = computed(() => Boolean(slots.value.process))
@@ -195,171 +196,193 @@ function patchRuntimeInputs(value: ManualField[]): void {
       <span class="node-id">{{ node.id }}</span>
     </div>
 
-    <label class="label">标题</label>
-    <el-input
-      :model-value="node.title"
-      :disabled="readonly"
-      :placeholder="isStart ? '例如：开始诊断' : '例如：检查母线电压'"
-      @update:model-value="patchText('title', $event)"
-    />
-
-    <template v-if="isStart">
-      <div class="section-title">启动参数</div>
-      <div class="section-hint">发布时冻结成执行页表单；槽位里的参数来源选「启动输入」即可引用</div>
-      <div v-if="!inputs.length" class="section-hint muted">还没有启动参数</div>
-      <template v-if="!readonly">
-        <label for="input-name" class="label">新增启动参数</label>
-        <el-input id="input-name" v-model="inputName" placeholder="例如 device_id" />
-        <el-select v-model="inputType" aria-label="新增启动参数类型">
-          <el-option
-            v-for="option in PARAM_TYPES" :key="option.value"
-            :label="option.label" :value="option.value"
-          />
-        </el-select>
-        <el-button @click="addInput">添加启动参数</el-button>
-        <div v-if="inputError" class="section-hint error" role="alert">{{ inputError }}</div>
-      </template>
-      <div v-for="item in inputs" :key="item.name" class="param-row">
-        <div class="param-line">
-          <span class="param-name" :title="item.name">{{ item.name }}</span>
-          <el-select
-            :model-value="item.type ?? 'text'"
+    <el-collapse v-model="opened" class="sections">
+      <el-collapse-item name="basic" title="基本信息">
+        <div class="section-body">
+          <label class="label">标题</label>
+          <el-input
+            :model-value="node.title"
             :disabled="readonly"
-            size="small"
-            class="type-select"
-            @update:model-value="onInputType(item.name, $event)"
-          >
-            <el-option
-              v-for="option in PARAM_TYPES"
-              :key="option.value"
-              :label="option.label"
-              :value="option.value"
+            :placeholder="isStart ? '例如：开始诊断' : '例如：检查母线电压'"
+            @update:model-value="patchText('title', $event)"
+          />
+
+          <template v-if="!isStart">
+            <label class="label">详细内容</label>
+            <el-input
+              :model-value="node.detail"
+              :disabled="readonly"
+              type="textarea"
+              :rows="3"
+              placeholder="这一节点要做什么、看什么"
+              @update:model-value="patchText('detail', $event)"
             />
-          </el-select>
-          <el-button v-if="!readonly" link size="small" @click="removeInput(item.name)">
-            删除
-          </el-button>
+          </template>
+
+          <template v-if="node.kind === 'investigation'">
+            <label class="label">观察对象</label>
+            <el-input
+              :model-value="fields.observation"
+              :disabled="readonly"
+              placeholder="例如：母线电压"
+              @update:model-value="patchField('observation', $event)"
+            />
+            <label class="label">取数方式</label>
+            <el-input
+              :model-value="fields.acquisition"
+              :disabled="readonly"
+              placeholder="例如：调用数据服务器读取 voltage"
+              @update:model-value="patchField('acquisition', $event)"
+            />
+            <label class="label">判定标准</label>
+            <el-input
+              :model-value="fields.assessment"
+              :disabled="readonly"
+              placeholder="例如：低于 210V 判为异常"
+              @update:model-value="patchField('assessment', $event)"
+            />
+          </template>
         </div>
-        <ParamValueInput
-          :model-value="item.default"
-          :type="item.type ?? 'text'"
-          :readonly="readonly"
-          placeholder="默认值"
-          @update:model-value="setInputValue(item.name, $event)"
-        />
-      </div>
+      </el-collapse-item>
 
-      <div class="section-title">接入</div>
-      <div class="section-hint">每个槽位填一个外接工程的公开方法；参数只有启动输入和现场填写两种来源，拉取与处理的返回值供下一槽使用。</div>
-
-      <SlotCallEditor v-for="(call, index) in constructs" :key="`c${index}`"
-        :title="`构造 ${index + 1}`" hint="开始节点实例化外接工程的对象，其余槽位按对象名引用"
-        :value="call" construct :required="index === 0" :inputs="startInputs" :parameters="[]"
-        :readonly="readonly" @update="setConstruct(index, $event)" />
-      <el-button v-if="!readonly" size="small" @click="addConstruct">添加构造对象</el-button>
-
-      <SlotCallEditor title="拉取数据" hint="可选；取到的数据由方法自己存进对象，后续节点从对象里取" allow-cache
-        :value="slots.fetch" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
-        :readonly="readonly" @update="updateSlot('fetch', $event)" />
-      <SlotCallEditor title="处理数据" hint="可选；上一槽的返回值用「上一槽结果」接收"
-        :value="slots.process" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
-        :allow-previous="hasFetch" :readonly="readonly" @update="updateSlot('process', $event)" />
-    </template>
-
-    <template v-else>
-      <label class="label">详细内容</label>
-      <el-input
-        :model-value="node.detail"
-        :disabled="readonly"
-        type="textarea"
-        :rows="3"
-        placeholder="这一节点要做什么、看什么"
-        @update:model-value="patchText('detail', $event)"
-      />
-
-      <template v-if="node.kind === 'investigation'">
-        <div class="section-title">排查说明</div>
-        <label class="label">观察对象</label>
-        <el-input
-          :model-value="fields.observation"
-          :disabled="readonly"
-          placeholder="例如：母线电压"
-          @update:model-value="patchField('observation', $event)"
-        />
-        <label class="label">取数方式</label>
-        <el-input
-          :model-value="fields.acquisition"
-          :disabled="readonly"
-          placeholder="例如：调用数据服务器读取 voltage"
-          @update:model-value="patchField('acquisition', $event)"
-        />
-        <label class="label">判定标准</label>
-        <el-input
-          :model-value="fields.assessment"
-          :disabled="readonly"
-          placeholder="例如：低于 210V 判为异常"
-          @update:model-value="patchField('assessment', $event)"
-        />
-      </template>
-
-      <template v-if="node.kind === 'investigation'">
-        <div class="section-title">接入</div>
-        <div class="section-hint">固定链：拉取 → 处理 → 展示 → 判定。上一槽的返回值用「上一槽结果」接收；不填拉取与处理时，方法自己用对象里的数据。</div>
-        <SlotCallEditor title="拉取数据" hint="可选；取到的数据由方法自己存进对象，后续节点从对象里取" allow-cache
-          :value="slots.fetch" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
-          :readonly="readonly" @update="updateSlot('fetch', $event)" />
-        <SlotCallEditor title="处理数据" hint="可选；接收本节点拉取的结果"
-          :value="slots.process" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
-          :allow-previous="hasFetch" :readonly="readonly" @update="updateSlot('process', $event)" />
-        <SlotCallEditor title="展示数据" hint="必填；用本节点拉取或处理的结果来画" required show-view
-          :value="slots.present" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
-          :allow-previous="hasFetch || hasProcess" :readonly="readonly" @update="updateSlot('present', $event)" />
-        <SlotCallEditor title="判定结果" hint="必填；用本节点拉取或处理的结果来判" required allow-human
-          :value="slots.decide" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
-          :allow-previous="hasFetch || hasProcess" :readonly="readonly" @update="updateSlot('decide', $event)" />
-
-        <div v-if="node.runtimeInputs?.length" class="section-hint">
-          现场参数：{{ node.runtimeInputs.map((item) => `${item.name}（${item.type}）`).join('、') }}
+      <el-collapse-item v-if="isStart" name="inputs" title="启动参数">
+        <div class="section-body">
+          <div class="section-hint">发布时冻结成执行页表单；槽位里的参数来源选「启动输入」即可引用</div>
+          <div v-if="!inputs.length" class="section-hint muted">还没有启动参数</div>
+          <template v-if="!readonly">
+            <label for="input-name" class="label">新增启动参数</label>
+            <el-input id="input-name" v-model="inputName" placeholder="例如 device_id" />
+            <el-select v-model="inputType" aria-label="新增启动参数类型">
+              <el-option
+                v-for="option in PARAM_TYPES" :key="option.value"
+                :label="option.label" :value="option.value"
+              />
+            </el-select>
+            <el-button @click="addInput">添加启动参数</el-button>
+            <div v-if="inputError" class="section-hint error" role="alert">{{ inputError }}</div>
+          </template>
+          <div v-for="item in inputs" :key="item.name" class="param-row">
+            <div class="param-line">
+              <span class="param-name" :title="item.name">{{ item.name }}</span>
+              <el-select
+                :model-value="item.type ?? 'text'"
+                :disabled="readonly"
+                size="small"
+                class="type-select"
+                @update:model-value="onInputType(item.name, $event)"
+              >
+                <el-option
+                  v-for="option in PARAM_TYPES"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+              <el-button v-if="!readonly" link size="small" @click="removeInput(item.name)">
+                删除
+              </el-button>
+            </div>
+            <ParamValueInput
+              :model-value="item.default"
+              :type="item.type ?? 'text'"
+              :readonly="readonly"
+              placeholder="默认值"
+              @update:model-value="setInputValue(item.name, $event)"
+            />
+          </div>
         </div>
-      </template>
+      </el-collapse-item>
 
-      <template v-if="orderGroups.length">
-        <div class="section-title">执行顺序</div>
-        <div class="order-groups">
-          <div v-for="group in orderGroups" :key="group.branch" class="order-group">
-            <div class="order-group-head">{{ group.label }}</div>
-            <div class="order-list">
-              <div v-for="(item, index) in group.items" :key="item.edgeId" class="order-row">
-                <span class="order-index">{{ index + 1 }}</span>
-                <span class="order-title">{{ item.title }}</span>
-                <el-button-group size="small">
-                  <el-button
-                    :disabled="readonly || index === 0"
-                    @click="emit('reorder', item.edgeId, -1)"
-                  >
-                    ↑
-                  </el-button>
-                  <el-button
-                    :disabled="readonly || index === group.items.length - 1"
-                    @click="emit('reorder', item.edgeId, 1)"
-                  >
-                    ↓
-                  </el-button>
-                </el-button-group>
+      <el-collapse-item name="slots" :title="isStart ? '接入口径与取数' : '接入口径与数据'">
+        <div class="section-body">
+          <div class="section-hint">
+            {{ isStart
+              ? '每个槽位填一个外接工程的公开方法；构造出的对象在后续节点按名字引用。'
+              : '固定链：拉取 → 处理 → 展示 → 判定，只在节点内传值；要数据就自己取。' }}
+          </div>
+
+          <template v-if="isStart">
+            <SlotCallEditor v-for="(call, index) in constructs" :key="`c${index}`"
+              :title="`构造 ${index + 1}`" hint="开始节点实例化外接工程的对象，其余槽位按对象名引用"
+              :value="call" construct :inputs="startInputs" :parameters="[]"
+              :readonly="readonly" @update="setConstruct(index, $event)" />
+            <el-button v-if="!readonly" size="small" @click="addConstruct">添加构造对象</el-button>
+            <div v-if="!constructs.length" class="section-hint muted">
+              可不填；不构造对象时，后面的槽位只能选模块级函数
+            </div>
+
+            <SlotCallEditor title="拉取数据" hint="可选；取到的数据由方法自己存进对象，后续节点从对象里取" allow-cache
+              :value="slots.fetch" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+              :readonly="readonly" @update="updateSlot('fetch', $event)" />
+            <SlotCallEditor title="处理数据" hint="可选；上一槽的返回值用「上一槽结果」接收"
+              :value="slots.process" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+              :allow-previous="hasFetch" :readonly="readonly" @update="updateSlot('process', $event)" />
+          </template>
+
+          <template v-else-if="node.kind === 'investigation'">
+            <SlotCallEditor title="拉取数据" hint="可选；取到的数据由方法自己存进对象，后续节点从对象里取" allow-cache
+              :value="slots.fetch" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+              :readonly="readonly" @update="updateSlot('fetch', $event)" />
+            <SlotCallEditor title="处理数据" hint="可选；接收本节点拉取的结果"
+              :value="slots.process" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+              :allow-previous="hasFetch" :readonly="readonly" @update="updateSlot('process', $event)" />
+            <SlotCallEditor title="展示数据" hint="必填；用本节点拉取或处理的结果来画" required show-view
+              :value="slots.present" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+              :allow-previous="hasFetch || hasProcess" :readonly="readonly" @update="updateSlot('present', $event)" />
+            <SlotCallEditor title="判定结果" hint="必填；用本节点拉取或处理的结果来判" required allow-human
+              :value="slots.decide" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+              :allow-previous="hasFetch || hasProcess" :readonly="readonly" @update="updateSlot('decide', $event)" />
+
+            <div v-if="node.runtimeInputs?.length" class="section-hint">
+              现场参数：{{ node.runtimeInputs.map((item) => `${item.name}（${item.type}）`).join('、') }}
+            </div>
+          </template>
+
+          <div v-else class="section-hint muted">这类节点不接代码，完成情况由人工确认。</div>
+        </div>
+      </el-collapse-item>
+
+      <el-collapse-item v-if="!isStart && orderGroups.length" name="order" title="执行顺序">
+        <div class="section-body">
+          <div class="order-groups">
+            <div v-for="group in orderGroups" :key="group.branch" class="order-group">
+              <div class="order-group-head">{{ group.label }}</div>
+              <div class="order-list">
+                <div v-for="(item, index) in group.items" :key="item.edgeId" class="order-row">
+                  <span class="order-index">{{ index + 1 }}</span>
+                  <span class="order-title">{{ item.title }}</span>
+                  <el-button-group size="small">
+                    <el-button
+                      :disabled="readonly || index === 0"
+                      @click="emit('reorder', item.edgeId, -1)"
+                    >
+                      ↑
+                    </el-button>
+                    <el-button
+                      :disabled="readonly || index === group.items.length - 1"
+                      @click="emit('reorder', item.edgeId, 1)"
+                    >
+                      ↓
+                    </el-button>
+                  </el-button-group>
+                </div>
               </div>
             </div>
           </div>
+          <div class="section-hint">同组内按顺序执行；运行模式与并行上限在启动时选择</div>
         </div>
-        <div class="section-hint">同组内按顺序执行；运行模式与并行上限在启动时选择</div>
-      </template>
+      </el-collapse-item>
 
-      <div class="section-title">附件</div>
-      <AttachmentField
-        :attachments="node.attachments"
-        :readonly="readonly"
-        @update="patchAttachments"
-      />
-    </template>
+      <el-collapse-item name="attachments" title="附件">
+        <div class="section-body">
+          <AttachmentField
+            :attachments="node.attachments"
+            :readonly="readonly"
+            @update="patchAttachments"
+          />
+        </div>
+      </el-collapse-item>
+    </el-collapse>
 
     <el-button
       v-if="!readonly && !isStart"
@@ -374,6 +397,67 @@ function patchRuntimeInputs(value: ManualField[]): void {
 </template>
 
 <style scoped>
+.sections {
+  border-top: 0;
+  border-bottom: 0;
+}
+
+/* 分组用发丝线分隔，不再用整条色块标题栏：标题只占文字宽度，视觉重量交给留白 */
+.sections :deep(.el-collapse-item) {
+  border: 0;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.sections :deep(.el-collapse-item:first-child) {
+  border-top: 0;
+}
+
+.sections :deep(.el-collapse-item__header) {
+  height: 34px;
+  padding: 0 4px;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--el-text-color-primary);
+}
+
+.sections :deep(.el-collapse-item__header:hover) {
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+}
+
+/* 2px 短竖条代替整条色带，既标明分组起点，又不抢正文注意力 */
+.sections :deep(.el-collapse-item__header)::before {
+  content: '';
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+  background: var(--el-color-primary);
+}
+
+.sections :deep(.el-collapse-item__arrow) {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--el-text-color-tertiary);
+}
+
+.sections :deep(.el-collapse-item__wrap) {
+  border-bottom: 0;
+}
+
+.sections :deep(.el-collapse-item__content) {
+  padding: 4px 4px 14px;
+}
+
+.section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .node-panel {
   display: flex;
   flex-direction: column;
