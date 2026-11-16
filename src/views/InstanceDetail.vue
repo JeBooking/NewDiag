@@ -7,7 +7,6 @@ import FlowCanvas from '@/components/canvas/FlowCanvas.vue'
 import PathList from '@/components/history/PathList.vue'
 import ExecutionTrace from '@/components/history/ExecutionTrace.vue'
 import RunDetailCard from '@/components/history/RunDetailCard.vue'
-import RunTimeline from '@/components/history/RunTimeline.vue'
 import TaskPanel from '@/components/tasks/TaskPanel.vue'
 import type { InstanceStatus, ReviewTask, RunRecord } from '@/domain/types'
 import { errorText } from '@/services/api'
@@ -22,7 +21,7 @@ const store = useInstancesStore()
 const instanceId = computed(() => String(route.params.id))
 const loadError = ref<string | null>(null)
 const selectedNodeId = ref<string | null>(null)
-const activeTab = ref<'runs' | 'paths' | 'trace'>('runs')
+const activeTab = ref<'paths' | 'trace'>('trace')
 const refreshing = ref(false)
 const terminating = ref(false)
 const exportingCode = ref(false)
@@ -323,19 +322,16 @@ function onInspect(nodeId: string): void {
 
     <div class="bottom">
       <el-tabs v-model="activeTab" class="tabs">
-        <el-tab-pane label="运行记录" name="runs">
+        <el-tab-pane label="执行轨迹" name="trace">
           <div class="tab-body">
-            <RunTimeline :runs="detail?.runs ?? []" :doc="store.doc" />
+            <ExecutionTrace :tokens="detail?.tokens ?? []" :runs="detail?.runs ?? []"
+              :reviews="detail?.reviews ?? []" :doc="store.doc" />
           </div>
         </el-tab-pane>
         <el-tab-pane label="诊断路径" name="paths">
           <div class="tab-body">
-            <PathList :tokens="detail?.tokens ?? []" :runs="detail?.runs ?? []" :doc="store.doc" />
-          </div>
-        </el-tab-pane>
-        <el-tab-pane label="执行轨迹" name="trace">
-          <div class="tab-body">
-            <ExecutionTrace :tokens="detail?.tokens ?? []" :runs="detail?.runs ?? []" :doc="store.doc" />
+            <PathList :tokens="detail?.tokens ?? []" :runs="detail?.runs ?? []" :doc="store.doc"
+              :mode="detail?.runtime?.mode ?? 'serial'" />
           </div>
         </el-tab-pane>
       </el-tabs>
