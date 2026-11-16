@@ -1,6 +1,6 @@
-# 诊断流程平台 · 设计说明（v1.16）
+# 诊断流程平台 · 设计说明（v1.18）
 
-本文件是项目的唯一设计依据。v1.16 收敛为单一方案：**流程用组合配置声明原工程的对象、固定资源和排查操作，平台生成 Python 代码在后端起进程执行**。v1.15 及以前的多套接入协议（旧函数绑定、四阶段函数、investigation/v1 适配器、diagnosis/v1 业务类、数据准备节点）与解释执行引擎已按 v1.16 移除，不再保留兼容路径。
+本文件是项目的唯一设计依据。v1.18 把槽位传值收敛到节点内。v1.17 把接入方式收敛为**节点槽位模板**：每种节点固定几个槽位，用户在每个槽位填一个外接工程的公开方法，平台按槽位链调用，并生成 Python 代码在后端执行。v1.16 及以前的对象／固定资源／排查操作三层配置、11 种参数来源、展示映射与判定字段映射全部移除，不再保留兼容路径。
 
 变更记录见第 12 节。
 
@@ -11,7 +11,7 @@
 **做什么**
 
 - 作者在画布上编排诊断流程：开始 → 排查 → 结论 → 处置 → 问题解决／上升
-- 用组合配置把原 Python 工程接进来：实例对象、固定资源、排查操作
+- 用节点槽位把原 Python 工程接进来：每个槽位填一个公开方法，平台不描述业务逻辑
 - 发布成不可变版本，供人执行（v1 无鉴权，见第 11 节）
 - 执行时由生成的 Python 代码调用业务接口取数与判断，人工完成处置并留痕
 - 全流程记录：每次调用的输入、输出、依据、分支、时间、人工选择
@@ -23,6 +23,7 @@
 - 不直接操作设备。平台只调用数据服务器接口取数，动作由人对着设备完成
 - 不做 BPMN 互通，不引入 BPMN 语义与序列化
 - 不做实时协同编辑（v1 为共享草稿 + 编辑锁）
+- 不维护数据对象，也不搬运模块之间的数据：数据留在外接工程或其数据源，平台只按槽位链传返回值
 - 不做检查点恢复：进程重启后未完成实例不会自动续跑，也还没有启动时批量标记中断的清理逻辑
 - 支持用户终止未结束的诊断，不提供手动暂停；串行模式下到达问题解决后的 `paused` 是调度语义，不是暂停按钮
 - 不提供环境镜像：解释器与第三方依赖由部署方预装，平台只固定业务源码
@@ -40,10 +41,12 @@
 | 发布版本 release | 在线版本在发布时编译成 plan，不可变 |
 | 实例 instance | 一次诊断执行 |
 | 到访 token | 某个节点的一次执行机会；回退以具体到访为目标 |
-| 组合配置 composition | 流程级的对象、资源、操作声明，是唯一的接入方式 |
-| 实例对象 object | 首次使用时创建并常驻的普通 Python 对象 |
-| 固定资源 resource | 取数／解析的有序调用及其不可变结果，同请求只取一次 |
-| 排查操作 operation | 一次排查要执行的调用序列、展示映射与判定 |
+| 槽位 slot | 节点模板上固定的一格，填一个外接工程的公开方法 |
+| 构造槽 construct | 只在开始节点，实例化外接工程的对象并命名 |
+| 拉取槽 fetch | 取数槽位；结果按对象、方法、参数缓存，同实例只取一次 |
+| 处理槽 process | 加工本节点拉取的结果，结果交给展示与判定 |
+| 展示槽 present | 排查节点必填，产出图片／曲线／指标／表格／文字 |
+| 判定槽 decide | 排查节点必填，自动判定或交人工判断 |
 | 现场参数 runtimeInputs | 执行到节点时才填写的参数 |
 
 ---
@@ -170,12 +173,12 @@ SQLite（WAL）。时间统一 ISO8601 UTC。除 `files` 用内容哈希作主�
 
 | 字段 | 说明 |
 |---|---|
-| id, name, path, module, python, factory | 登记信息；`name` 唯一，是组合配置与签名 key 的唯一口径 |
+| id, name, path, module, python, factory | 登记信息；`name` 唯一，是槽位与签名 key 的唯一口径 |
 | created_at | |
 
 接口在运行时发现，不落库。`python` 为空时用平台自身解释器。组合模式不使用 `factory`，构造器在流程里配置。
 
-`name` 登记后不可修改：它出现在 doc 的组合配置与已发布版本里，改名会让已有流程找不到实现。
+`name` 登记后不可修改：它出现在槽位与已发布版本里，改名会让已有流程找不到实现。
 
 ---
 
@@ -183,21 +186,21 @@ SQLite（WAL）。时间统一 ISO8601 UTC。除 `files` 用内容哈希作主�
 
 ### 持久格式与编辑投影
 
-revision 与流程包使用分层格式：
+revision 与流程包使用分层格式，只有当前版本可读写：
 
 ```json
 {
   "format": 2,
   "flow": {"format": 1, "name": "诊断", "nodes": [], "edges": []},
-  "bindings": {"format": 1, "composition": {"objects": [], "resources": [], "operations": []}, "nodes": {}},
+  "bindings": {"format": 2, "nodes": {}},
   "presentation": {"format": 1, "nodes": {}}
 }
 ```
 
 - `flow`：业务节点、连接、分支顺序、说明、附件及启动参数声明
-- `bindings`：流程级组合配置，以及按节点 id 保存的 `operation`、`operationArguments`、`runtimeInputs`
+- `bindings.nodes`：按节点 id 保存的 `slots` 与 `runtimeInputs`
 - `presentation`：按节点 id 保存 position；布局不可识别时重建默认坐标
-- 三层独立标记格式版本；未知版本明确拒绝读取。旧 format=1 文档继续读取，保存时转成 format=2
+- 旧格式（`format=1` 文档、`bindings.format=1`）不再读取，导入报错要求重新编排
 - 编辑 API 返回 format=1 合并投影
 
 编辑投影示例：
@@ -206,23 +209,32 @@ revision 与流程包使用分层格式：
 {
   "format": 1,
   "name": "冷却系统诊断",
-  "composition": {
-    "objects": [{"id": "motor", "project": "冷却系统", "module": "motor", "function": "Motor", "arguments": {}}],
-    "resources": [{"id": "waveform", "trigger": "lazy", "calls": [], "result": {"source": "resource", "name": "waveform"}}],
-    "operations": [{"id": "checkVoltage", "parameters": ["threshold"], "calls": [], "presentation": [], "decision": null}]
-  },
   "nodes": [
     {
       "id": "s1", "kind": "start", "title": "开始", "detail": "",
       "inputs": [{"name": "device", "type": "text"}],
-      "position": {"x": 0, "y": 120}
+      "slots": {
+        "constructs": [
+          {"object": "presenter", "project": "展示模块", "module": "presenter",
+           "interface": "Presenter", "function": "Presenter",
+           "arguments": {"device": {"source": "input", "name": "device"}}}
+        ]
+      }
     },
     {
       "id": "n1", "kind": "investigation", "title": "检查母线电压",
-      "fields": {"observation": "母线电压", "acquisition": "读取 voltage", "assessment": "低于 210V"},
-      "operation": "checkVoltage",
-      "operationArguments": {"threshold": {"lit": 210}},
-      "runtimeInputs": [{"name": "channel", "type": "text", "required": true}],
+      "fields": {"observation": "母线电压", "acquisition": "复用启动数据", "assessment": "低于 210V"},
+      "slots": {
+        "fetch": {"object": "presenter", "project": "展示模块", "module": "presenter",
+                  "interface": "Presenter.load", "function": "load", "arguments": {}},
+        "present": {"object": "presenter", "project": "展示模块", "module": "presenter",
+                    "interface": "Presenter.plot", "function": "plot", "view": "image",
+                    "arguments": {}},
+        "decide": {"object": "judge", "project": "判断模块", "module": "judge",
+                   "interface": "Judge.check", "function": "check",
+                   "arguments": {"data": {"source": "previous"}}}
+      },
+      "runtimeInputs": [{"name": "scale", "type": "number", "required": true}],
       "position": {"x": 240, "y": 80}
     }
   ],
@@ -233,10 +245,32 @@ revision 与流程包使用分层格式：
 }
 ```
 
-- `operation`：排查节点选择的操作；留空表示由人工判断
-- `operationArguments`：参数名 → 来源表达式；未出现在这里的操作参数走现场填写
-- `runtimeInputs`：现场参数字段，格式 `ManualField`
-- 启动参数只在开始节点声明，全部是全局输入
+### 槽位
+
+每种节点有固定的槽位，槽位里填一个外接工程的公开方法：
+
+| 节点 | 槽位 |
+|---|---|
+| start | `constructs`（可选；槽位引用了对象就必须有）+ `fetch`（可选）+ `process`（可选） |
+| investigation | `fetch`（可选）+ `process`（可选）+ `present`（必填）+ `decide`（必填） |
+| conclusion / investigationAction / remediation / jump / problemSolved / escalation | 无槽位 |
+
+槽位字段：
+
+| 字段 | 说明 |
+|---|---|
+| object | 构造槽里是对象名；其余槽是目标对象名，留空表示模块级函数 |
+| project / module | 工程登记名与模块名 |
+| interface | 接口目录中的完整名，用于探测校验 |
+| function | 末级方法名 |
+| view | 仅展示槽：`image` / `line` / `metrics` / `table` / `text` |
+| human | 仅判定槽：`true` 表示不调用方法，由人工判断 |
+| useCache | 仅拉取槽：默认使用缓存；置 `false` 表示重取一遍，取完仍写回缓存 |
+| arguments | 参数名 → 来源表达式 |
+
+**槽位链**：构造 → 拉取 → 处理 → 展示 → 判定。`previous` 只指本节点内上一步的结果：处理取拉取，展示与判定取拉取或处理。
+
+跨节点不传值：下一个节点要数据就自己取，或从对象、数据源里拿。开始节点的拉取与处理用于把数据装进对象（由方法自己保存），返回值不向后续节点传递。
 
 ### 参数来源表达式
 
@@ -244,23 +278,16 @@ revision 与流程包使用分层格式：
 {"lit": 210}
 {"source": "input", "name": "device"}
 {"source": "parameter", "name": "threshold"}
-{"source": "value", "name": "report"}
-{"source": "object", "name": "motor"}
-{"source": "resource", "name": "waveform", "arguments": {"channel": {"lit": "A"}}}
-{"source": "node", "name": "n1", "path": "output.data"}
-{"system": "directory"}
+{"source": "previous"}
 {"items": [...]}
 {"fields": {"k": <表达式>}}
 ```
 
 - `input`：启动表单的全局输入
-- `parameter`：操作参数（现场填写或调用方传入）
-- `value`：本操作内此前调用的返回，按调用 id 引用
-- `object`：实例对象，只能在同一工程内使用
-- `resource`：固定资源；同资源同请求参数只获取一次
-- `node`：上游节点的输出；发布时校验必须是祖先节点
-- `system: directory`：本次调用的输出目录，用于图片等文件产物
-- 任意表达式可带 `path` 下钻与 `file: true` 转平台上传引用为本地路径
+- `parameter`：现场参数，必须在节点 `runtimeInputs` 声明
+- `previous`：本节点内上一步的结果；处理槽要求有拉取槽，展示与判定要求有拉取或处理槽
+- `path` 可下钻字段；`file: true` 把上传引用转成本地路径
+- 不支持对象、资源、节点输出、系统路径等旧来源
 
 ### 开始节点的启动参数
 
@@ -276,16 +303,14 @@ revision 与流程包使用分层格式：
 
 | kind | 名称 | 是否执行代码 | 后继 |
 |---|---|---|---|
-| start | 开始 | 否 | 多条，全 default |
-| investigation | 排查 | 有 operation 则调用组合操作，否则人工判断 | 是 / 否两组 |
+| start | 开始 | 有槽位则执行 | 多条，全 default |
+| investigation | 排查 | 有槽位则执行，否则人工判断 | 是 / 否两组 |
 | investigationAction | 排查动作 | 否，人工 | 完成后接排查 |
 | conclusion | 结论 | 否，展示设计时文本后继续 | 恰好一条，接处置或上升 |
 | remediation | 处置措施 | 否，人工 | 处置 / 问题解决 / 上升 / 跳转 |
 | jump | 跳转 | 否，人工确认转交 | 恰好一条，接除开始外的任意节点 |
 | problemSolved | 问题解决 | 否 | 无 |
 | escalation | 上升 | 否 | 无 |
-
-**跳转节点**：把当前诊断转交给另一条诊断链路，当前做成人工确认的文本节点；确认后沿设计时选定的后继继续，转交不出去则回退。
 
 ### 连接规则
 
@@ -310,15 +335,17 @@ revision 与流程包使用分层格式：
 
 1. 恰好一个开始节点：无入边、至少一条出线；重复连到同一目标报错
 2. 连接符合上表；排查的每条出线必须有 `branch`（yes/no），同组可多条
-3. 排查节点：`title`、`detail` 非空，`fields` 三项非空；无 operation 视为人工节点，合法
-4. 结论：`title`、`detail` 非空；恰好一条出线
-5. 处置措施、排查动作：`title`、`detail` 非空
-6. 每条路径可达终止节点，不允许死路与不可达节点
-7. 不允许隐式分叉、隐式结束、假汇合；开始节点按自身语义豁免
-8. 组合配置的接口必须存在；参数来源合法；`node` 来源必须是上游
-9. 启动参数名称不重复，类型受支持
-10. 环允许存在，但必须能从环内走出去
-11. 旧接入格式（`diagnosis`、`binding`、`pipeline`、`method`、`params`、`outputs`、`dataPreparation`、`snapshotFields`）不再接受：导入返回 422，发布也会拦下，提示改用组合配置
+3. 结论：`title`、`detail` 非空；恰好一条出线
+4. 处置措施、排查动作、跳转：`title`、`detail` 非空
+5. 每条路径可达终止节点，不允许死路与不可达节点
+6. 不允许隐式分叉、隐式结束、假汇合；开始节点按自身语义豁免
+7. 环允许存在，但必须能从环内走出去
+8. 构造槽的 `object` 合法且唯一；没有构造槽时，所有槽位只能是模块级函数
+9. 槽位引用的接口必须探测得到，且同步、支持关键字参数
+10. 参数来源只允许上表；`parameter` 必须在节点 `runtimeInputs` 声明；`previous` 只能出现在允许的槽
+11. 排查节点必须有 `present` 且指定 `view`；必须有 `decide`，要么给方法，要么 `human: true`
+12. 启动参数名称不重复，类型受支持
+13. 旧接入字段（`composition`、`operation`、`binding`、`method`、`pipeline`、`outputs`、`dataPreparation`）不再接受：导入返回 422，发布也会拦下
 
 ---
 
@@ -328,7 +355,7 @@ revision 与流程包使用分层格式：
 
 ### 探测
 
-发布前按组合配置逐工程探测公开接口：模块导入、类与方法签名、docstring、实现指纹。探测失败或接口不存在直接拦发布。同一工程同模块的目录在一次发布内复用。
+发布前按槽位逐工程探测公开接口：模块导入、类与方法签名、docstring、实现指纹。探测失败或接口不存在直接拦发布。同一工程同模块的目录在一次发布内复用。
 
 ### 步骤表
 
@@ -336,30 +363,38 @@ revision 与流程包使用分层格式：
 {
   "format": 1, "flowId": "f1", "release": 3, "entry": "s1",
   "steps": {
-    "s1": {"kind": "start", "next": {"default": ["n1"]}},
+    "s1": {
+      "kind": "start",
+      "next": {"default": ["n1"]},
+      "slots": {"constructs": [{"object": "presenter", "project": "展示模块", "...": "..."}]}
+    },
     "n1": {
       "kind": "investigation",
-      "compositionOperation": "checkVoltage",
-      "operationArguments": {"threshold": {"lit": 210}},
-      "operationInputs": [{"name": "channel", "type": "text", "required": true}],
+      "slots": {
+        "fetch": {"object": "presenter", "...": "..."},
+        "present": {"...": "...", "view": "image"},
+        "decide": {"human": true}
+      },
+      "runtimeInputs": [{"name": "channel", "type": "text", "required": true}],
       "next": {"yes": ["n2"], "no": ["n5"]}
     },
     "n2": {"kind": "conclusion", "text": "电压不足", "next": {"default": ["n3"]}},
     "n3": {"kind": "remediation", "human": true, "next": {"default": ["n4"]}},
     "n4": {"kind": "problemSolved", "terminal": true}
   },
-  "signature": {},
-  "composition": {"objects": [], "resources": [], "operations": []}
+  "signature": {}
 }
 ```
 
-`composition` 是发布时冻结的组合配置；`operationInputs` 是该节点需要在执行时现场填写的操作参数。
+- `slots`：发布时冻结的槽位，指纹写进每个调用
+- `runtimeInputs`：执行到该节点时要现场填写的参数
+- 没有槽位的排查节点编译成 `{"human": true}`
 
 ### 启动表单冻结
 
 发布时把开始节点的启动参数写入 `releases.inputs_json`，每个字段 `name / type / required / default`。执行页只读它，发布后改 doc 或改接口签名都不影响已发布版本。
 
-- `required`：启动参数未被任何操作引用时按作者声明；被引用时取接口签名该参数是否必填，且作者给了默认值就不算必填
+- `required`：启动参数未被任何槽位引用时按作者声明；被引用时取接口签名该参数是否必填，且作者给了默认值就不算必填
 - `default`：作者设计时默认值优先；否则取签名默认值。探针用 `repr` 兜底的值标记为不可信，不冻结进表单
 
 ### 签名指纹
@@ -377,29 +412,43 @@ revision 与流程包使用分层格式：
 
 ### 生成 Python 执行
 
-发布固定流程编排、组合配置和输入表单，不固定模块实现代码。实例启动时：
+发布固定流程编排、槽位和输入表单，不固定模块实现代码。实例启动时：
 
-1. 读取当前接入工程，复制源码到该实例目录（排除 `.git`、`.venv`、`node_modules`、`__pycache__`）
+1. 读取槽位引用的工程，复制源码到该实例目录（排除 `.git`、`.venv`、`node_modules`、`__pycache__`）
 2. 按副本重新探测接口并编译 plan
 3. 生成 `flow.py`、`runtime/`、`configuration.json`、`modules/`
 4. 起常驻子进程执行
 
 已经运行的实例始终使用启动时复制的源码；后续修改原工程只影响新实例。依赖包和解释器环境由部署方管理。
 
-`flow.py` 的每个节点是一个函数，函数体调用运行库并返回后继分支；运行库 `runtime/generated_runtime.py` 负责与平台交换 enter/complete/ask/error 事件。命令行入口为 `python flow.py --mode serial` 或 `--mode parallel --max-parallel 4`，终端代替平台接收人工输入。
+`flow.py` 的每个节点是一个函数，函数体只调用运行库并返回后继分支；运行库 `runtime/generated_runtime.py` 负责与平台交换 enter/complete/ask/error 事件。命令行入口为 `python flow.py --mode serial` 或 `--mode parallel --max-parallel 4`，终端代替平台接收人工输入。
 
-**人工等待**：生成代码同步等待 stdin 消息，平台与业务模块进程持续存活。人工回复后从等待点继续；等待时间不计入自动步骤超时（默认 120 秒）。终止、回退及服务关闭结束对应分支和业务子进程。平台重启后自动恢复常驻进程不在本轮范围内。
+### 槽位执行
 
-**串行与并行**：仅由实例 runtime 决定。
+- 构造槽在开始节点执行一次，对象常驻所属工程进程；后续按对象名引用，不重复构造
+- 拉取与处理的返回值只在本节点内流转；跨节点不保留，节点要数据就自己取（命中缓存）
+- 拉取结果按 `{工程, 模块, 接口, 对象, 归一化参数}` 缓存，同一实例只调用一次；处理不缓存
+- 拉取槽取消「使用缓存」时跳过缓存读取，取完写回缓存，后续节点跟着用新值；其余槽位不允许设置
+- 展示按 `view` 校验返回值并生成展示块；判定接受布尔、`yes`/`no` 或 `{result, reason}`
+- 判定 `human: true` 时不调用方法，直接生成判断待办
+- 对象图按 pickle 快照；回退时恢复到目标到访，已取得的上游值与缓存保留
+
+### 人工等待
+
+生成代码同步等待 stdin 消息，平台与业务模块进程持续存活。人工回复后从等待点继续；等待时间不计入自动步骤超时（默认 120 秒）。终止、回退及服务关闭结束对应分支和业务子进程。平台重启后自动恢复常驻进程不在本轮范围内。
+
+### 串行与并行
+
+仅由实例 runtime 决定。
 
 - 串行沿深度优先顺序执行，一条思路无后继或出错后继续下一个同级分支；同一进程保留已取得的数据。成功但还有待排查思路时询问结束／继续
 - 并行使用真实独立分支进程。遇到分叉，原进程继续第一个子分支，其余子分支排队
 - `maxParallel` 限制活跃排查分支数，人工等待仍占名额；分支进程退出后释放名额
-- 分叉继承分叉时已有固定数据与有效输出；之后各分支内存、对象、缓存独立
+- 分叉继承分叉时已有的对象状态与缓存；之后各分支内存、对象、缓存独立
 
-**固定数据**：固定资源的结果只读，同资源同请求参数只获取一次，后续到访保存引用。模块持有的 `Data` 容器首次填充后禁止覆盖或删除，序列化时只为新成员保存内容；普通成员走对象快照。
+### 回退
 
-**回退**：当前入口限定 waiting/paused/failed；只选择已完成且有保存结果的具体到访 B。B 的原输出和祖先输出可供新路径读取，直接从新选后继执行，不再运行 B，不重新提出人工输入或判断。后续节点输出不进入新路径有效历史。旧进程、排队项和未处理待办取消；历史 run 保留，新代数阻止旧进程继续写入。开始与终止节点不能作为目标。
+当前入口限定 waiting/paused/failed；只选择已完成且有保存结果的具体到访 B。B 的原输出和祖先输出可供新路径读取，直接从新选后继执行，不再运行 B，不重新提出人工输入或判断。后续节点输出不进入新路径有效历史。旧进程、排队项和未处理待办取消；历史 run 保留，新代数阻止旧进程继续写入。开始与终止节点不能作为目标。
 
 ### 实例状态收敛
 
@@ -412,14 +461,14 @@ revision 与流程包使用分层格式：
 
 ### 排查的分支判定
 
-组合操作的 `decision` 输出 `yes` / `no`（布尔自动转换），或人工选择 yes/no。分支没有后继记 `route/*`。
+判定的 `result` 输出 `yes` / `no`（布尔自动转换），或人工选择 yes/no。分支没有后继记 `route/*`。
 
 ### 人工待办
 
 | 场景 | 类型 | 选项 |
 |---|---|---|
-| 排查无 operation，或操作未配置自动判定 | decision | 是 / 否 |
-| 操作参数需要现场填写 | parameters | 填字段后提交 |
+| 节点没有槽位，或判定槽为 `human` | decision | 是 / 否 |
+| 槽位参数需要现场填写 | parameters | 填字段后提交 |
 | 排查动作、处置措施 | action | 完成 / 回退 |
 | 串行成功但还有同级思路 | after_success | 结束 / 继续 |
 
@@ -429,13 +478,14 @@ revision 与流程包使用分层格式：
 ### 启动上下文
 
 - 启动时把表单值固化为 `{"global": {...}}`，写进 `snapshots.payload_json`
-- 之后所有节点只读它；数据由业务接口按上下文实时拉取
+- 之后所有槽位只读它；数据由业务接口按上下文或外部数据源实时获取
 - 可选参数留空时，运行时省略该参数，交给 Python 默认值
 
 ### 业务子进程协议
 
 - 每个实例的每个工程一个常驻子进程，`cwd` 为副本工程目录，解释器为登记解释器（缺省用平台自身）
-- 协议：stdin/stdout 上的 JSON 行；请求 `{id, function, args}` 或 `{id, function:"__newdiag_composition__", args:{op,...}}`；响应 `{id, ok, value|error}`，可选 `files` 列本次新落盘的图片
+- 协议：stdin/stdout 上的 JSON 行；请求 `{id, function, args}` 或 `{id, function:"__newdiag_slot__", args:{op,...}}`；响应 `{id, ok, value|error}`，可选 `files` 列本次新落盘的图片
+- `op`：`construct` 构造对象、`call` 调用方法、`restore` 取状态引用
 - stdio 一律 UTF-8：父进程以 `PYTHONIOENCODING=utf-8` 启动，子进程重设三路流编码；不设置 `PYTHONUTF8`，避免打挂读 GBK 文件的业务脚本
 - 业务异常不重试，直接记 `execution/exception`
 
@@ -466,7 +516,7 @@ revision 与流程包使用分层格式：
 | POST | `/api/flows/{id}/discard` | 放弃检出 |
 | POST | `/api/flows/{id}/admin/commit` | 管理员代存 |
 | POST | `/api/flows/{id}/admin/discard` | 管理员丢弃并释放 |
-| POST | `/api/flows/{id}/probe` | 设计期探测草稿的组合配置 |
+| POST | `/api/flows/{id}/probe` | 设计期探测草稿槽位引用的接口 |
 | POST | `/api/flows/{id}/releases` | 编译并发布 |
 | GET | `/api/flows/{id}/releases` | 版本列表 |
 | GET | `/api/releases/{id}` | 含 plan、签名、启动表单、doc |
@@ -517,7 +567,7 @@ src/
 │   ├── canvas/        VueFlow 封装、校验、迷你地图
 │   ├── nodes/         定宽节点卡片
 │   ├── edges/         是/否分支边
-│   ├── panels/        节点属性、流程属性、组合配置、启动表单
+│   ├── panels/        节点属性（槽位）、流程属性、启动表单
 │   ├── tasks/         判断待办、参数待办、处置待办、回退
 │   └── history/       运行记录、路径时间线
 ├── services/          API 客户端、SSE
@@ -560,8 +610,8 @@ backend/
 │   ├── logging_setup.py   日志与请求 id
 │   ├── api/               flows / folders / releases / instances / projects / files
 │   ├── services/
-│   │   ├── compiler.py    doc → plan：结构校验与组合配置校验
-│   │   ├── composition.py 组合配置校验、探测与冻结
+│   │   ├── compiler.py    doc → plan：结构校验与槽位编译
+│   │   ├── slots.py       槽位校验、接口探测、回退状态合并
 │   │   ├── rules.py       与前端共用的连接与必填规则
 │   │   ├── scheduler.py   实例持久化基类：token、待办、运行记录、状态收敛
 │   │   ├── generated_runner.py  生成执行的分支进程、事件与回退
@@ -574,13 +624,12 @@ backend/
 │   │   └── storage.py     内容寻址文件
 │   └── worker/
 │       ├── generated_runtime.py  生成代码的运行库
-│       ├── composition_runtime.py 对象、资源、参数与调用
+│       ├── slot_runtime.py  槽位链、拉取缓存、展示与判定
+│       ├── objects.py     工程内对象：构造、调用、快照
 │       ├── session.py     业务子进程入口，JSON 行协议
 │       ├── probe.py       接口探针
 │       ├── artifacts.py   不可变产物与对象快照
-│       ├── data_store.py  Data 容器
-│       ├── node_sdk.py    值投影、图片落盘、字段与展示校验
-│       └── diagnosis_sdk.py  旧业务类导入兼容 shim
+│       └── node_sdk.py    值投影、图片落盘、字段与展示校验
 └── tests/
 ```
 
@@ -597,7 +646,7 @@ backend/
 **发布**
 
 1. 取 current revision
-2. 探测组合配置引用的接口 → 校验 → 冻结组合配置与启动表单 → 生成 plan
+2. 探测槽位引用的接口 → 校验 → 冻结槽位与启动表单 → 生成 plan
 3. 写 `releases`
 
 **执行到人工**
@@ -641,3 +690,5 @@ backend/
 | v1.14（2026-11-12） | 新实例生成 Python 执行、常驻人工等待、限额并行、回退复用结果、分层持久化、启动固定源码 |
 | v1.15（2026-11-12） | 普通 Python 工程组合接入：对象、固定资源、操作配置 |
 | v1.16（2026-11-15） | 收敛为组合 + 生成执行单一方案：删除旧函数绑定、四阶段函数与适配器、诊断业务类、数据准备节点、解释执行引擎与 `flows.mode`；`diagnosis_sdk` 仅留 import 兼容 |
+| v1.17（2026-11-16） | 接入改为节点槽位模板：开始节点构造对象并可选取数，排查节点固定「拉取／处理／展示／判定」四槽；删除 composition 三层、11 种参数来源、展示与判定字段映射；参数来源收敛为 lit／input／parameter／previous |
+| v1.18（2026-11-16） | 槽位传值收敛到节点内：`previous` 只指本节点上一步，跨节点不再保留；开始节点的拉取与处理用于把数据写进对象，返回值不后传 |

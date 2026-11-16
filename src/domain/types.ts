@@ -39,7 +39,7 @@ export interface ManualField {
 export type ParamType = 'text' | 'number' | 'boolean' | 'datetime' | 'file' | 'array' | 'object' | 'json'
 
 /**
- * 开始节点声明的一个启动参数；组合配置下都是全局输入。
+ * 开始节点声明的一个启动参数，全局可用。
  */
 export interface StartParam {
   name: string
@@ -48,45 +48,39 @@ export interface StartParam {
   default?: unknown
 }
 
-export type CompositionArgument =
-  | { lit: unknown }
-  | { source: 'input' | 'parameter' | 'value' | 'object' | 'resource' | 'node'; name: string;
-      path?: string; file?: boolean; arguments?: Record<string, CompositionArgument> }
-  | { system: 'directory' | 'file' }
-  | { items: CompositionArgument[] }
-  | { fields: Record<string, CompositionArgument> }
+export type SlotView = 'image' | 'line' | 'metrics' | 'table' | 'text'
 
-export interface CompositionCall {
-  id: string
+/** 槽位参数的来源只有四种：常量、启动输入、现场参数、上一槽返回值 */
+export type SlotArgument =
+  | { lit: unknown }
+  | { source: 'input' | 'parameter'; name: string; path?: string; file?: boolean }
+  | { source: 'previous' }
+  | { items: SlotArgument[] }
+  | { fields: Record<string, SlotArgument> }
+
+/** 一个槽位填的一个接口调用；object 指向开始节点构造的对象名，空表示模块级函数 */
+export interface SlotCall {
+  object?: string
   project: string
   module?: string
+  interface: string
   function: string
-  interface?: string
-  target?: CompositionArgument
-  arguments: Record<string, CompositionArgument>
-  output?: 'value' | 'object' | 'file' | 'image'
+  arguments: Record<string, SlotArgument>
+  /** 仅展示槽：决定平台怎么渲染 */
+  view?: SlotView
+  /** 仅判定槽：true 表示不调用方法，交人工判断 */
+  human?: boolean
+  /** 仅拉取槽：默认使用缓存；置 false 表示重取一遍 */
+  useCache?: boolean
 }
 
-export interface CompositionResource {
-  id: string
-  trigger: 'startup' | 'lazy'
-  defaults?: Record<string, unknown>
-  calls: CompositionCall[]
-  result: CompositionArgument
-}
-
-export interface CompositionOperation {
-  id: string
-  parameters?: string[]
-  calls: CompositionCall[]
-  presentation: { type: 'image' | 'text' | 'line' | 'metrics' | 'table'; value: CompositionArgument }[]
-  decision?: { result: CompositionArgument; reason: CompositionArgument; normalReason?: string }
-}
-
-export interface Composition {
-  objects: CompositionCall[]
-  resources: CompositionResource[]
-  operations: CompositionOperation[]
+/** 节点模板上的槽位；哪些槽可用由节点类型决定 */
+export interface NodeSlots {
+  constructs?: SlotCall[]
+  fetch?: SlotCall
+  process?: SlotCall
+  present?: SlotCall
+  decide?: SlotCall
 }
 
 export interface DocNode {
@@ -96,8 +90,7 @@ export interface DocNode {
   detail: string
   fields?: InvestigationFields
   attachments?: AttachmentRef[]
-  operation?: string
-  operationArguments?: Record<string, CompositionArgument>
+  slots?: NodeSlots
   runtimeInputs?: ManualField[]
   /** 仅 start 节点：本次诊断的启动参数声明 */
   inputs?: StartParam[]
@@ -115,22 +108,20 @@ export interface DocEdge {
 export interface FlowDoc {
   format: 1
   name: string
-  composition?: Composition
   nodes: DocNode[]
   edges: DocEdge[]
 }
 
-type BindingFields = 'runtimeInputs' | 'operation' | 'operationArguments'
+type BindingFields = 'runtimeInputs' | 'slots'
 
 /** 持久化与导出格式；编辑器使用 FlowDoc 投影，运行配置保存在实例中。 */
 export interface StoredFlow {
   format: 2
-  flow: Omit<FlowDoc, 'nodes' | 'composition'> & {
+  flow: Omit<FlowDoc, 'nodes'> & {
     nodes: Omit<DocNode, BindingFields | 'position'>[]
   }
   bindings: {
-    format: 1
-    composition?: Composition
+    format: number
     nodes: Record<string, Pick<DocNode, BindingFields>>
   }
   presentation: {
@@ -177,9 +168,7 @@ export type EdgeTrail = 'taken' | 'dropped'
 
 export interface PlanStep {
   kind: NodeKind
-  compositionOperation?: string
-  operationInputs?: ManualField[]
-  operationArguments?: Record<string, CompositionArgument>
+  slots?: NodeSlots
   human?: boolean
   text?: string
   next?: Record<string, string[]>
@@ -193,7 +182,6 @@ export interface Plan {
   entry: string
   steps: Record<string, PlanStep>
   signature: Record<string, string>
-  composition?: Composition
 }
 
 export type InstanceStatus =
@@ -218,7 +206,7 @@ export interface Token {
   visitedAt?: string | null
 }
 
-export type RunStatus = 'ok' | 'failed' | 'abandoned'
+export type RunStatus = 'ok' | 'failed' | 'abandoned' | 'rollback'
 
 export interface RunRecord {
   id: string
