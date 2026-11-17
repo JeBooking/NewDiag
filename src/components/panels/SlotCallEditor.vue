@@ -56,12 +56,14 @@ onMounted(async () => {
 const useCache = computed(() => props.value?.useCache !== false)
 
 // 只要槽位下还有字段，就当成可折叠的板块：已配置的默认展开，空槽位收起省空间
-const open = ref(Boolean(props.value?.project || props.value?.human
-  || (props.required && !props.value)))
+// 构造槽先有对象名再选工程，不能因为还没选工程就把它收起来
+const hasContent = computed(() => Boolean(
+  props.value?.project || props.value?.human || (props.construct && props.value?.object)))
+const open = ref(Boolean(hasContent.value || (props.required && !props.value)))
 watch(
-  () => [props.value?.project, props.value?.human] as const,
-  ([project, human]) => {
-    if (project || human) open.value = true
+  () => [props.value?.project, props.value?.human, props.value?.object] as const,
+  () => {
+    if (hasContent.value) open.value = true
     else if (!props.value) open.value = Boolean(props.required)
   },
 )
@@ -100,6 +102,7 @@ function projectChanged(name: string): void {
   const project = projects.value.find((item) => item.name === name)
   const call: SlotCall = {
     project: name, module: project?.module ?? '', interface: '', function: '', arguments: {},
+    ...(props.value?.object ? { object: props.value.object } : {}),
     ...(props.showView ? { view: (props.value?.view ?? 'image') as SlotView } : {}),
   }
   emit('update', call)
