@@ -30,6 +30,47 @@ const editor = useEditorStore()
 const loadError = ref<string | null>(null)
 const issuesVisible = ref(false)
 const propertiesExpanded = ref(true)
+
+/* ---------- 属性栏宽度：可拖动，宽度记在本地 ---------- */
+
+const PANEL_MIN = 280
+const PANEL_MAX = 720
+const PANEL_KEY = 'newdiag.panelWidth'
+const storedPanel = Number(localStorage.getItem(PANEL_KEY))
+const panelWidth = ref(
+  Number.isFinite(storedPanel) && storedPanel >= PANEL_MIN ? Math.min(PANEL_MAX, storedPanel) : 320,
+)
+const resizing = ref(false)
+
+function startResize(event: PointerEvent): void {
+  if (event.button !== 0) return
+  event.preventDefault()
+  resizing.value = true
+  const startX = event.clientX
+  const startWidth = panelWidth.value
+  const move = (moveEvent: PointerEvent): void => {
+    // 拖的是左边缘：往左拖变宽
+    const next = startWidth - (moveEvent.clientX - startX)
+    panelWidth.value = Math.min(PANEL_MAX, Math.max(PANEL_MIN, next))
+  }
+  const stop = (): void => {
+    resizing.value = false
+    localStorage.setItem(PANEL_KEY, String(panelWidth.value))
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', stop)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+  }
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', stop)
+}
+
+function resetPanelWidth(): void {
+  panelWidth.value = 320
+  localStorage.setItem(PANEL_KEY, '320')
+}
 const canvas = ref<InstanceType<typeof FlowCanvas> | null>(null)
 
 const flowId = computed(() => String(route.params.id))
@@ -450,7 +491,11 @@ onBeforeRouteLeave(async () => {
           </el-icon>
         </button>
 
-        <aside id="designer-properties" v-show="propertiesExpanded" class="panel" aria-label="属性栏">
+        <aside id="designer-properties" v-show="propertiesExpanded" class="panel" aria-label="属性栏"
+          :style="{ width: `${panelWidth}px` }">
+          <div class="panel-resizer" role="separator" aria-orientation="vertical"
+            :class="{ active: resizing }" title="拖动调整宽度，双击还原"
+            @pointerdown="startResize" @dblclick="resetPanelWidth" />
           <NodePanel
             v-if="editor.selectedNode"
             :node="editor.selectedNode"
@@ -580,12 +625,31 @@ onBeforeRouteLeave(async () => {
 }
 
 .panel {
-  width: var(--app-panel-width);
+  position: relative;
   flex: none;
+  box-sizing: border-box;
+  min-width: 0;
+  height: 100%;
   border-left: 1px solid var(--el-border-color-light);
   background: var(--el-bg-color);
   padding: 14px 16px 24px;
   overflow: auto;
+}
+
+/* 左缘的拖拽条压在边框上，留 6px 好抓，视觉上只比发丝线略重 */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 4;
+}
+
+.panel-resizer:hover,
+.panel-resizer.active {
+  background: var(--el-color-primary-light-7);
 }
 
 /* 展开与收起共用同一位置：整块贴在属性栏左边框外侧，收起后自然落在画布右缘 */

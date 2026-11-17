@@ -7,6 +7,7 @@ const props = defineProps<{
   inputs?: string[]
   parameters?: string[]
   previous?: boolean
+  presentation?: boolean
   readonly?: boolean
 }>()
 const emit = defineEmits<{ (e: 'update', value: SlotArgument): void }>()
@@ -46,14 +47,24 @@ const sources = computed(() => [
     label: props.previous ? '上一槽结果' : '上一槽结果（本节点需先有拉取或处理）',
     disabled: !props.previous,
   },
+  {
+    value: 'presentation',
+    label: props.presentation ? '展示结果' : '展示结果（判定槽且已有展示槽）',
+    disabled: !props.presentation,
+  },
   { value: 'items', label: '列表', disabled: false },
   { value: 'fields', label: '字典', disabled: false },
 ])
 
 const candidates = computed(() => {
-  if (mode.value === 'input') return props.inputs ?? []
-  if (mode.value === 'parameter') return props.parameters ?? []
-  return []
+  const list = mode.value === 'input' ? props.inputs ?? []
+    : mode.value === 'parameter' ? props.parameters ?? [] : []
+  const items = list.map((item) => ({ value: item, label: item }))
+  // 旧文档里可能引用了已改名的参数：保留原值可见，别让它悄悄变成空
+  if (name.value && !list.includes(name.value)) {
+    items.unshift({ value: name.value, label: `${name.value}（未声明）` })
+  }
+  return items
 })
 
 function changeMode(value: string): void {
@@ -62,6 +73,7 @@ function changeMode(value: string): void {
   else if (value === 'items') emit('update', { items: [] })
   else if (value === 'fields') emit('update', { fields: {} })
   else if (value === 'previous') emit('update', { source: 'previous' })
+  else if (value === 'presentation') emit('update', { source: 'presentation' })
   else emit('update', { source: value as 'input' | 'parameter', name: '' })
 }
 function patch(value: { name?: string; path?: string }): void {
@@ -70,11 +82,63 @@ function patch(value: { name?: string; path?: string }): void {
 function changeLiteral(text: string): void {
   draft.value = text
   try {
-    emit('update', { lit: JSON.parse(text) })
+    emit('update', { lit: parseLiteral(text) })
     failure.value = ''
   } catch {
-    failure.value = '请输入合法 JSON：数字、true、"文本"、数组或对象；当前修改尚未保存'
+    failure.value = '请输入合法 JSON 或 Python 字面量：文本加引号（"振动" 或 \'振动\'），数字直接写 12，'
+      + 'true/false/None 都可以；对象形如 {"peak": 12}。当前修改尚未保存'
   }
+}
+
+/** 先按 JSON 解析；失败再按 Python 字面量转一次（单引号、True/False/None、尾逗号） */
+function parseLiteral(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return JSON.parse(toJson(text))
+  }
+}
+
+function toJson(text: string): string {
+  let out = ''
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]
+    if (ch === '"') {
+      let raw = '"'
+      i += 1
+      while (i < text.length && text[i] !== '"') {
+        if (text[i] === '\\') { raw += text[i] + (text[i + 1] ?? ''); i += 2; continue }
+        raw += text[i]
+        i += 1
+      }
+      out += `${raw}"`
+      continue
+    }
+    if (ch === "'") {
+      let value = ''
+      i += 1
+      while (i < text.length && text[i] !== "'") {
+        if (text[i] === '\\') { value += text[i] + (text[i + 1] ?? ''); i += 2; continue }
+        value += text[i]
+        i += 1
+      }
+      out += `"${value.replace(/\\'/g, "'").replace(/"/g, '\\"')}"`
+      continue
+    }
+    if (/[A-Za-z_]/.test(ch)) {
+      let word = ch
+      while (i + 1 < text.length && /[A-Za-z0-9_]/.test(text[i + 1])) { word += text[i + 1]; i += 1 }
+      out += ({ True: 'true', False: 'false', None: 'null' } as Record<string, string>)[word] ?? word
+      continue
+    }
+    if (ch === ',') {
+      let j = i + 1
+      while (j < text.length && /\s/.test(text[j])) j += 1
+      if (text[j] === ']' || text[j] === '}') continue
+    }
+    out += ch
+  }
+  return out
 }
 function addField(name: string): void {
   const key = name.trim()
@@ -90,10 +154,15 @@ function addField(name: string): void {
         :disabled="item.disabled" />
     </el-select>
     <template v-if="mode === 'input' || mode === 'parameter'">
-      <el-select :model-value="name" :disabled="readonly" size="small" filterable allow-create default-first-option
-        :placeholder="mode === 'input' ? '启动参数名' : '现场参数名'" @change="patch({ name: String($event) })">
-        <el-option v-for="item in candidates" :key="item" :label="item" :value="item" />
+      <el-select :model-value="name" :disabled="readonly" size="small" filterable default-first-option
+        :allow-create="mode === 'parameter'"
+        :placeholder="mode === 'input' ? '选择已声明的启动参数' : '现场参数名'"
+        @change="patch({ name: String($event) })">
+        <el-option v-for="item in candidates" :key="item.value" :label="item.label" :value="item.value" />
       </el-select>
+      <p v-if="mode === 'input' && !(inputs ?? []).length" class="hint">
+        还没有启动参数：先到开始节点的「启动参数」里添加，只填名字不点「添加」不算声明
+      </p>
       <el-input :model-value="path" :disabled="readonly" size="small"
         placeholder="字段路径，留空用完整值" @update:model-value="patch({ path: $event })" />
     </template>
@@ -102,7 +171,7 @@ function addField(name: string): void {
     <p v-if="failure" role="alert" class="error">{{ failure }}</p>
     <template v-if="mode === 'items'">
       <div v-for="(element, index) in elements" :key="index" class="nested">
-        <SlotArgumentEditor :value="element" :inputs="inputs" :parameters="parameters" :previous="previous"
+        <SlotArgumentEditor :value="element" :inputs="inputs" :parameters="parameters" :previous="previous" :presentation="presentation"
           :readonly="readonly" @update="emit('update', { items: elements.map((item, at) => at === index ? $event : item) })" />
         <el-button v-if="!readonly" link size="small" @click="emit('update', { items: elements.filter((_, at) => at !== index) })">移除</el-button>
       </div>
@@ -111,7 +180,7 @@ function addField(name: string): void {
     <template v-if="mode === 'fields'">
       <div v-for="(member, key) in members" :key="key" class="nested">
         <label>{{ key }}</label>
-        <SlotArgumentEditor :value="member" :inputs="inputs" :parameters="parameters" :previous="previous"
+        <SlotArgumentEditor :value="member" :inputs="inputs" :parameters="parameters" :previous="previous" :presentation="presentation"
           :readonly="readonly" @update="emit('update', { fields: { ...members, [key]: $event } })" />
         <el-button v-if="!readonly" link size="small" @click="emit('update', { fields: Object.fromEntries(Object.entries(members).filter(([name]) => name !== key)) })">移除</el-button>
       </div>
@@ -128,4 +197,5 @@ function addField(name: string): void {
 .nested { border-left: 2px solid var(--el-border-color); padding-left: 8px; display: grid; gap: 4px; }
 .row { display: flex; gap: 6px; }
 .error { color: var(--el-color-danger); font-size: 12px; margin: 0; }
+.hint { color: var(--el-text-color-secondary); font-size: 11px; margin: 0; line-height: 1.5; }
 </style>

@@ -251,7 +251,8 @@ function patchRuntimeInputs(value: ManualField[]): void {
           <div v-if="!inputs.length" class="section-hint muted">还没有启动参数</div>
           <template v-if="!readonly">
             <label for="input-name" class="label">新增启动参数</label>
-            <el-input id="input-name" v-model="inputName" placeholder="例如 device_id" />
+            <el-input id="input-name" v-model="inputName" placeholder="例如 device_id"
+              @keyup.enter="addInput" />
             <el-select v-model="inputType" aria-label="新增启动参数类型">
               <el-option
                 v-for="option in PARAM_TYPES" :key="option.value"
@@ -259,6 +260,7 @@ function patchRuntimeInputs(value: ManualField[]): void {
               />
             </el-select>
             <el-button @click="addInput">添加启动参数</el-button>
+            <div class="section-hint muted">填了名字要点「添加启动参数」（或回车）才会出现在上面的列表里</div>
             <div v-if="inputError" class="section-hint error" role="alert">{{ inputError }}</div>
           </template>
           <div v-for="item in inputs" :key="item.name" class="param-row">
@@ -329,9 +331,10 @@ function patchRuntimeInputs(value: ManualField[]): void {
             <SlotCallEditor title="展示数据" hint="必填；用本节点拉取或处理的结果来画" required show-view
               :value="slots.present" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
               :allow-previous="hasFetch || hasProcess" :readonly="readonly" @update="updateSlot('present', $event)" />
-            <SlotCallEditor title="判定结果" hint="必填；用本节点拉取或处理的结果来判" required allow-human
+            <SlotCallEditor title="判定结果" hint="必填；可用本节点拉取、处理的结果或展示结果来判" required allow-human
               :value="slots.decide" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
-              :allow-previous="hasFetch || hasProcess" :readonly="readonly" @update="updateSlot('decide', $event)" />
+              :allow-previous="hasFetch || hasProcess" :allow-presentation="Boolean(slots.present)"
+              :readonly="readonly" @update="updateSlot('decide', $event)" />
 
             <div v-if="node.runtimeInputs?.length" class="section-hint">
               现场参数：{{ node.runtimeInputs.map((item) => `${item.name}（${item.type}）`).join('、') }}
@@ -444,7 +447,10 @@ function patchRuntimeInputs(value: ManualField[]): void {
   color: var(--el-text-color-tertiary);
 }
 
+/* 折叠体高度不要锁死：选完接口会新增参数，锁了高度就会被裁掉一截 */
 .sections :deep(.el-collapse-item__wrap) {
+  height: auto !important;
+  overflow: visible;
   border-bottom: 0;
 }
 
