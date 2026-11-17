@@ -1,10 +1,7 @@
 import { onScopeDispose, ref, watch, type Ref } from 'vue'
-import { KIND_META, isTerminalKind } from '@/domain/kinds'
+import { KIND_META, isKnownKind, isTerminalKind } from '@/domain/kinds'
 import { canConnect, isSingleSuccessor, needsBranch } from '@/domain/rules'
-import type { DocEdge, DocNode, FlowDoc, InvestigationFields, LintIssue } from '@/domain/types'
-import type { ProjectFunction } from '@/services/projects'
-import { isScalarAnnotation } from '@/services/paramTypes'
-import { dataPreparationDominates } from '@/domain/dataSources'
+import type { DocEdge, DocNode, FlowDoc, InvestigationFields, LintIssue, SlotCall } from '@/domain/types'
 
 const FIELD_LABELS: Array<[keyof InvestigationFields, string]> = [
   ['observation', '观察对象'],
@@ -87,61 +84,95 @@ function reachableFrom(startIds: string[], next: (id: string) => string[]): Set<
   return seen
 }
 
-/**
- * judge 的标量参数必须落到具体字段；后端编译期硬拦截，前端在发布前同步报错。
- * 没有签名（工程未探到 / 列表未加载）时无法判断类型，交给发布校验，不猜。
- */
-function judgePathIssues(
-  node: DocNode,
-  signatures?: ReadonlyMap<string, ProjectFunction[]>,
-): LintIssue[] {
-  const judge = node.pipeline?.judge
-  if (!judge?.project || !judge.function || !signatures) return []
-  const fn = signatures.get(judge.project)?.find((item) => item.name === judge.function)
-  if (!fn) return []
-  const args = judge.arguments ?? {}
-  // 缺省映射只作用于第一个参数（index 0），与后端 default_argument 一致
-  const firstParam = fn.params[0]
-  const issues: LintIssue[] = []
-  for (const param of fn.params) {
-    if (!isScalarAnnotation(param.annotation)) continue
-    const expression = args[param.name]
-    if (node.pipeline?.dataSource?.path?.trim()
-      && (!expression || ('source' in expression && expression.source === 'parsed'))) continue
-    const emptyPath = !!expression && 'source' in expression && !expression.path?.trim()
-    const autoWhole = !expression && firstParam?.name === param.name
-    if (!emptyPath && !autoWhole) continue
-    issues.push({
-      id: `node:${node.id}:pipeline:judge:${param.name}:path`,
-      level: 'error',
-      nodeId: node.id,
-      message: emptyPath
-        ? `节点「${displayName(node)}」judge 的参数 ${param.name} 需要填写解析结果里的字段路径，不能把整段数据传给标量参数`
-        : `节点「${displayName(node)}」judge 的参数 ${param.name} 未指定字段路径，默认会把整段解析结果传给标量参数`,
-    })
-  }
-  return issues
-}
-
-export function lintDoc(
-  doc: FlowDoc,
-  signatures?: ReadonlyMap<string, ProjectFunction[]>,
-): LintIssue[] {
+export function lintDoc(doc: FlowDoc): LintIssue[] {
   const issues: LintIssue[] = []
   const nodes = doc.nodes ?? []
   const edges = doc.edges ?? []
-  if (doc.diagnosis && (!doc.diagnosis.project || !doc.diagnosis.function
-    || doc.diagnosis.protocol !== 'diagnosis/v1' || !doc.diagnosis.version)) {
-    issues.push({ id: 'doc:diagnosis', level: 'error', message: '请在流程属性中选择完整的诊断业务类' })
+
+  for (const node of nodes) {
+    if (!isKnownKind(node.kind)) {
+      issues.push({ id: `node:${node.id}:kind`, level: 'error', nodeId: node.id,
+        message: `节点类型「${node.kind}」已移除，请重新编排这个节点` })
+    }
+  }
+  const startSlots = nodes.find((n) => n.kind === 'start')?.slots
+  const objectNames = new Set(
+    (startSlots?.constructs ?? []).map((item) => item.object).filter(Boolean) as string[],
+  )
+  const parameterNames = (node: DocNode) => new Set((node.runtimeInputs ?? []).map((item) => item.name))
+  const usesPrevious = (value: unknown): boolean => {
+    if (!value || typeof value !== 'object') return false
+    const argument = value as Record<string, unknown>
+    if (argument.source === 'previous') return true
+    return ((argument.items as unknown[]) ?? []).some(usesPrevious)
+      || Object.values((argument.fields as Record<string, unknown>) ?? {}).some(usesPrevious)
+  }
+  const usesPresentation = (value: unknown): boolean => {
+    if (!value || typeof value !== 'object') return false
+    const argument = value as Record<string, unknown>
+    if (argument.source === 'presentation') return true
+    return ((argument.items as unknown[]) ?? []).some(usesPresentation)
+      || Object.values((argument.fields as Record<string, unknown>) ?? {}).some(usesPresentation)
+  }
+  const presentationIn = (call?: SlotCall): boolean =>
+    Boolean(call) && Object.values(call?.arguments ?? {}).some(usesPresentation)
+  const previousIn = (call?: SlotCall): boolean =>
+    Boolean(call) && Object.values(call?.arguments ?? {}).some(usesPrevious)
+  const collectSources = (value: unknown, names: Set<string>): void => {
+    if (!value || typeof value !== 'object') return
+    const argument = value as Record<string, unknown>
+    if (argument.source === 'parameter' && typeof argument.name === 'string') names.add(argument.name)
+    for (const item of (argument.items as unknown[]) ?? []) collectSources(item, names)
+    for (const item of Object.values((argument.fields as Record<string, unknown>) ?? {})) collectSources(item, names)
   }
   for (const node of nodes) {
-    if (node.method && (!doc.diagnosis || node.kind !== 'investigation' || node.binding || node.pipeline)) {
-      issues.push({ id: `node:${node.id}:method`, nodeId: node.id, level: 'error',
-        message: '实例方法需要流程诊断类，只能用于排查节点，不能混用其他绑定' })
+    const slots = node.slots ?? {}
+    if (node.kind === 'investigation') {
+      if (!slots.present) {
+        issues.push({ id: `node:${node.id}:present`, nodeId: node.id, level: 'error',
+          message: '排查节点缺少展示槽：必须选择展示方法和展示类型' })
+      } else if (!slots.present.view) {
+        issues.push({ id: `node:${node.id}:view`, nodeId: node.id, level: 'error',
+          message: '展示槽还没有选择展示类型' })
+      }
+      if (!slots.decide) {
+        issues.push({ id: `node:${node.id}:decide`, nodeId: node.id, level: 'error',
+          message: '排查节点缺少判定槽：选判定方法或人工判断' })
+      }
     }
-    if (doc.diagnosis && (node.binding || node.pipeline || node.kind === 'dataPreparation')) {
-      issues.push({ id: `node:${node.id}:diagnosis-conflict`, nodeId: node.id, level: 'error',
-        message: '诊断类流程请使用实例方法；清除原有绑定或使用未配置诊断类的流程' })
+    if (previousIn(slots.process) && !slots.fetch) {
+      issues.push({ id: `node:${node.id}:previous:process`, nodeId: node.id, level: 'error',
+        message: '处理槽要用上一槽结果，但这个节点没有拉取槽' })
+    }
+    if ((previousIn(slots.present) || previousIn(slots.decide)) && !slots.fetch && !slots.process) {
+      issues.push({ id: `node:${node.id}:previous:value`, nodeId: node.id, level: 'error',
+        message: '要用上一槽结果，但这个节点没有拉取或处理槽：下一节点的数据要自己取' })
+    }
+    if (presentationIn(slots.decide) && !slots.present) {
+      issues.push({ id: `node:${node.id}:presentation`, nodeId: node.id, level: 'error',
+        message: '判定槽引用了展示结果，但这个节点没有展示槽' })
+    }
+    if ([slots.fetch, slots.process, slots.present].some(presentationIn)) {
+      issues.push({ id: `node:${node.id}:presentation-scope`, nodeId: node.id, level: 'error',
+        message: '只有判定槽能引用展示结果' })
+    }
+    const calls = [...(slots.constructs ?? []),
+      ...[slots.fetch, slots.process, slots.present, slots.decide].filter(Boolean)]
+    for (const call of calls) {
+      if (!call || call.human === true) continue
+      if (call.object && !objectNames.has(call.object)) {
+        issues.push({ id: `node:${node.id}:object`, nodeId: node.id, level: 'error',
+          message: `槽位引用了未声明的对象「${call.object}」` })
+      }
+      const names = new Set<string>()
+      for (const value of Object.values(call.arguments ?? {})) collectSources(value, names)
+      const declared = parameterNames(node)
+      for (const name of names) {
+        if (!declared.has(name)) {
+          issues.push({ id: `node:${node.id}:parameter:${name}`, nodeId: node.id, level: 'error',
+            message: `槽位引用了未声明的现场参数「${name}」` })
+        }
+      }
     }
   }
 
@@ -227,13 +258,6 @@ export function lintDoc(
       }
     }
 
-    if (node.kind === 'dataPreparation' && (outs.some((edge) => edge.branch)
-      || new Set(outs.map((edge) => edge.to)).size !== outs.length)) {
-      issues.push({
-        id: `node:${node.id}:preparation:edges`, level: 'error', nodeId: node.id,
-        message: '数据准备节点的出线不区分是或否，且不能重复连接同一目标',
-      })
-    }
     // 4. 出线数量：终止节点无出线，结论恰好一条，其余至少一条
     if (isTerminalKind(node.kind)) {
       if (outs.length > 0) {
@@ -296,83 +320,9 @@ export function lintDoc(
         })
       }
     }
-
-    if (node.kind === 'dataPreparation' && !node.pipeline) {
-      issues.push({
-        id: `node:${node.id}:pipeline:missing`, level: 'error', nodeId: node.id,
-        message: '数据准备节点必须配置获取与解析阶段',
-      })
-    }
-    // 6. 函数绑定
-    if (node.pipeline) {
-      const preparation = node.kind === 'dataPreparation'
-      const shared = node.pipeline.dataSource
-      if (shared && (byId.get(shared.node)?.kind !== 'dataPreparation'
-        || !dataPreparationDominates(doc, shared.node, node.id))) {
-        issues.push({
-          id: `node:${node.id}:pipeline:source`, level: 'error', nodeId: node.id,
-          message: '共享数据必须来自在所有进入当前节点的路径上先执行的数据准备节点',
-        })
-      }
-      if ((shared && (preparation || node.pipeline.acquire || node.pipeline.parse
-        || node.pipeline.manualFields?.length))
-        || (preparation && (node.pipeline.present || node.pipeline.judge))) {
-        issues.push({
-          id: `node:${node.id}:pipeline:conflict`, level: 'error', nodeId: node.id,
-          message: '数据准备只配置获取和解析；共享数据排查只配置展示和判断',
-        })
-      }
-      const slots = [
-        ['acquire', '获取数据', false], ['parse', '解析数据', !shared],
-        ['present', '展示数据', !preparation], ['judge', '判断结果', false],
-      ] as const
-      for (const [stage, label, required] of slots) {
-        const binding = node.pipeline[stage]
-        if ((required && !binding) || (binding && (!binding.project || !binding.function))) {
-          issues.push({
-            id: `node:${node.id}:pipeline:${stage}`, level: 'error', nodeId: node.id,
-            message: `节点「${displayName(node)}」请选择${label}的工程和函数`,
-          })
-        }
-      }
-      if (!shared && !node.pipeline.acquire && !node.pipeline.manualFields?.length) {
-        issues.push({
-          id: `node:${node.id}:pipeline:fields`, level: 'error', nodeId: node.id,
-          message: `节点「${displayName(node)}」需要配置人工数据字段`,
-        })
-      }
-      const names = new Set<string>()
-      for (const field of node.pipeline.manualFields ?? []) {
-        if (!field.name.trim() || names.has(field.name)) {
-          issues.push({
-            id: `node:${node.id}:pipeline:field-name`, level: 'error', nodeId: node.id,
-            message: `节点「${displayName(node)}」的人工字段名不能为空或重复`,
-          })
-        }
-        names.add(field.name)
-      }
-      issues.push(...judgePathIssues(node, signatures))
-    }
-    if (node.binding) {
-      if (!node.binding.project?.trim() || !node.binding.function?.trim()) {
-        issues.push({
-          id: `node:${node.id}:binding`,
-          level: 'error',
-          message: `节点「${displayName(node)}」的绑定缺少工程或函数名`,
-          nodeId: node.id,
-        })
-      } else if (!KIND_META[node.kind]?.codeCapable) {
-        issues.push({
-          id: `node:${node.id}:binding-kind`,
-          level: 'warning',
-          message: `节点「${displayName(node)}」不支持自动执行，绑定不会生效`,
-          nodeId: node.id,
-        })
-      }
-    }
   }
 
-  // 7. 路径可达终止节点 + 环检测
+  // 6. 路径可达终止节点 + 环检测
   const terminalIds = nodes.filter((n) => isTerminalKind(n.kind)).map((n) => n.id)
   const canFinish = reachableFrom(terminalIds, (id) => {
     const sources: string[] = []
@@ -429,15 +379,12 @@ export function lintDoc(
  * 防抖反而会让「改完标题、角标要等一下才亮」变成可感知的延迟。
  * doc 为 null（还没加载出来）时给空结果，避免拿空壳文档算出一条「流程为空」。
  */
-export function useLint(
-  getDoc: () => FlowDoc | null,
-  getSignatures?: () => ReadonlyMap<string, ProjectFunction[]> | undefined,
-): Ref<LintIssue[]> {
+export function useLint(getDoc: () => FlowDoc | null): Ref<LintIssue[]> {
   const issues = ref<LintIssue[]>([])
   const stop = watch(
-    [getDoc, () => getSignatures?.()],
-    ([doc]) => {
-      issues.value = doc ? lintDoc(doc, getSignatures?.()) : []
+    getDoc,
+    (doc) => {
+      issues.value = doc ? lintDoc(doc) : []
     },
     { deep: true, immediate: true },
   )

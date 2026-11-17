@@ -57,6 +57,10 @@ def _normalize(payload: Any) -> dict[str, Any]:
                             "type": param.get("type"),
                             "default": param.get("default"),
                             "required": bool(param.get("required", False)),
+                            # 发布侧要区分「真默认值」和 repr 兜底值
+                            "defaultTrusted": bool(param.get("defaultTrusted", True)),
+                            # 发布侧要区分「真默认值」和 repr 兜底值
+                            "defaultTrusted": bool(param.get("defaultTrusted", True)),
                         }
                     )
                 elif isinstance(param, str):
@@ -68,7 +72,7 @@ def _normalize(payload: Any) -> dict[str, Any]:
                     "returns": item.get("returns"),
                 }
             )
-            for key in ("protocol", "version", "configParams", "manualFields",
+            for key in ('doc', 'kind', 'fingerprint', 'interfaceError', 'variadicKeywords', "protocol", "version", "configParams", "manualFields",
                         "automaticAcquisition", "automaticJudgment", "methods", "resources"):
                 if key in item:
                     functions[-1][key] = item[key]
@@ -108,6 +112,7 @@ def probe(project: Any) -> dict[str, Any]:
         "path": project_path,
         "module": _field(project, "module") or "",
         "factory": _field(project, "factory"),
+        'catalog': bool(_field(project, 'catalog')),
     }
 
     handle = tempfile.NamedTemporaryFile(

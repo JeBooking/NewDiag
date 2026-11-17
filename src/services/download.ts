@@ -15,7 +15,12 @@ export function downloadFileName(header: string | null, fallback: string): strin
 
 export async function downloadFile(url: string, fallbackName: string): Promise<void> {
   const response = await fetch(url)
-  if (!response.ok) throw new Error(`下载失败（HTTP ${response.status}）`)
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null)
+    const message = payload && typeof payload === 'object' && 'detail' in payload
+      && typeof payload.detail === 'string' ? payload.detail : `下载失败（HTTP ${response.status}）`
+    throw new Error(message)
+  }
   const blob = await response.blob()
   if (blob.size === 0) throw new Error('下载内容为空')
 

@@ -10,20 +10,16 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import hashlib
 import json
 import sys
 import traceback
 
 if __package__:
-    from . import node_sdk, diagnosis_sdk
+    from . import node_sdk
     sys.modules.setdefault("node_sdk", node_sdk)
-    sys.modules.setdefault("diagnosis_sdk", diagnosis_sdk)
 else:
     import node_sdk
-    import diagnosis_sdk
-
-describe_adapter = node_sdk.describe_adapter
-is_adapter = node_sdk.is_adapter
 
 SKIP_PARAM_KINDS = (
     inspect.Parameter.VAR_POSITIONAL,
@@ -67,6 +63,9 @@ def _discover(config: dict) -> list[dict]:
         raise ValueError("module 为空")
     module = importlib.import_module(module_name)
 
+    if config.get('catalog'):
+        return _catalog(module)
+
     if not factory_name:
         return _module_functions(module)
 
@@ -89,49 +88,37 @@ def _module_functions(module) -> list[dict]:
             name
             for name, obj in vars(module).items()
             if not name.startswith("_")
-            and callable(obj)
+            and callable(obj) and not inspect.isclass(obj)
             and getattr(obj, "__module__", None) == module.__name__
-            and (not inspect.isclass(obj) or is_adapter(obj) or diagnosis_sdk.is_diagnosis(obj))
         ]
     result = []
     for name in names:
         obj = getattr(module, name, None)
-        if diagnosis_sdk.is_diagnosis(obj):
-            result.append({"name": name, **diagnosis_sdk.describe_diagnosis(obj)})
-            continue
-        if is_adapter(obj):
-            result.append(_describe_adapter(name, obj))
-            continue
         if callable(obj) and not inspect.isclass(obj):
             result.append(_describe(name, obj))
     result.sort(key=lambda item: item["name"])
     return result
 
 
-def expanded_functions(functions):
-    result = list(functions)
-    for entry in functions:
-        if entry.get("protocol") == diagnosis_sdk.PROTOCOL:
-            meta = {key: value for key, value in entry.items() if key != "name"}
-            result.append(diagnosis_sdk.definition_function(entry["name"], meta))
-            result.extend({**method, "name": entry["name"] + "." + method["name"]}
-                          for method in entry["methods"])
+def _catalog(module):
+    names = getattr(module, '__all__', None)
+    if names is None:
+        names = [name for name, value in vars(module).items()
+                 if not name.startswith('_') and getattr(value, '__module__', None) == module.__name__]
+    result = []
+    for name in names:
+        value = getattr(module, name, None)
+        if not callable(value) or isinstance(value, type) and issubclass(value, BaseException):
+            continue
+        entry = _describe(name, value)
+        entry['kind'] = 'constructor' if inspect.isclass(value) else 'function'
+        result.append(entry)
+        if inspect.isclass(value):
+            for method in _class_functions(value):
+                descriptor = inspect.getattr_static(value, method['name'])
+                kind = 'static_method' if isinstance(descriptor, staticmethod) else ('class_method' if isinstance(descriptor, classmethod) else 'instance_method')
+                result.append({**method, 'name': name + '.' + method['name'], 'kind': kind})
     return result
-
-
-def _describe_adapter(name, cls) -> dict:
-    meta = describe_adapter(cls)
-    if cls.acquire is not None:
-        info = _describe(name, cls.acquire)
-    else:
-        info = {"name": name, "params": [
-            {"name": p["name"], "type": p.get("type", "text"),
-             "required": p.get("required", "default" not in p), "default": p.get("default"),
-             "defaultTrusted": True}
-            for p in cls.inputs
-        ], "returns": "InvestigationResult"}
-    info.update(meta)
-    return info
 
 
 def _class_functions(cls: type) -> list[dict]:
@@ -182,14 +169,15 @@ def _describe(name: str, func) -> dict:
                 "defaultTrusted": bool(has_default and _plain(param.default)),
             }
         )
-    pipeline_error = None
-    if inspect.iscoroutinefunction(func):
-        pipeline_error = "四阶段函数必须为同步函数"
-    elif any(p.kind in (*SKIP_PARAM_KINDS, inspect.Parameter.POSITIONAL_ONLY)
-             for p in signature.parameters.values()):
-        pipeline_error = "四阶段函数参数必须显式命名且支持关键字传参，不支持 *args、**kwargs 或位置专用参数"
+    try:
+        fingerprint = hashlib.sha256(inspect.getsource(func).encode('utf-8')).hexdigest()
+    except (OSError, TypeError):
+        fingerprint = ''
     return {"name": name, "params": params, "returns": _type_name(signature.return_annotation),
-            "pipelineError": pipeline_error}
+            'doc': inspect.getdoc(func) or '', 'fingerprint': fingerprint,
+            'interfaceError': '接口必须同步且支持关键字参数' if inspect.iscoroutinefunction(func)
+                or any(p.kind == p.POSITIONAL_ONLY for p in signature.parameters.values()) else None,
+            'variadicKeywords': any(p.kind == p.VAR_KEYWORD for p in signature.parameters.values())}
 
 
 def _type_name(annotation) -> str:

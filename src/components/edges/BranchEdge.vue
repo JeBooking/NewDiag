@@ -63,9 +63,9 @@ const edgeStyle = computed(() => {
     opacity: faded && !issue ? 0.28 : trail === 'dropped' ? 0.45 : 1,
     ...(trail === 'dropped' ? { strokeDasharray: '5 4' } : {}),
     ...(issue ? { strokeDasharray: '6 4' } : {}),
-    ...(flowing && trail !== 'dropped'
-      ? { strokeDasharray: '7 5', animation: 'edge-flow 0.7s linear infinite' }
-      : {}),
+    // 选中节点就必须能看出流向：旧代/已回退的边同样要动，颜色和透明度负责区分新旧
+    ...(flowing ? { animation: 'edge-flow 0.7s linear infinite' } : {}),
+    ...(flowing && trail !== 'dropped' ? { strokeDasharray: '7 5' } : {}),
   }
 })
 </script>

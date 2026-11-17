@@ -1,24 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { FlowDetail, FlowMode, NodeBinding } from '@/domain/types'
-import BindingEditor from '@/components/panels/BindingEditor.vue'
+import type { FlowDetail } from '@/domain/types'
 
 const props = defineProps<{
   flow: FlowDetail
-  snapshotFields?: string[]
   readonly?: boolean
   publishing?: boolean
-  diagnosis?: NodeBinding
 }>()
 const emit = defineEmits<{
-  (e: 'update-meta', patch: { name?: string; mode?: FlowMode }): void
-  (e: 'update-snapshot-fields', value: string[]): void
+  (e: 'update-meta', patch: { name?: string }): void
   (e: 'publish'): void
-  (e: 'update-diagnosis', value: NodeBinding | undefined): void
 }>()
-
-const draft = ref('')
-const fields = computed(() => props.snapshotFields ?? [])
 
 const name = ref(props.flow.name)
 const nameDirty = computed(() => name.value.trim() !== props.flow.name && name.value.trim().length > 0)
@@ -45,44 +37,6 @@ function commitName(): void {
   if (!nameDirty.value) return
   emit('update-meta', { name: name.value.trim() })
 }
-
-function changeMode(value: unknown): void {
-  const mode = value === 'serial' ? 'serial' : 'parallel'
-  if (mode !== props.flow.mode) emit('update-meta', { mode })
-}
-
-function addFields(raw: string): void {
-  const items = raw
-    .split(/[,，\s]+/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-  if (items.length === 0) {
-    draft.value = ''
-    return
-  }
-  const next = [...fields.value]
-  for (const item of items) {
-    if (!next.includes(item)) next.push(item)
-  }
-  if (next.length !== fields.value.length) emit('update-snapshot-fields', next)
-  draft.value = ''
-}
-
-function onDraftInput(value: unknown): void {
-  const text = typeof value === 'string' ? value : String(value ?? '')
-  if (/[,，]$/.test(text)) {
-    addFields(text)
-    return
-  }
-  draft.value = text
-}
-
-function removeField(name: string): void {
-  emit(
-    'update-snapshot-fields',
-    fields.value.filter((item) => item !== name),
-  )
-}
 </script>
 
 <template>
@@ -97,51 +51,6 @@ function removeField(name: string): void {
       @blur="commitName"
       @keyup.enter="commitName"
     />
-
-    <label class="label">执行模式</label>
-    <el-radio-group
-      :model-value="flow.mode"
-      :disabled="readonly"
-      @update:model-value="changeMode"
-    >
-      <el-radio-button value="parallel">并行</el-radio-button>
-      <el-radio-button value="serial">串行</el-radio-button>
-    </el-radio-group>
-    <div class="section-hint">
-      并行：同组后继同时推进；串行：按出线顺序逐条尝试，遇到问题解决节点后由人决定结束或继续
-    </div>
-
-    <div class="section-title">诊断实例</div>
-    <BindingEditor
-      :binding="diagnosis" :readonly="readonly" diagnosis-only
-      @update="emit('update-diagnosis', $event)"
-    />
-    <div class="section-hint">可选。选择后，排查节点直接调用该诊断类的方法，获取和解析由实例统一管理。启动参数在开始节点配置。</div>
-
-    <div class="section-title">快照字段（旧版兼容）</div>
-    <div class="tag-input">
-      <el-tag
-        v-for="field in fields"
-        :key="field"
-        size="small"
-        :closable="!readonly"
-        @close="removeField(field)"
-      >
-        {{ field }}
-      </el-tag>
-      <el-input
-        v-if="!readonly"
-        :model-value="draft"
-        size="small"
-        placeholder="输入后回车或逗号"
-        class="tag-field"
-        @update:model-value="onDraftInput"
-        @keydown.enter.prevent="addFields(draft)"
-        @blur="addFields(draft)"
-      />
-    </div>
-    <div v-if="readonly && !fields.length" class="section-hint">未设置</div>
-    <div class="section-hint">启动时把这些字段作为诊断快照，节点按名字自动取用</div>
 
     <div class="section-title">版本</div>
     <div class="kv">
@@ -212,17 +121,6 @@ function removeField(name: string): void {
   justify-content: space-between;
   gap: 12px;
   font-size: 12px;
-}
-
-.tag-input {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.tag-field {
-  width: 100%;
 }
 
 .key {

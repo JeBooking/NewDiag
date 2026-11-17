@@ -26,7 +26,6 @@ const submitting = ref(false)
 const target = ref('')
 const branch = ref('')
 const reason = ref('')
-const mode = ref<'retry' | 'branch'>('retry')
 const statusText: Record<TokenStatus, string> = {
   queued: '排队', running: '执行中', waiting: '待处理', done: '完成',
   failed: '失败', abandoned: '已放弃',
@@ -44,7 +43,8 @@ function hasOutgoing(nodeId: string): boolean {
 const candidates = computed(() => (props.detail?.tokens ?? [])
   .filter((token) => {
     const step = plan.value?.steps[token.nodeId]
-    return token.visitedAt && step && step.kind !== 'start' && !step.terminal
+    const completed = props.detail?.runs.some((run) => run.tokenId === token.id && run.status === 'ok')
+    return completed && token.visitedAt && step && step.kind !== 'start' && !step.terminal
   })
   .slice()
   .sort((a, b) => a.visitedAt!.localeCompare(b.visitedAt!)
@@ -53,16 +53,8 @@ const candidates = computed(() => (props.detail?.tokens ?? [])
 const selected = computed(() => candidates.value.find((token) => token.id === target.value))
 const canReuse = computed(() => {
   const token = selected.value
-  if (!token || token.status === 'failed' || !hasOutgoing(token.nodeId)) return false
-  const step = plan.value?.steps[token.nodeId]
-  const runs = (props.detail?.runs ?? []).filter((run) => run.tokenId === token.id)
-  if (step?.call || step?.pipeline) return runs.some((run) =>
-    run.status === 'ok' || (run.status === 'abandoned' && !run.error
-      && run.output !== undefined && run.output !== null))
-  if (!step?.human) return true
-  return token.status === 'done' || (props.detail?.reviews ?? []).some((review) =>
-    review.tokenId === token.id && review.status === 'done'
-    && ['yes', 'no', 'done'].includes(review.decision?.result ?? ''))
+  if (!token || !hasOutgoing(token.nodeId)) return false
+  return (props.detail?.runs ?? []).some((run) => run.tokenId === token.id && run.status === 'ok')
 })
 
 const branches = computed(() => {
@@ -108,7 +100,6 @@ watch(
     target.value = ''
     branch.value = ''
     reason.value = ''
-    mode.value = 'retry'
     void ensurePlan()
   },
 )
@@ -116,10 +107,6 @@ watch(
 watch(target, () => {
   const list = branches.value
   branch.value = list.length > 0 ? list[0] : ''
-})
-
-watch(canReuse, (value) => {
-  if (!value) mode.value = 'retry'
 })
 
 // 计划是异步读到的，先选目标后到分支时要补上默认值
@@ -133,14 +120,13 @@ function close(): void {
 
 async function submit(): Promise<void> {
   if (!props.detail || !selected.value || !plan.value || submitting.value) return
-  if (mode.value === 'branch' && (!branch.value || !canReuse.value)) return
+  if (!branch.value || !canReuse.value) return
   submitting.value = true
   try {
     await store.rollback({
       targetNodeId: selected.value.nodeId,
       targetTokenId: selected.value.id,
-      mode: mode.value,
-      branch: mode.value === 'branch' ? branch.value : undefined,
+      branch: branch.value,
       reason: reason.value.trim() || undefined,
     })
     ElMessage.success('已从所选到访位置重新推进')
@@ -185,14 +171,7 @@ async function submit(): Promise<void> {
       </div>
 
       <template v-if="target">
-        <label class="label">回退方式</label>
-        <el-radio-group v-model="mode">
-          <el-radio value="retry">重新执行该节点</el-radio>
-          <el-radio value="branch" :disabled="!canReuse">复用结果并改选分支</el-radio>
-        </el-radio-group>
-        <div v-if="!canReuse" class="hint">本次到访没有可复用的成功结果，需要重新执行。</div>
-      </template>
-      <template v-if="target && mode === 'branch'">
+        <div v-if="!canReuse" class="hint">本次到访没有可复用的成功结果，不能作为回退目标。</div>
         <label class="label">重新走的分支</label>
         <el-select
           v-model="branch"
@@ -219,7 +198,7 @@ async function submit(): Promise<void> {
       <el-button
         type="primary"
         :loading="submitting"
-        :disabled="!selected || !plan || (mode === 'branch' && (!branch || !canReuse))"
+        :disabled="!selected || !plan || !branch || !canReuse"
         @click="submit"
       >
         确认回退

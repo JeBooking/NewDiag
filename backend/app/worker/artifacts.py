@@ -1,4 +1,4 @@
-"""不可变 JSON 产物、字段索引及 Python 对象快照，避免大结果反复经过会话协议。"""
+"""不可变 JSON 产物与 Python 对象快照，避免大结果反复经过会话协议。"""
 
 from __future__ import annotations
 
@@ -128,7 +128,6 @@ def load_python(root, reference):
         if (metadata.get("format") != "python-pickle/v1"
                 or metadata.get("sha256") != _python_digest(target)):
             raise ValueError("对象快照校验不一致")
-        # 只恢复本实例业务进程生成的产物，不把上传附件当作 Python 快照读取。
         with target.open("rb") as source:
             value = pickle.load(source)
     except Exception as exc:

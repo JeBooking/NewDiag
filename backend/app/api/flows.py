@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.api import folders
 from app.db import get_db, new_id, now_iso
 from app.models import FileBlob, Flow, Folder, Instance, Release, Revision
+from app.services.flow_format import compact, expand
 from app.services import packages, storage
 from app.schemas import (
     CommitResult,
@@ -56,31 +57,9 @@ LOCAL_ACTOR = "local"
 UNCATEGORIZED_ALIASES = frozenset({"root", "none", "null"})
 
 
-def empty_doc(name: str, mode: str = "parallel") -> dict:
-    return {"format": 1, "name": name, "mode": mode, "nodes": [], "edges": []}
-
-
-def instance_doc(name: str, mode: str = "parallel") -> dict:
-    """新建流程用的诊断实例模板：骨架齐全、没有业务内容。
-
-    工程 / 类 / 版本留空，由用户在「流程属性 → 诊断实例」里选中；
-    直接抄示例里的业务类名会生成指向不存在工程的假绑定，发布必然失败。
-    config 为空对象：初始化参数由选中的诊断类带出，模板不预设业务参数。
-    """
-    return {
-        "format": 1,
-        "name": name,
-        "mode": mode,
-        "diagnosis": {
-            "project": "",
-            "function": "",
-            "protocol": "diagnosis/v1",
-            "version": "",
-            "config": {},
-        },
-        "nodes": [],
-        "edges": [],
-    }
+def empty_doc(name: str) -> dict:
+    """新建流程用的空白文档：槽位留空，由编排团队在节点上选接口。"""
+    return {"format": 1, "name": name, "nodes": [], "edges": []}
 
 
 def get_flow_or_404(db: Session, flow_id: str) -> Flow:
@@ -98,11 +77,24 @@ def revision_doc(revision: Revision | None) -> dict:
     if revision is None or not revision.json:
         return {}
     try:
-        doc = json.loads(revision.json)
-    except ValueError:
-        logger.warning("revision %s 的 json 无法解析", revision.id)
-        return {}
+        doc = expand(json.loads(revision.json))
+    except ValueError as exc:
+        logger.warning("revision %s 的文档无法读取：%s", revision.id, exc)
+        raise HTTPException(status_code=409, detail=f"流程文档无法读取：{exc}") from exc
     return doc if isinstance(doc, dict) else {}
+
+
+def submitted_doc(value: dict) -> dict:
+    """前端提交的是编辑投影（format=1）；已经是持久格式时先摊平。"""
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=422, detail="流程文档必须是对象")
+    try:
+        doc = expand(value) if value.get("format") == 2 else value
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if doc.get("format") != 1:
+        raise HTTPException(status_code=422, detail=f"不支持的编辑文档格式 {doc.get('format')}")
+    return doc
 
 
 def current_revision(db: Session, flow: Flow) -> Revision | None:
@@ -176,6 +168,16 @@ def collect_issues(doc: dict, *, strict_binding: bool = True) -> list[dict]:
     ]
 
 
+def reject_removed_format(doc: dict) -> None:
+    """旧接入格式导入即拒绝：这些文档在新界面里无法继续编排，也没法发布。"""
+    removed = [
+        item for item in collect_issues(doc, strict_binding=True)
+        if item.get("level") == "error" and "已移除" in str(item.get("message") or "")
+    ]
+    if removed:
+        raise HTTPException(status_code=422, detail=removed)
+
+
 def commit_working(
     db: Session, flow: Flow, working: Revision, *, admin: bool = False
 ) -> CommitResult:
@@ -187,10 +189,6 @@ def commit_working(
     working.committed_at = stamp
     flow.current_revision_id = working.id
     flow.updated_at = stamp
-    # 模式（并行/串行）属于图本身，以画布提交为准，保证发布与画布一致
-    mode = doc.get("mode")
-    if mode in ("parallel", "serial"):
-        flow.mode = mode
     if flow.editing_by == LOCAL_ACTOR or admin:
         flow.editing_by = None
         flow.editing_revision_id = None
@@ -297,12 +295,11 @@ def create_flow(payload: FlowCreate, db: Session = Depends(get_db)) -> FlowDetai
     require_folder(db, payload.folder_id)
     stamp = now_iso()
     # 新建即实例模板；导入 / 复制走各自的文档，不经过这里
-    doc = instance_doc(payload.name, payload.mode)
+    doc = empty_doc(payload.name)
     flow = Flow(
         id=new_id(),
         name=payload.name,
         description=payload.description or "",
-        mode=payload.mode,
         folder_id=payload.folder_id,
         owner_id=LOCAL_ACTOR,
         created_at=stamp,
@@ -313,7 +310,7 @@ def create_flow(payload: FlowCreate, db: Session = Depends(get_db)) -> FlowDetai
     revision = Revision(
         id=new_id(),
         flow_id=flow.id,
-        json=json.dumps(doc, ensure_ascii=False),
+        json=json.dumps(compact(doc), ensure_ascii=False),
         status="committed",
         author=LOCAL_ACTOR,
         created_at=stamp,
@@ -333,17 +330,15 @@ def import_flow(payload: ImportFlowIn, db: Session = Depends(get_db)) -> FlowDet
 
     绑定问题按半成品放行（同 commit），发布时才强制校验。
     """
-    doc = payload.doc
-    # 导入同保存：问题只提示，不阻断
-    collect_issues(doc, strict_binding=False)
+    doc = submitted_doc(payload.doc)
+    # 旧接入格式无法在新界面继续编排，导入时直接拒绝；其余问题按半成品放行
+    reject_removed_format(doc)
 
     stamp = now_iso()
-    mode = doc.get("mode") if doc.get("mode") in ("parallel", "serial") else "parallel"
     flow = Flow(
         id=new_id(),
         name=str(doc.get("name") or "").strip() or "未命名流程",
         description=str(doc.get("description") or ""),
-        mode=mode,
         owner_id=LOCAL_ACTOR,
         created_at=stamp,
         updated_at=stamp,
@@ -353,7 +348,7 @@ def import_flow(payload: ImportFlowIn, db: Session = Depends(get_db)) -> FlowDet
     revision = Revision(
         id=new_id(),
         flow_id=flow.id,
-        json=json.dumps(doc, ensure_ascii=False),
+        json=json.dumps(compact(doc), ensure_ascii=False),
         status="committed",
         author=LOCAL_ACTOR,
         created_at=stamp,
@@ -388,26 +383,19 @@ def _attachment_refs(doc: dict):
 
 
 def _bindings(doc: dict) -> list[dict]:
-    seen: set[tuple[str, str]] = set()
+    """流程包导出时记录的工程接口引用；槽位是唯一来源。"""
+    from app.services.slots import calls_in
+
+    seen: set[tuple[str, str, str]] = set()
     result: list[dict] = []
-    bindings = [doc.get("diagnosis")]
-    for node in doc.get("nodes") or []:
-        if not isinstance(node, dict):
+    for _, call in calls_in(doc):
+        project = str(call.get("project") or "")
+        function = str(call.get("interface") or call.get("function") or "")
+        module = str(call.get("module") or "")
+        if not project or not function or (project, module, function) in seen:
             continue
-        pipeline = node.get("pipeline")
-        if isinstance(pipeline, dict):
-            bindings.extend(pipeline.get(stage) for stage in ("acquire", "parse", "present", "judge"))
-        else:
-            bindings.append(node.get("binding"))
-    for binding in bindings:
-        if not isinstance(binding, dict):
-            continue
-        project = str(binding.get("project") or "")
-        function = str(binding.get("function") or "")
-        if not project or not function or (project, function) in seen:
-            continue
-        seen.add((project, function))
-        result.append({"project": project, "function": function})
+        seen.add((project, module, function))
+        result.append({"project": project, "function": function, **({"module": module} if module else {})})
     return result
 
 
@@ -480,7 +468,7 @@ def export_flow(
     manifest = {
         "format": 1,
         "kind": packages.PACKAGE_KIND,
-        "flow": {"id": flow.id, "name": flow.name, "mode": flow.mode},
+        "flow": {"id": flow.id, "name": flow.name},
         "version": version,
         "exportedAt": now_iso(),
         "docFile": packages.DOC_NAME,
@@ -493,7 +481,7 @@ def export_flow(
         except ValueError:
             logger.warning("发布版本 %s 的签名表无法解析，跳过", release.id)
 
-    payload = packages.build_package(doc, manifest, attachments)
+    payload = packages.build_package(compact(doc), manifest, attachments)
     filename = f"{packages.safe_name(flow.name, 'flow')}-{label}.zip"
     ascii_name = f"flow-{label}.zip"
     headers = {
@@ -516,6 +504,7 @@ async def import_package(file: UploadFile = File(...), db: Session = Depends(get
         raise HTTPException(status_code=400, detail="流程包为空")
     try:
         doc, manifest, files = packages.read_package(data)
+        doc = expand(doc)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not isinstance(doc.get("nodes"), list):
@@ -565,17 +554,15 @@ async def import_package(file: UploadFile = File(...), db: Session = Depends(get
                 ref["hash"] = stored
     db.flush()
 
-    # 导入同保存：问题只提示，不阻断
-    collect_issues(doc, strict_binding=False)
+    # 旧接入格式无法在新界面继续编排，导入时直接拒绝；其余问题按半成品放行
+    reject_removed_format(doc)
 
     stamp = now_iso()
-    mode = doc.get("mode") if doc.get("mode") in ("parallel", "serial") else "parallel"
     name = str(doc.get("name") or "").strip() or Path(file.filename or "").stem or "导入的流程"
     flow = Flow(
         id=new_id(),
         name=name,
         description=str(doc.get("description") or ""),
-        mode=mode,
         owner_id=LOCAL_ACTOR,
         created_at=stamp,
         updated_at=stamp,
@@ -585,7 +572,7 @@ async def import_package(file: UploadFile = File(...), db: Session = Depends(get
     revision = Revision(
         id=new_id(),
         flow_id=flow.id,
-        json=json.dumps(doc, ensure_ascii=False),
+        json=json.dumps(compact(doc), ensure_ascii=False),
         status="committed",
         author=LOCAL_ACTOR,
         created_at=stamp,
@@ -644,14 +631,6 @@ def patch_flow(flow_id: str, payload: FlowPatch, db: Session = Depends(get_db)) 
         flow.name = payload.name
     if payload.description is not None:
         flow.description = payload.description
-    if payload.mode is not None:
-        flow.mode = payload.mode
-        # 检出中的草稿也同步模式，否则下次提交会把旧模式写回来
-        working = working_revision(db, flow)
-        if working is not None:
-            doc = revision_doc(working)
-            doc["mode"] = payload.mode
-            working.json = json.dumps(doc, ensure_ascii=False)
     # 显式传 folderId: null 才是「移到未分类」，不传表示不动
     if "folder_id" in payload.model_fields_set:
         require_folder(db, payload.folder_id)
@@ -698,7 +677,7 @@ def save_working(
 ) -> SavedAt:
     flow = get_flow_or_404(db, flow_id)
     working = require_lock(db, flow)
-    working.json = json.dumps(payload.doc, ensure_ascii=False)
+    working.json = json.dumps(compact(submitted_doc(payload.doc)), ensure_ascii=False)
     stamp = now_iso()
     flow.updated_at = stamp
     db.commit()
@@ -713,7 +692,7 @@ def commit(
     working = require_lock(db, flow)
     # 前端可能带着尚未暂存的 doc 直接保存，用它覆盖草稿，避免丢最后 2 秒的编辑
     if payload is not None:
-        working.json = json.dumps(payload.doc, ensure_ascii=False)
+        working.json = json.dumps(compact(submitted_doc(payload.doc)), ensure_ascii=False)
     return commit_working(db, flow, working)
 
 
@@ -748,7 +727,7 @@ def probe_flow(flow_id: str, payload: ProbeIn, db: Session = Depends(get_db)) ->
     if probe_doc is None:
         raise HTTPException(status_code=503, detail="编译引擎尚未就绪")
     try:
-        return probe_doc(payload.doc) or {}
+        return probe_doc(submitted_doc(payload.doc)) or {}
     except Exception as exc:  # 探针本身异常也不能让设计页 500
         logger.warning("探测失败（flow=%s）：%s", flow_id, exc)
         raise HTTPException(

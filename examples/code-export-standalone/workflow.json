@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "name": "无依赖无输入代码导出演示",
+  "nodes": [
+    {"id":"start","kind":"start","title":"开始","detail":"无需启动参数","position":{"x":0,"y":100}},
+    {"id":"check","kind":"investigation","title":"计算内置样本","detail":"调用普通 Python 对象，无外部资源和人工输入","position":{"x":280,"y":100},"fields":{"observation":"内置数值样本","acquisition":"普通 Analyzer 对象在方法内生成样本","assessment":"峰值大于固定阈值为是"},"operation":"inspect","operationArguments":{}},
+    {"id":"end","kind":"escalation","title":"示例运行结束","detail":"终止演示，无需人工处理","position":{"x":560,"y":100}}
+  ],
+  "edges": [
+    {"id":"begin","from":"start","to":"check"},
+    {"id":"abnormal","from":"check","to":"end","branch":"yes"},
+    {"id":"normal","from":"check","to":"end","branch":"no"}
+  ],
+  "composition": {
+    "objects": [{"id":"analyzer","project":"代码导出演示","module":"business","function":"Analyzer","arguments":{}}],
+    "resources": [],
+    "operations": [{
+      "id":"inspect","parameters":[],
+      "calls":[{"id":"report","project":"代码导出演示","module":"business","interface":"Analyzer.inspect","function":"inspect","target":{"source":"object","name":"analyzer"},"arguments":{}}],
+      "presentation":[
+        {"type":"text","value":{"source":"value","name":"report","path":"reason"}},
+        {"type":"line","value":{"source":"value","name":"report","path":"samples"}},
+        {"type":"metrics","value":{"items":[{"fields":{"label":{"lit":"峰值"},"value":{"source":"value","name":"report","path":"peak"}}}]}}
+      ],
+      "decision":{"result":{"source":"value","name":"report","path":"abnormal"},"reason":{"source":"value","name":"report","path":"reason"}}
+    }]
+  }
+}

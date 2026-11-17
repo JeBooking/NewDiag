@@ -1,20 +1,41 @@
 // 开发态一键启动：后端 uvicorn(8000) + 前端 Vite(5173)。
 // 为什么自己写而不引 concurrently：项目约定不加没被要求的依赖。
 // 为什么必须捆绑后端：Vite 把 /api 代理到 8000，后端没起时每个请求都会变成 500。
-// 为什么还要健康探测：uvicorn --reload 是「reloader 父进程 + worker 子进程」两层，
-// worker 崩了父进程不会退出。只听子进程 exit，会把「后端已死」误判成「还在跑」。
+// 后端进程仍在但不响应时，也必须通过健康探测恢复服务。
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, watch } from 'node:fs'
 import { request } from 'node:http'
 import { Socket } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { backendArgs } from './backend-command.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(here, '..')
 const backendDir = join(projectRoot, 'backend')
 const isWin = process.platform === 'win32'
+
+const devLogFile = join(backendDir, 'logs', 'dev-all.log')
+
+// 守护进程自己的输出（重启原因、子进程退出码）不进 uvicorn 的 app.log，
+// 单独落一份，事后才能对上「实例卡住」和「后端被重启」的时间点。
+try {
+  mkdirSync(join(backendDir, 'logs'), { recursive: true })
+} catch {
+  // 目录建不出来就只打控制台
+}
+for (const [method, tag] of [['log', 'INFO '], ['warn', 'WARN '], ['error', 'ERROR']]) {
+  const original = console[method].bind(console)
+  console[method] = (...args) => {
+    original(...args)
+    try {
+      appendFileSync(devLogFile, `${new Date().toISOString()} ${tag} ${args.map(String).join(' ')}\n`)
+    } catch {
+      // 写不进文件不影响控制台
+    }
+  }
+}
 
 const BACKEND_PORT = 8000
 const WEB_PORT = 5173
@@ -47,6 +68,9 @@ let lastRestartAt = 0
 let probing = false
 let giveUp = false
 let monitor = null
+let sourceWatcher = null
+let sourceTimer = null
+let restartTimer = null
 
 function die(message) {
   console.error(`[dev] ${message}`)
@@ -54,15 +78,18 @@ function die(message) {
 }
 
 function killTree(child) {
-  if (!child || !child.pid || child.killed) return
+  if (!child || !child.pid || child.killed || child.exitCode !== null || child.signalCode !== null) return
   if (isWin) {
-    // uvicorn --reload 会派生 worker，只杀父进程会留下占着 8000 的孤儿
-    spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+    // 后端派生诊断进程，只杀后端会留下仍在执行的分支。
+    spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+      stdio: 'ignore', windowsHide: true, timeout: 10_000,
+    })
   } else {
     try {
-      process.kill(-child.pid, 'SIGTERM')
+      // 开发重启不能无限等待事件长连接完成，必须先释放旧进程持有的端口。
+      process.kill(-child.pid, 'SIGKILL')
     } catch {
-      child.kill('SIGTERM')
+      child.kill('SIGKILL')
     }
   }
 }
@@ -71,6 +98,9 @@ function stopAll(code) {
   if (stopping) return
   stopping = true
   if (monitor) clearInterval(monitor)
+  if (sourceTimer) clearTimeout(sourceTimer)
+  if (restartTimer) clearTimeout(restartTimer)
+  sourceWatcher?.close()
   for (const { child } of children) killTree(child)
   process.exit(code)
 }
@@ -83,6 +113,7 @@ function start(name, command, args, options) {
     ...options,
   })
   children.push({ name, child })
+  console.log(`[dev] ${name} 启动 pid=${child.pid}`)
 
   child.on('error', (error) => {
     console.error(`[dev] ${name} 启动失败：${error.message}`)
@@ -90,8 +121,9 @@ function start(name, command, args, options) {
   })
   child.on('exit', (code) => {
     if (stopping || expectedExit.has(child)) return
-    if (name === '后端' && code !== 0) {
-      console.error('[dev] 后端未能启动：向上翻终端里的 Traceback，常见原因是 import 报错')
+    if (name === '后端') {
+      restartBackend(`后端已退出（code=${code ?? 'unknown'}）`)
+      return
     }
     console.error(`[dev] ${name} 已退出（code=${code ?? 'unknown'}），停止其余进程`)
     stopAll(code ?? 1)
@@ -104,7 +136,7 @@ function startBackend() {
   backend = start(
     '后端',
     python,
-    ['-m', 'uvicorn', 'app.main:app', '--reload', '--port', String(BACKEND_PORT)],
+    backendArgs(backendDir, BACKEND_PORT),
     { cwd: backendDir },
   )
   return backend
@@ -150,10 +182,11 @@ function probeHealth() {
   })
 }
 
-function restartBackend() {
+function restartBackend(reason = '后端无响应', sourceChanged = false) {
+  if (stopping || restartTimer) return
   const now = Date.now()
   if (now - lastRestartAt > RESTART_WINDOW) restarts = 0
-  if (restarts >= MAX_RESTARTS) {
+  if (!sourceChanged && restarts >= MAX_RESTARTS) {
     giveUp = true
     console.error(
       `[dev] 后端一分钟内重启 ${MAX_RESTARTS} 次仍不可用，已停止自动重启。\n` +
@@ -162,24 +195,28 @@ function restartBackend() {
     return
   }
 
-  restarts += 1
-  lastRestartAt = now
+  if (!sourceChanged) {
+    restarts += 1
+    lastRestartAt = now
+  }
+  giveUp = false
   failures = 0
   backendReady = false
   startupWarned = false
 
-  console.warn(`[dev] 后端无响应，重启后端（第 ${restarts} 次）…`)
+  console.warn(`[dev] ${reason}，重启后端${sourceChanged ? '' : `（第 ${restarts} 次）`}…`)
   const dying = backend
   if (dying) expectedExit.add(dying)
   killTree(dying)
-  setTimeout(() => {
+  restartTimer = setTimeout(() => {
+    restartTimer = null
     if (stopping) return
     startBackend()
   }, RESTART_DELAY)
 }
 
 async function tick() {
-  if (stopping || probing) return
+  if (stopping || probing || restartTimer || giveUp) return
   probing = true
   const ok = await probeHealth()
   probing = false
@@ -204,11 +241,10 @@ async function tick() {
         '[dev] 后端 30 秒内没有响应，检查终端里 uvicorn 的 Traceback；' +
           '端口被占的话先执行 netstat -ano | findstr :8000',
       )
+      restartBackend('后端启动超时')
     }
     return
   }
-
-  if (giveUp) return
 
   failures += 1
   console.warn(`[dev] /api/health 无响应（${failures}/${FAIL_THRESHOLD}）`)
@@ -219,6 +255,19 @@ function startMonitor() {
   monitor = setInterval(() => {
     void tick()
   }, PROBE_INTERVAL)
+}
+
+function watchBackendSource() {
+  // 只监控平台源码；重启直接清理整个后端进程树，不向共享控制台广播 Ctrl+C。
+  sourceWatcher = watch(join(backendDir, 'app'), { recursive: true }, (_event, filename) => {
+    if (!filename || !String(filename).endsWith('.py') || stopping) return
+    if (sourceTimer) clearTimeout(sourceTimer)
+    sourceTimer = setTimeout(() => restartBackend('平台源码发生变化', true), 300)
+  })
+  sourceWatcher.on('error', (error) => {
+    console.error(`[dev] 源码监控失败：${error.message}`)
+    stopAll(1)
+  })
 }
 
 process.on('SIGINT', () => stopAll(0))
@@ -246,8 +295,10 @@ if (await portInUse(WEB_PORT)) {
   console.warn(`[dev] ${WEB_PORT} 已被占用，Vite 会自动换到下一个空闲端口，以它打印的地址为准`)
 }
 
-console.log('[dev] 后端 http://127.0.0.1:8000   前端 http://127.0.0.1:5173   Ctrl+C 停止')
+console.log(`[dev] 后端 http://127.0.0.1:${BACKEND_PORT}   前端 http://127.0.0.1:${WEB_PORT}   Ctrl+C 停止`)
 
 startBackend()
-start('前端', process.execPath, [viteBin], { cwd: projectRoot })
+const webArgs = process.argv.includes('--open') ? [viteBin, '--open'] : [viteBin]
+start('前端', process.execPath, webArgs, { cwd: projectRoot })
+watchBackendSource()
 startMonitor()

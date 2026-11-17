@@ -1,21 +1,17 @@
-"""外部节点适配协议；只依赖标准库，可随业务工程独立分发。"""
+"""平台内置的节点工具：值投影、图片落盘、字段校验与展示块校验；只依赖标准库。"""
 
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import logging
 import os
 import re
-import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
-PROTOCOL = "investigation/v1"
 # 与 services/storage.py 的 _HASH_RE 保持一致；worker 只依赖标准库，不能跨包导入。
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -27,45 +23,6 @@ _IMAGE_ALIASES = {"png": "png", "jpg": "jpeg", "jpeg": "jpeg", "webp": "webp", "
 # 每次调用由 session 设置；业务代码只拿到 save_file，不需要知道目录从哪来。
 _file_root: Path | None = None
 _files: dict[str, dict] = {}
-
-
-class Node(ABC):
-    """业务对象不跨调用保存，必要状态必须进入输入或返回值。"""
-
-    version = "1.0.0"
-
-
-class InvestigationNode(Node):
-    protocol = PROTOCOL
-    acquire = None
-    judge = None
-    # 未提供 acquire 时，仍可声明时间点等节点启动参数。
-    inputs: list[dict] = []
-    manual_fields: list[dict] = []
-
-    @abstractmethod
-    def parse(self, raw_data):
-        raise NotImplementedError
-
-    @abstractmethod
-    def present(self, parsed_data, decision=None) -> dict:
-        raise NotImplementedError
-
-    def close(self) -> None:
-        pass
-
-    def dump_raw(self, value):
-        return value
-
-    def dump_parsed(self, value):
-        return value
-
-    def load_parsed(self, value):
-        return value
-
-
-def is_adapter(obj) -> bool:
-    return inspect.isclass(obj) and issubclass(obj, InvestigationNode) and obj is not InvestigationNode
 
 
 def json_value(value):
@@ -82,7 +39,8 @@ def _materialize(value):
         raise ValueError(
             f"展示数据不支持 {type(value).__name__}，请先转换为 bytes"
         )
-    if isinstance(value, dict):
+    from collections.abc import Mapping
+    if isinstance(value, Mapping):
         return {key: _materialize(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_materialize(item) for item in value]
@@ -211,72 +169,6 @@ def validate_fields(fields: list[dict], data: dict) -> dict:
     return json_value(result)
 
 
-def describe_adapter(cls) -> dict:
-    if inspect.isabstract(cls):
-        raise ValueError(f"{cls.__name__} 必须实现 parse 和 present")
-    if not isinstance(cls.version, str) or not cls.version.strip():
-        raise ValueError("适配器必须声明 version")
-    fields = json_value(cls.manual_fields)
-    if not isinstance(fields, list) or not isinstance(cls.inputs, list):
-        raise ValueError("manual_fields 和 inputs 必须为数组")
-    input_names = set()
-    for item in cls.inputs:
-        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"]:
-            raise ValueError("inputs 每项必须声明非空 name")
-        if item["name"] in input_names or item.get("type", "text") not in ("text", "number", "boolean", "datetime", "json", "file", "array", "object"):
-            raise ValueError("inputs 不允许重复字段或不支持的类型")
-        input_names.add(item["name"])
-    names = set()
-    for field in fields:
-        if not isinstance(field, dict) or not isinstance(field.get("name"), str):
-            raise ValueError("manual_fields 每项必须声明 name")
-        if not field["name"] or field["name"] in names:
-            raise ValueError("manual_fields 字段名不能为空或重复")
-        names.add(field["name"])
-        if field.get("type", "text") not in ("text", "number", "boolean", "datetime", "json", "file", "array", "object"):
-            raise ValueError("manual_fields 包含不支持的字段类型")
-    if cls.acquire is None and not fields:
-        raise ValueError("未实现 acquire 时必须声明 manual_fields")
-    for method in ("acquire", "judge"):
-        if getattr(cls, method) is not None and not callable(getattr(cls, method)):
-            raise ValueError(f"{method} 必须为方法或 None")
-    for name, count in (("parse", 1), ("present", 2), ("judge", 1),
-                        ("dump_raw", 1), ("dump_parsed", 1), ("load_parsed", 1), ("close", 0)):
-        method = getattr(cls, name)
-        if method is None and name == "judge":
-            continue
-        if not callable(method) or inspect.iscoroutinefunction(method):
-            raise ValueError(f"{name} 必须是同步方法")
-        descriptor = inspect.getattr_static(cls, name)
-        extra = 0 if isinstance(descriptor, (staticmethod, classmethod)) else 1
-        try:
-            inspect.signature(method).bind(*([None] * (count + extra)))
-        except TypeError as exc:
-            raise ValueError(f"{name} 的参数不符合四阶段协议：{exc}") from exc
-    if cls.acquire is not None:
-        if inspect.iscoroutinefunction(cls.acquire):
-            raise ValueError("acquire 必须是同步方法")
-        for param in inspect.signature(cls.acquire).parameters.values():
-            if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD, param.POSITIONAL_ONLY):
-                raise ValueError("acquire 参数必须显式声明且支持关键字传参")
-    config = []
-    for param in inspect.signature(cls).parameters.values():
-        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD, param.POSITIONAL_ONLY):
-            raise ValueError("适配器构造参数必须显式声明且支持关键字传参")
-        item = {"name": param.name, "required": param.default is param.empty}
-        if param.default is not param.empty:
-            item["default"] = json_value(param.default)
-        config.append(item)
-    return {
-        "protocol": PROTOCOL,
-        "version": cls.version,
-        "configParams": config,
-        "manualFields": fields,
-        "automaticAcquisition": cls.acquire is not None,
-        "automaticJudgment": cls.judge is not None,
-    }
-
-
 def presentation(value) -> dict:
     # 先过一遍 json_value：业务直接返回的图片 bytes 在这里换成摘要，下面的校验只认字符串。
     value = json_value(value)
@@ -317,62 +209,3 @@ def presentation(value) -> dict:
                 if field in block and not isinstance(block[field], str):
                     raise ValueError(f"image 展示块的 {field} 必须是字符串（可省略）")
     return value
-
-
-def execute_adapter(cls, request: dict) -> dict:
-    meta = describe_adapter(cls)
-    if request.get("version") != meta["version"]:
-        raise ValueError("适配器版本与发布版本不一致，请重新发布流程")
-    config = request.get("config") or {}
-    inspect.signature(cls).bind(**config)
-    state = json_value(request.get("state") or {"inputs": request.get("inputs") or {}, "stages": []})
-    operation = request.get("operation", "start")
-    if operation == "start" and cls.acquire is None:
-        return {"status": "acquisition", "state": state, "fields": meta["manualFields"]}
-    obj = cls(**config)
-
-    def invoke(stage, func, *args, **kwargs):
-        started = time.perf_counter()
-        logger.info("适配器 %s@%s 阶段 %s 开始", cls.__name__, cls.version, stage)
-        try:
-            result = func(*args, **kwargs)
-        except Exception as exc:
-            raise ValueError(f"{stage}: {exc}") from exc
-        state["stages"].append({"stage": stage, "durationMs": round((time.perf_counter() - started) * 1000)})
-        return result
-
-    try:
-        if operation in ("start", "acquisition"):
-            raw = (
-                invoke("acquire", obj.acquire, **state["inputs"])
-                if operation == "start"
-                else validate_fields(meta["manualFields"], request.get("data"))
-            )
-            if operation == "acquisition":
-                state["stages"].append({"stage": "manualAcquisition"})
-            state["raw"] = json_value(invoke("dumpRaw", obj.dump_raw, raw))
-            parsed = invoke("parse", obj.parse, raw)
-            state["parsed"] = json_value(invoke("dumpParsed", obj.dump_parsed, parsed))
-            state["presentation"] = presentation(invoke("present", obj.present, parsed, None))
-            if obj.judge is None:
-                return {"status": "judgment", "state": state}
-            decision = invoke("judge", obj.judge, parsed)
-        elif operation == "judgment":
-            parsed = invoke("loadParsed", obj.load_parsed, state["parsed"])
-            decision = request.get("decision")
-            state["stages"].append({"stage": "manualJudgment"})
-        else:
-            raise ValueError("未知的适配器执行阶段")
-        if not isinstance(decision, dict) or decision.get("result") not in ("yes", "no"):
-            raise ValueError("judge 必须返回 {result: 'yes'|'no', reason: 字符串}")
-        if not isinstance(decision.get("reason"), str) or not decision["reason"].strip():
-            raise ValueError("判断必须提供非空 reason")
-        decision = {"result": decision["result"], "reason": decision["reason"]}
-        state["decision"] = decision
-        state["presentation"] = presentation(invoke("presentResult", obj.present, parsed, decision))
-        return {"status": "complete", "state": state}
-    finally:
-        try:
-            obj.close()
-        except Exception:
-            logger.exception("适配器 %s 资源关闭失败", cls.__name__)

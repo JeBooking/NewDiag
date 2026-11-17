@@ -1,24 +1,20 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import type {
   DocNode,
   FlowDoc,
-  FlowMode,
   InvestigationFields,
-  FunctionPipeline,
   ManualField,
+  NodeSlots,
   ParamType,
+  SlotCall,
   StartParam,
 } from '@/domain/types'
 import { KIND_META } from '@/domain/kinds'
-import { errorText } from '@/services/api'
-import { probeFlow, type ProbeResult } from '@/services/flows'
 import AttachmentField from './AttachmentField.vue'
-import BindingEditor from './BindingEditor.vue'
-import FunctionPipelineEditor from '@/components/panels/FunctionPipelineEditor.vue'
 import ParamValueInput from './ParamValueInput.vue'
-import DiagnosisMethodEditor from '@/components/panels/DiagnosisMethodEditor.vue'
+import SlotCallEditor from '@/components/panels/SlotCallEditor.vue'
 import { PARAM_TYPES, parameterType as normalizeType } from '@/domain/parameters'
 
 const props = defineProps<{
@@ -28,10 +24,7 @@ const props = defineProps<{
     label: string
     items: { edgeId: string; title: string }[]
   }[]
-  mode?: FlowMode
   readonly?: boolean
-  /** 探测函数签名需要流程 id 与当前 doc */
-  flowId?: string
   doc?: FlowDoc
 }>()
 const emit = defineEmits<{
@@ -44,43 +37,71 @@ const meta = computed(() => KIND_META[props.node.kind])
 const fields = computed<InvestigationFields>(
   () => props.node.fields ?? { observation: '', acquisition: '', assessment: '' },
 )
-const outputs = computed(() => props.node.outputs ?? [])
-const outputDraft = ref('')
-
 const isStart = computed(() => props.node.kind === 'start')
-const allowsCustomInputs = computed(() => !!props.doc?.diagnosis || props.doc?.nodes.some((node) => node.pipeline))
-const inputName = ref('')
-const inputType = ref<ParamType>('text')
-const inputError = ref('')
-const connectionMode = computed(() => props.node.pipeline ? 'functions' : 'legacy')
-const pipelineValue = computed<FunctionPipeline>(() => ({
-  ...props.node.pipeline, manualFields: props.node.pipeline?.manualFields ?? [],
-}))
 
-function changeConnectionMode(value: unknown): void {
-  if (value === 'functions') emit('update', { pipeline: { manualFields: [] }, binding: undefined })
-  else emit('update', { pipeline: undefined })
+/** 开始节点声明的对象名与启动参数，是其余槽位的可选值来源 */
+const startNode = computed(() => props.doc?.nodes?.find((item) => item.kind === 'start'))
+const objectNames = computed(() =>
+  (startNode.value?.slots?.constructs ?? []).map((item) => item.object).filter((name): name is string => Boolean(name)))
+const startInputs = computed(() => (startNode.value?.inputs ?? []).map((item) => item.name))
+const parameters = computed(() => (props.node.runtimeInputs ?? []).map((item) => item.name))
+const opened = ref(['basic', 'inputs', 'slots', 'order', 'attachments'])
+const slots = computed<NodeSlots>(() => props.node.slots ?? {})
+const hasFetch = computed(() => Boolean(slots.value.fetch))
+const hasProcess = computed(() => Boolean(slots.value.process))
+const constructs = computed<SlotCall[]>(() => (isStart.value ? slots.value.constructs ?? [] : []))
+
+function patchSlots(patch: Partial<NodeSlots>): void {
+  emit('update', { slots: { ...slots.value, ...patch } })
 }
 
-function patchPipeline(value: FunctionPipeline): void {
-  emit('update', { pipeline: value, binding: undefined })
+/** 槽位里出现「现场填写」时自动登记成节点现场参数，避免两处各填一遍 */
+function syncParameters(next: NodeSlots): void {
+  const names = new Set<string>()
+  for (const call of [next.fetch, next.process, next.present, next.decide]) {
+    for (const value of Object.values(call?.arguments ?? {})) collect(value, names)
+  }
+  const existing = props.node.runtimeInputs ?? []
+  const merged: ManualField[] = [...existing.filter((item) => names.has(item.name))]
+  for (const name of names) {
+    if (!merged.some((item) => item.name === name)) merged.push({ name, type: 'json', required: true })
+  }
+  emit('update', { slots: next, runtimeInputs: merged.length ? merged : undefined })
+}
+
+function collect(value: unknown, names: Set<string>): void {
+  if (!value || typeof value !== 'object') return
+  const argument = value as Record<string, unknown>
+  if (argument.source === 'parameter' && typeof argument.name === 'string' && argument.name) {
+    names.add(argument.name)
+  }
+  for (const item of (argument.items as unknown[]) ?? []) collect(item, names)
+  for (const item of Object.values((argument.fields as Record<string, unknown>) ?? {})) collect(item, names)
+}
+
+function updateSlot(name: keyof NodeSlots, value: SlotCall | undefined): void {
+  const next = { ...slots.value, [name]: value }
+  if (!value) delete next[name]
+  syncParameters(next)
+}
+
+function setConstruct(index: number, value: SlotCall | undefined): void {
+  const list = [...constructs.value]
+  if (value) list[index] = value
+  else list.splice(index, 1)
+  syncParameters({ ...slots.value, constructs: list })
+}
+
+function addConstruct(): void {
+  syncParameters({ ...slots.value, constructs: [...constructs.value, {
+    object: `app${constructs.value.length + 1}`, project: '', interface: '', function: '', arguments: {},
+  }] })
 }
 
 /** 只有同组内多于一条出边时才需要排序；不同分支之间互不影响 */
 const orderGroups = computed(() =>
   (props.successorGroups ?? []).filter((group) => group.items.length > 1),
 )
-
-const codeHint = computed(() => {
-  if (props.doc?.diagnosis) return '调用本次诊断对象的方法，共享初始化数据与按需缓存'
-  // 能不能绑代码由 KIND_META 声明，别再按类型名判断，否则新增可编程类型时这里会拦错
-  if (!KIND_META[props.node.kind].codeCapable) return '该类型由人工完成，不执行代码'
-  if (props.node.kind === 'dataPreparation') return '获取、解析一次，供下游排查共享数据'
-  if (props.node.pipeline?.dataSource) return '复用数据准备结果，只执行展示与判断'
-  if (props.node.pipeline) return '平台依次调用四个阶段，无需编写适配器类'
-  if (props.node.binding?.protocol === 'investigation/v1') return '四阶段排查：缺省采集或判断由人工完成'
-  return props.node.binding ? '已绑定函数，执行时自动判断' : '未绑定函数，执行时由人工判断'
-})
 
 function asText(value: unknown): string {
   return typeof value === 'string' ? value : String(value ?? '')
@@ -94,48 +115,8 @@ function patchField(key: keyof InvestigationFields, value: unknown): void {
   emit('update', { fields: { ...fields.value, [key]: asText(value) } })
 }
 
-function patchBinding(value: DocNode['binding']): void {
-  emit('update', { binding: value })
-}
-
-function patchRuntimeInputs(value: ManualField[]): void {
-  const params = { ...props.node.params }
-  for (const field of value) delete params[field.name]
-  emit('update', { runtimeInputs: value, params: Object.keys(params).length ? params : undefined })
-}
-
 function patchAttachments(value: DocNode['attachments']): void {
   emit('update', { attachments: value })
-}
-
-function addOutputs(raw: string): void {
-  const items = raw
-    .split(/[,，\s]+/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-  if (items.length === 0) {
-    outputDraft.value = ''
-    return
-  }
-  const next = [...outputs.value]
-  for (const item of items) {
-    if (!next.includes(item)) next.push(item)
-  }
-  if (next.length !== outputs.value.length) emit('update', { outputs: next })
-  outputDraft.value = ''
-}
-
-function onOutputInput(value: unknown): void {
-  const text = typeof value === 'string' ? value : String(value ?? '')
-  if (/[,，]$/.test(text)) {
-    addOutputs(text)
-    return
-  }
-  outputDraft.value = text
-}
-
-function removeOutput(name: string): void {
-  emit('update', { outputs: outputs.value.filter((item) => item !== name) })
 }
 
 async function confirmDelete(): Promise<void> {
@@ -153,264 +134,56 @@ async function confirmDelete(): Promise<void> {
 
 /* ---------- 开始节点：启动参数 ---------- */
 
-interface FunctionBinding {
-  key: string
-  project: string
-  name: string
-}
-
 const inputs = computed<StartParam[]>(() => props.node.inputs ?? [])
-
-/** 同一函数可能出现在多个节点，按「工程:函数」去重且保留首次出现顺序 */
-const bindings = computed<FunctionBinding[]>(() => {
-  const seen = new Set<string>()
-  const list: FunctionBinding[] = []
-  const diagnosis = props.doc?.diagnosis
-  if (diagnosis?.project && diagnosis.function) {
-    list.push({ key: `${diagnosis.project}:${diagnosis.function}`,
-      project: diagnosis.project, name: diagnosis.function })
-    seen.add(`${diagnosis.project}:${diagnosis.function}`)
-    for (const node of props.doc?.nodes ?? []) {
-      if (!node.method) continue
-      const name = `${diagnosis.function}.${node.method}`
-      const key = `${diagnosis.project}:${name}`
-      if (!seen.has(key)) list.push({ key, project: diagnosis.project, name })
-      seen.add(key)
-    }
-  }
-  for (const node of props.doc?.nodes ?? []) {
-    const binding = node.pipeline?.acquire ?? (node.pipeline ? undefined : node.binding)
-    const project = binding?.project
-    const name = binding?.function
-    if (!project || !name) continue
-    const key = `${project}:${name}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    list.push({ key, project, name })
-  }
-  return list
-})
-
-const bindingKey = computed(() => bindings.value.map((item) => item.key).join('|'))
-
-const probe = ref<ProbeResult>({})
-const probeError = ref<string | null>(null)
-const probing = ref(false)
-let probeSeq = 0
-
-async function runProbe(): Promise<void> {
-  if (!isStart.value || !props.flowId || !props.doc) return
-  if (bindings.value.length === 0) {
-    probe.value = {}
-    probeError.value = null
-    return
-  }
-  const seq = ++probeSeq
-  probing.value = true
-  try {
-    const result = await probeFlow(props.flowId, props.doc)
-    if (seq !== probeSeq) return
-    probe.value = result
-    probeError.value = null
-  } catch (error) {
-    if (seq !== probeSeq) return
-    probe.value = {}
-    probeError.value = errorText(error, '参数探测失败')
-  } finally {
-    if (seq === probeSeq) probing.value = false
-  }
-}
-
-watch([isStart, bindingKey, () => props.flowId], () => void runProbe(), { immediate: true })
-
-interface ParamRow {
-  key: string
-  name: string
-  /** 不带工程名前缀，写进 StartParam.function */
-  fnName: string
-  type: ParamType
-  required: boolean
-  probeDefault?: unknown
-  global?: StartParam
-  own?: StartParam
-}
-
-interface FunctionGroup {
-  key: string
-  label: string
-  fnName: string
-  error?: string
-  params: ParamRow[]
-}
-
-const groups = computed<FunctionGroup[]>(() =>
-  bindings.value.map((binding) => {
-    // 整工程探测失败时后端按工程名记一条 error，函数级按「工程:函数」记
-    const entry = probe.value[binding.key] ?? probe.value[binding.project]
-    const params = entry?.params ?? []
-    const methodNodes = (props.doc?.nodes ?? []).filter((node) => node.method
-      && binding.name === `${props.doc?.diagnosis?.function}.${node.method}`)
-    const rows: ParamRow[] = params.filter((param) => !methodNodes.length
-      || !methodNodes.every((node) => node.runtimeInputs?.some((field) => field.name === param.name)))
-      .map((param) => {
-      const global = inputs.value.find(
-        (item) => item.scope === 'global' && item.name === param.name,
-      )
-      const own = inputs.value.find(
-        (item) =>
-          item.scope === 'function' &&
-          item.function === binding.name &&
-          item.name === param.name,
-      )
-      return {
-        key: `${binding.key}:${param.name}`,
-        name: param.name,
-        fnName: binding.name,
-        type: normalizeType(own?.type ?? global?.type ?? param.type),
-        required: param.required === true,
-        probeDefault: param.default,
-        global,
-        own,
-      }
-    })
-    return {
-      key: binding.key,
-      label: `${binding.project} / ${binding.name}`,
-      fnName: binding.name,
-      error: entry?.error,
-      params: rows,
-    }
-  }),
-)
-
-const globals = computed(() => inputs.value.filter((item) => item.scope === 'global'))
+const inputName = ref('')
+const inputType = ref<ParamType>('text')
+const inputError = ref('')
 
 function emitInputs(next: StartParam[]): void {
   emit('update', { inputs: next.length ? next : undefined })
 }
 
-function without(list: StartParam[], match: (item: StartParam) => boolean): StartParam[] {
-  return list.filter((item) => !match(item))
+function setInputType(name: string, type: ParamType): void {
+  emitInputs(inputs.value.map((item) => (item.name === name ? { ...item, type } : item)))
 }
 
-function sameFunctionParam(item: StartParam, fnName: string, name: string): boolean {
-  return item.scope === 'function' && item.function === fnName && item.name === name
-}
-
-function describeDefault(value: unknown): string {
-  if (value === undefined || value === null || value === '') return '空'
-  if (typeof value === 'string') return value
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  try {
-    return JSON.stringify(value)
-  } catch {
-    return String(value)
-  }
-}
-
-function placeholderOf(row: ParamRow): string {
-  if (row.global) return `全局默认：${describeDefault(row.global.default)}`
-  if (row.probeDefault !== undefined) return `默认：${describeDefault(row.probeDefault)}`
-  return '未设置'
-}
-
-/** 函数行有值时写函数级参数；清空则该行回到继承（保留类型覆盖） */
-function setFunctionValue(row: ParamRow, value: unknown): void {
-  const base = without(inputs.value, (item) => sameFunctionParam(item, row.fnName, row.name))
-  const prev = row.own
-  const keepType = prev?.type ? { type: prev.type } : {}
-  if (value === undefined) {
-    emitInputs(
-      prev?.type
-        ? [...base, { name: row.name, scope: 'function', function: row.fnName, ...keepType }]
-        : base,
-    )
-    return
-  }
-  emitInputs([
-    ...base,
-    { name: row.name, scope: 'function', function: row.fnName, ...keepType, default: value },
-  ])
-}
-
-function setFunctionType(row: ParamRow, type: ParamType): void {
-  const next = inputs.value.slice()
-  const index = next.findIndex((item) => sameFunctionParam(item, row.fnName, row.name))
-  const entry: StartParam = {
-    name: row.name,
-    scope: 'function',
-    function: row.fnName,
-    type,
-    ...(row.own?.default !== undefined ? { default: row.own.default } : {}),
-  }
-  if (index < 0) next.push(entry)
-  else next[index] = entry
-  emitInputs(next)
-}
-
-function clearOverride(row: ParamRow): void {
-  setFunctionValue(row, undefined)
-}
-
-/** 提升为全局：同名参数进全局区，本函数行退回继承 */
-function promote(row: ParamRow): void {
-  if (row.global) return
-  const base = without(inputs.value, (item) => sameFunctionParam(item, row.fnName, row.name))
-  const value = row.own?.default !== undefined ? row.own.default : row.probeDefault
-  emitInputs([
-    ...base,
-    {
-      name: row.name,
-      scope: 'global',
-      type: row.type,
-      ...(value !== undefined ? { default: value } : {}),
-    },
-  ])
-}
-
-function setGlobalType(name: string, type: ParamType): void {
-  const next = inputs.value.map((item) =>
-    item.scope === 'global' && item.name === name ? { ...item, type } : item,
-  )
-  emitInputs(next)
-}
-
-function setGlobalValue(name: string, value: unknown): void {
-  const next = inputs.value.map((item) => {
-    if (item.scope !== 'global' || item.name !== name) return item
+function setInputValue(name: string, value: unknown): void {
+  emitInputs(inputs.value.map((item) => {
+    if (item.name !== name) return item
     const copy: StartParam = { ...item }
     if (value === undefined) delete copy.default
     else copy.default = value
     return copy
-  })
-  emitInputs(next)
+  }))
 }
 
-function demote(name: string): void {
-  emitInputs(without(inputs.value, (item) => item.scope === 'global' && item.name === name))
+function removeInput(name: string): void {
+  emitInputs(inputs.value.filter((item) => item.name !== name))
 }
 
-function onGlobalType(name: string, value: unknown): void {
-  setGlobalType(name, normalizeType(String(value)))
-}
-
-function onFunctionType(row: ParamRow, value: unknown): void {
-  setFunctionType(row, normalizeType(String(value)))
-}
-
-function addGlobalInput(): void {
+function addInput(): void {
   const name = inputName.value.trim()
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
     inputError.value = '参数名请使用英文字母、数字和下划线，且不能以数字开头'
     return
   }
-  if (inputs.value.some((item) => item.scope === 'global' && item.name === name)) {
-    inputError.value = '该全局参数已存在'
+  if (inputs.value.some((item) => item.name === name)) {
+    inputError.value = '该启动参数已存在'
     return
   }
-  emitInputs([...inputs.value, { name, scope: 'global', type: inputType.value }])
+  emitInputs([...inputs.value, { name, type: inputType.value }])
   inputName.value = ''
   inputError.value = ''
+}
+
+function onInputType(name: string, value: unknown): void {
+  setInputType(name, normalizeType(String(value)))
+}
+
+/* ---------- 现场参数 ---------- */
+
+function patchRuntimeInputs(value: ManualField[]): void {
+  emit('update', { runtimeInputs: value.length ? value : undefined })
 }
 </script>
 
@@ -423,264 +196,196 @@ function addGlobalInput(): void {
       <span class="node-id">{{ node.id }}</span>
     </div>
 
-    <label class="label">标题</label>
-    <el-input
-      :model-value="node.title"
-      :disabled="readonly"
-      :placeholder="isStart ? '例如：开始诊断' : '例如：检查母线电压'"
-      @update:model-value="patchText('title', $event)"
-    />
-
-    <template v-if="isStart">
-      <div class="section-title">全局参数</div>
-      <div class="section-hint">所有函数都能读到；函数行同名参数默认继承这里的值</div>
-      <div v-if="!globals.length" class="section-hint muted">
-        还没有全局参数，可从函数参数行提升，或直接添加诊断输入
-      </div>
-      <template v-if="allowsCustomInputs && !readonly">
-        <label for="global-input-name" class="label">新增诊断输入</label>
-        <el-input id="global-input-name" v-model="inputName" placeholder="例如 device_id" />
-        <el-select v-model="inputType" aria-label="新增诊断输入类型">
-          <el-option
-            v-for="option in PARAM_TYPES" :key="option.value"
-            :label="option.label" :value="option.value"
-          />
-        </el-select>
-        <el-button @click="addGlobalInput">添加全局参数</el-button>
-        <div v-if="inputError" class="section-hint error" role="alert">{{ inputError }}</div>
-      </template>
-      <div v-for="item in globals" :key="item.name" class="param-row">
-        <div class="param-line">
-          <span class="param-name" :title="item.name">{{ item.name }}</span>
-          <el-select
-            :model-value="item.type ?? 'text'"
+    <el-collapse v-model="opened" class="sections">
+      <el-collapse-item name="basic" title="基本信息">
+        <div class="section-body">
+          <label class="label">标题</label>
+          <el-input
+            :model-value="node.title"
             :disabled="readonly"
-            size="small"
-            class="type-select"
-            @update:model-value="onGlobalType(item.name, $event)"
-          >
-            <el-option
-              v-for="option in PARAM_TYPES"
-              :key="option.value"
-              :label="option.label"
-              :value="option.value"
-            />
-          </el-select>
-          <el-button v-if="!readonly" link size="small" @click="demote(item.name)">
-            取消全局
-          </el-button>
-        </div>
-        <ParamValueInput
-          :model-value="item.default"
-          :type="item.type ?? 'text'"
-          :readonly="readonly"
-          placeholder="全局默认值"
-          @update:model-value="setGlobalValue(item.name, $event)"
-        />
-      </div>
+            :placeholder="isStart ? '例如：开始诊断' : '例如：检查母线电压'"
+            @update:model-value="patchText('title', $event)"
+          />
 
-      <div class="section-title">函数参数</div>
-      <div class="section-hint" v-if="probing">正在读取函数签名…</div>
-      <div v-if="probeError" class="section-hint error">{{ probeError }}</div>
-      <div v-if="!bindings.length" class="section-hint muted">
-        未配置获取函数时，可为人工取数直接添加全局诊断输入
-      </div>
-
-      <div v-for="group in groups" :key="group.key" class="fn-group">
-        <div class="fn-label">{{ group.label }}</div>
-        <div v-if="group.error" class="section-hint error">{{ group.error }}</div>
-        <div v-else-if="!group.params.length" class="section-hint muted">该函数没有参数</div>
-        <div
-          v-for="row in group.params"
-          :key="row.key"
-          class="param-row"
-          :class="{ inherit: Boolean(row.global) && row.own?.default === undefined }"
-        >
-          <div class="param-line">
-            <span class="param-name" :title="row.name">{{ row.name }}</span>
-            <el-tag v-if="row.required" size="small" type="danger" effect="plain">必填</el-tag>
-            <el-select
-              :model-value="row.type"
+          <template v-if="!isStart">
+            <label class="label">详细内容</label>
+            <el-input
+              :model-value="node.detail"
               :disabled="readonly"
-              size="small"
-              class="type-select"
-              @update:model-value="onFunctionType(row, $event)"
-            >
+              type="textarea"
+              :rows="3"
+              placeholder="这一节点要做什么、看什么"
+              @update:model-value="patchText('detail', $event)"
+            />
+          </template>
+
+          <template v-if="node.kind === 'investigation'">
+            <label class="label">观察对象</label>
+            <el-input
+              :model-value="fields.observation"
+              :disabled="readonly"
+              placeholder="例如：母线电压"
+              @update:model-value="patchField('observation', $event)"
+            />
+            <label class="label">取数方式</label>
+            <el-input
+              :model-value="fields.acquisition"
+              :disabled="readonly"
+              placeholder="例如：调用数据服务器读取 voltage"
+              @update:model-value="patchField('acquisition', $event)"
+            />
+            <label class="label">判定标准</label>
+            <el-input
+              :model-value="fields.assessment"
+              :disabled="readonly"
+              placeholder="例如：低于 210V 判为异常"
+              @update:model-value="patchField('assessment', $event)"
+            />
+          </template>
+        </div>
+      </el-collapse-item>
+
+      <el-collapse-item v-if="isStart" name="inputs" title="启动参数">
+        <div class="section-body">
+          <div class="section-hint">发布时冻结成执行页表单；槽位里的参数来源选「启动输入」即可引用</div>
+          <div v-if="!inputs.length" class="section-hint muted">还没有启动参数</div>
+          <template v-if="!readonly">
+            <label for="input-name" class="label">新增启动参数</label>
+            <el-input id="input-name" v-model="inputName" placeholder="例如 device_id"
+              @keyup.enter="addInput" />
+            <el-select v-model="inputType" aria-label="新增启动参数类型">
               <el-option
-                v-for="option in PARAM_TYPES"
-                :key="option.value"
-                :label="option.label"
-                :value="option.value"
+                v-for="option in PARAM_TYPES" :key="option.value"
+                :label="option.label" :value="option.value"
               />
             </el-select>
-            <el-button
-              v-if="!readonly && !row.global"
-              link
-              size="small"
-              type="primary"
-              @click="promote(row)"
-            >
-              提升为全局
-            </el-button>
-            <el-button
-              v-else-if="!readonly && row.own?.default !== undefined"
-              link
-              size="small"
-              @click="clearOverride(row)"
-            >
-              恢复继承
-            </el-button>
-            <span v-else-if="row.global" class="inherit-tag">继承全局</span>
+            <el-button @click="addInput">添加启动参数</el-button>
+            <div class="section-hint muted">填了名字要点「添加启动参数」（或回车）才会出现在上面的列表里</div>
+            <div v-if="inputError" class="section-hint error" role="alert">{{ inputError }}</div>
+          </template>
+          <div v-for="item in inputs" :key="item.name" class="param-row">
+            <div class="param-line">
+              <span class="param-name" :title="item.name">{{ item.name }}</span>
+              <el-select
+                :model-value="item.type ?? 'text'"
+                :disabled="readonly"
+                size="small"
+                class="type-select"
+                @update:model-value="onInputType(item.name, $event)"
+              >
+                <el-option
+                  v-for="option in PARAM_TYPES"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+              <el-button v-if="!readonly" link size="small" @click="removeInput(item.name)">
+                删除
+              </el-button>
+            </div>
+            <ParamValueInput
+              :model-value="item.default"
+              :type="item.type ?? 'text'"
+              :readonly="readonly"
+              placeholder="默认值"
+              @update:model-value="setInputValue(item.name, $event)"
+            />
           </div>
-          <ParamValueInput
-            :model-value="row.own?.default"
-            :type="row.type"
-            :readonly="readonly"
-            :placeholder="placeholderOf(row)"
-            @update:model-value="setFunctionValue(row, $event)"
-          />
         </div>
-      </div>
+      </el-collapse-item>
 
-      <div class="section-hint">
-        参数由所选入口的签名推导，也可添加全局诊断输入。默认值随发布保存，执行时可再改。
-      </div>
-    </template>
+      <el-collapse-item name="slots" :title="isStart ? '接入口径与取数' : '接入口径与数据'">
+        <div class="section-body">
+          <div class="section-hint">
+            {{ isStart
+              ? '每个槽位填一个外接工程的公开方法；构造出的对象在后续节点按名字引用。'
+              : '固定链：拉取 → 处理 → 展示 → 判定，只在节点内传值；要数据就自己取。' }}
+          </div>
 
-    <template v-else>
-      <label class="label">详细内容</label>
-      <el-input
-        :model-value="node.detail"
-        :disabled="readonly"
-        type="textarea"
-        :rows="3"
-        placeholder="这一节点要做什么、看什么"
-        @update:model-value="patchText('detail', $event)"
-      />
+          <template v-if="isStart">
+            <SlotCallEditor v-for="(call, index) in constructs" :key="`c${index}`"
+              :title="`构造 ${index + 1}`" hint="开始节点实例化外接工程的对象，其余槽位按对象名引用"
+              :value="call" construct :inputs="startInputs" :parameters="[]"
+              :readonly="readonly" @update="setConstruct(index, $event)" />
+            <el-button v-if="!readonly" size="small" @click="addConstruct">添加构造对象</el-button>
+            <div v-if="!constructs.length" class="section-hint muted">
+              可不填；不构造对象时，后面的槽位只能选模块级函数
+            </div>
 
-      <template v-if="node.kind === 'investigation'">
-        <div class="section-title">排查说明</div>
-        <label class="label">观察对象</label>
-        <el-input
-          :model-value="fields.observation"
-          :disabled="readonly"
-          placeholder="例如：母线电压"
-          @update:model-value="patchField('observation', $event)"
-        />
-        <label class="label">取数方式</label>
-        <el-input
-          :model-value="fields.acquisition"
-          :disabled="readonly"
-          placeholder="例如：调用数据服务器读取 voltage"
-          @update:model-value="patchField('acquisition', $event)"
-        />
-        <label class="label">判定标准</label>
-        <el-input
-          :model-value="fields.assessment"
-          :disabled="readonly"
-          placeholder="例如：低于 210V 判为异常"
-          @update:model-value="patchField('assessment', $event)"
-        />
-      </template>
+            <SlotCallEditor key="start-fetch" title="拉取数据" hint="可选；取到的数据由方法自己存进对象，后续节点从对象里取" allow-cache
+              :value="slots.fetch" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+              :readonly="readonly" @update="updateSlot('fetch', $event)" />
+            <SlotCallEditor key="start-process" title="处理数据" hint="可选；上一槽的返回值用「上一槽结果」接收"
+              :value="slots.process" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+              :allow-previous="hasFetch" :readonly="readonly" @update="updateSlot('process', $event)" />
+          </template>
 
-      <div class="section-title">参数绑定</div>
-      <div class="section-hint">{{ codeHint }}</div>
-      <el-select
-        v-if="node.kind === 'investigation' && !doc?.diagnosis" :model-value="connectionMode" :disabled="readonly"
-        aria-label="排查接入方式" @change="changeConnectionMode"
-      >
-        <el-option label="分别选择四阶段函数" value="functions" />
-        <el-option label="原有函数或适配器类" value="legacy" />
-      </el-select>
-      <DiagnosisMethodEditor
-        v-if="node.kind === 'investigation' && doc?.diagnosis"
-        :diagnosis="doc.diagnosis" :value="node.method" :inputs="node.runtimeInputs" :readonly="readonly"
-        @update="emit('update', { method: $event, runtimeInputs: [], pipeline: undefined, binding: undefined })"
-        @update-inputs="patchRuntimeInputs"
-      />
-      <FunctionPipelineEditor
-        v-else-if="node.kind === 'dataPreparation'
-          || (node.kind === 'investigation' && connectionMode === 'functions')"
-        :key="node.id" :value="pipelineValue" :readonly="readonly"
-        :preparation="node.kind === 'dataPreparation'" :doc="doc" :node-id="node.id"
-        @update="patchPipeline"
-      />
-      <BindingEditor
-        v-else-if="node.kind === 'investigation'"
-        :binding="node.binding"
-        :readonly="readonly"
-        @update="patchBinding"
-      />
+          <template v-else-if="node.kind === 'investigation'">
+            <SlotCallEditor key="fetch" title="拉取数据" hint="可选；取到的数据由方法自己存进对象，后续节点从对象里取" allow-cache
+              :value="slots.fetch" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+              :readonly="readonly" @update="updateSlot('fetch', $event)" />
+            <SlotCallEditor key="process" title="处理数据" hint="可选；接收本节点拉取的结果"
+              :value="slots.process" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+              :allow-previous="hasFetch" :readonly="readonly" @update="updateSlot('process', $event)" />
+            <SlotCallEditor key="present" title="展示数据" hint="必填；用本节点拉取或处理的结果来画" required show-view
+              :value="slots.present" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+              :allow-previous="hasFetch || hasProcess" :readonly="readonly" @update="updateSlot('present', $event)" />
+            <SlotCallEditor key="decide" title="判定结果" hint="必填；可用本节点拉取、处理的结果或展示结果来判" required allow-human
+              :value="slots.decide" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
+              :allow-previous="hasFetch || hasProcess" :allow-presentation="Boolean(slots.present)"
+              :readonly="readonly" @update="updateSlot('decide', $event)" />
 
-      <template v-if="node.binding || node.pipeline || node.method">
-        <div class="section-title">输出字段</div>
-        <div class="tag-input">
-          <el-tag
-            v-for="item in outputs"
-            :key="item"
-            size="small"
-            :closable="!readonly"
-            @close="removeOutput(item)"
-          >
-            {{ item }}
-          </el-tag>
-          <el-input
-            v-if="!readonly"
-            :model-value="outputDraft"
-            size="small"
-            placeholder="输入后回车或逗号"
-            class="tag-field"
-            @update:model-value="onOutputInput"
-            @keydown.enter.prevent="addOutputs(outputDraft)"
-            @blur="addOutputs(outputDraft)"
-          />
+            <div v-if="node.runtimeInputs?.length" class="section-hint">
+              现场参数：{{ node.runtimeInputs.map((item) => `${item.name}（${item.type}）`).join('、') }}
+            </div>
+          </template>
+
+          <div v-else class="section-hint muted">这类节点不接代码，完成情况由人工确认。</div>
         </div>
-        <div class="section-hint">该函数返回结构里的字段名，供下游节点绑定；判据是布尔值的函数可留空</div>
-      </template>
+      </el-collapse-item>
 
-    <template v-if="orderGroups.length">
-      <div class="section-title">执行顺序</div>
-      <div class="order-groups">
-        <div v-for="group in orderGroups" :key="group.branch" class="order-group">
-          <div class="order-group-head">{{ group.label }}</div>
-          <div class="order-list">
-            <div v-for="(item, index) in group.items" :key="item.edgeId" class="order-row">
-              <span class="order-index">{{ index + 1 }}</span>
-              <span class="order-title">{{ item.title }}</span>
-              <el-button-group size="small">
-                <el-button
-                  :disabled="readonly || index === 0"
-                  @click="emit('reorder', item.edgeId, -1)"
-                >
-                  ↑
-                </el-button>
-                <el-button
-                  :disabled="readonly || index === group.items.length - 1"
-                  @click="emit('reorder', item.edgeId, 1)"
-                >
-                  ↓
-                </el-button>
-              </el-button-group>
+      <el-collapse-item v-if="!isStart && orderGroups.length" name="order" title="执行顺序">
+        <div class="section-body">
+          <div class="order-groups">
+            <div v-for="group in orderGroups" :key="group.branch" class="order-group">
+              <div class="order-group-head">{{ group.label }}</div>
+              <div class="order-list">
+                <div v-for="(item, index) in group.items" :key="item.edgeId" class="order-row">
+                  <span class="order-index">{{ index + 1 }}</span>
+                  <span class="order-title">{{ item.title }}</span>
+                  <el-button-group size="small">
+                    <el-button
+                      :disabled="readonly || index === 0"
+                      @click="emit('reorder', item.edgeId, -1)"
+                    >
+                      ↑
+                    </el-button>
+                    <el-button
+                      :disabled="readonly || index === group.items.length - 1"
+                      @click="emit('reorder', item.edgeId, 1)"
+                    >
+                      ↓
+                    </el-button>
+                  </el-button-group>
+                </div>
+              </div>
             </div>
           </div>
+          <div class="section-hint">同组内按顺序执行；运行模式与并行上限在启动时选择</div>
         </div>
-      </div>
-      <div class="section-hint">
-        {{
-          mode === 'serial'
-            ? '串行模式按各组内的顺序依次尝试，失败自动换下一条'
-            : '并行模式同时执行，顺序只影响同组内的队列排布'
-        }}
-      </div>
-    </template>
+      </el-collapse-item>
 
-      <div class="section-title">附件</div>
-      <AttachmentField
-        :attachments="node.attachments"
-        :readonly="readonly"
-        @update="patchAttachments"
-      />
-    </template>
+      <el-collapse-item name="attachments" title="附件">
+        <div class="section-body">
+          <AttachmentField
+            :attachments="node.attachments"
+            :readonly="readonly"
+            @update="patchAttachments"
+          />
+        </div>
+      </el-collapse-item>
+    </el-collapse>
 
     <el-button
       v-if="!readonly && !isStart"
@@ -695,6 +400,70 @@ function addGlobalInput(): void {
 </template>
 
 <style scoped>
+.sections {
+  border-top: 0;
+  border-bottom: 0;
+}
+
+/* 分组用发丝线分隔，不再用整条色块标题栏：标题只占文字宽度，视觉重量交给留白 */
+.sections :deep(.el-collapse-item) {
+  border: 0;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.sections :deep(.el-collapse-item:first-child) {
+  border-top: 0;
+}
+
+.sections :deep(.el-collapse-item__header) {
+  height: 34px;
+  padding: 0 4px;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--el-text-color-primary);
+}
+
+.sections :deep(.el-collapse-item__header:hover) {
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+}
+
+/* 2px 短竖条代替整条色带，既标明分组起点，又不抢正文注意力 */
+.sections :deep(.el-collapse-item__header)::before {
+  content: '';
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+  background: var(--el-color-primary);
+}
+
+.sections :deep(.el-collapse-item__arrow) {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--el-text-color-tertiary);
+}
+
+/* 折叠体高度不要锁死：选完接口会新增参数，锁了高度就会被裁掉一截 */
+.sections :deep(.el-collapse-item__wrap) {
+  height: auto !important;
+  overflow: visible;
+  border-bottom: 0;
+}
+
+.sections :deep(.el-collapse-item__content) {
+  padding: 4px 4px 14px;
+}
+
+.section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .node-panel {
   display: flex;
   flex-direction: column;
@@ -755,17 +524,6 @@ function addGlobalInput(): void {
   width: 100%;
 }
 
-.tag-input {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.tag-field {
-  width: 100%;
-}
-
 .order-list {
   display: flex;
   flex-direction: column;
@@ -807,32 +565,12 @@ function addGlobalInput(): void {
   text-overflow: ellipsis;
 }
 
-.fn-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.fn-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--el-text-color-regular);
-  padding: 2px 6px;
-  border-left: 2px solid var(--el-color-primary);
-  background: var(--el-fill-color-light);
-}
-
 .param-row {
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 4px 6px;
   border-radius: 4px;
-}
-
-.param-row.inherit {
-  background: var(--el-fill-color-lighter);
 }
 
 .param-line {
@@ -853,16 +591,5 @@ function addGlobalInput(): void {
 .type-select {
   width: 78px;
   flex: none;
-}
-
-.inherit-tag {
-  flex: none;
-  font-size: 11px;
-  color: var(--el-text-color-placeholder);
-}
-
-.param-row.inherit :deep(.el-input__wrapper) {
-  background: var(--el-fill-color-blank);
-  box-shadow: 0 0 0 1px var(--el-border-color-lighter) inset;
 }
 </style>

@@ -82,24 +82,20 @@ def start_node(doc: dict) -> dict | None:
     return nodes[0] if nodes else None
 
 
-def _signature_index(probed: dict) -> tuple[dict[str, list[dict]], dict[str, dict[str, dict]]]:
-    """把 probe_doc 的结果拆成「全局按参数名」和「按函数」两张索引。"""
+def _signature_index(probed: dict) -> dict[str, list[dict]]:
+    """把 probe_doc 的结果按参数名索引；组合配置下启动参数都是全局的。"""
     by_name: dict[str, list[dict]] = {}
-    by_function: dict[str, dict[str, dict]] = {}
-    for key, value in (probed or {}).items():
+    for value in (probed or {}).values():
         if not isinstance(value, list):
             continue
-        function = str(key).rpartition(":")[2]
-        table = by_function.setdefault(function, {})
         for param in value:
             if not isinstance(param, dict):
                 continue
             name = str(param.get("name") or "")
             if not name:
                 continue
-            table[name] = param
             by_name.setdefault(name, []).append(param)
-    return by_name, by_function
+    return by_name
 
 
 def _declared_type(value) -> str | None:
@@ -122,8 +118,8 @@ def _annotation_type(annotation) -> str:
 def freeze_inputs(doc: dict, probed: dict) -> list[dict]:
     """把开始节点声明的参数与真实签名合成执行页的启动表单。
 
-    参数清单直接用编译器的 StartParams，保证「发布时冻结的表单」和「编译期绑定的来源」
-    是同一份口径（老文档的 snapshotFields 也会被当作全局参数）。
+    参数清单直接用编译器的 StartParams，保证「发布时冻结的表单」和「编译期槽位里的来源」
+    是同一份口径。
     冻结的意义：发布后改 doc 或改函数签名，老版本的表单不能跟着变。
     required 取签名该参数有无默认值；作者在设计期给了默认值就不算必填，执行页预填即可。
     签名默认值只有 defaultTrusted 时才写进表单：repr 兜底的值不是真值，写进去等于预填假数据。
@@ -133,26 +129,17 @@ def freeze_inputs(doc: dict, probed: dict) -> list[dict]:
         return []
 
     declared = _declared_inputs(start_node(doc))
-    by_name, by_function = _signature_index(probed)
+    by_name = _signature_index(probed)
     frozen: list[dict] = []
     for spec in specs:
         name = str(spec.get("name") or "")
         if not name:
             continue
-        scope = "function" if spec.get("scope") == "function" else "global"
-        function = (str(spec.get("function") or "").strip() or None) if scope == "function" else None
-        if function and _runtime_only(doc, function, name):
-            continue
 
-        item = declared.get((scope, function or "", name), {})
+        item = declared.get(name, {})
         has_declared = "default" in item
         declared_default = item.get("default")
-
-        if scope == "function" and function:
-            signature = (by_function.get(function) or {}).get(name)
-            matched = [signature] if signature else []
-        else:
-            matched = by_name.get(name, [])
+        matched = by_name.get(name, [])
 
         if matched:
             required = any(bool(param.get("required", True)) for param in matched)
@@ -168,7 +155,7 @@ def freeze_inputs(doc: dict, probed: dict) -> list[dict]:
                 None,
             )
         else:
-            # 签名里查不到（函数没被绑定 / 探不到），只能按作者是否给了默认值判断
+            # 签名里查不到（启动参数还没被任何操作引用），只能按作者是否给了默认值判断
             required = True
             annotation = None
             signature_default = None
@@ -176,8 +163,6 @@ def freeze_inputs(doc: dict, probed: dict) -> list[dict]:
         frozen.append(
             {
                 "name": name,
-                "scope": scope,
-                "function": function,
                 "type": _declared_type(item.get("type")) or _annotation_type(annotation),
                 "required": required and not has_declared,
                 "default": declared_default if has_declared else signature_default,
@@ -186,28 +171,16 @@ def freeze_inputs(doc: dict, probed: dict) -> list[dict]:
     return frozen
 
 
-def _runtime_only(doc: dict, function: str, name: str) -> bool:
-    diagnosis = doc.get("diagnosis") or {}
-    nodes = [node for node in doc.get("nodes", [])
-             if node.get("method") and function == f"{diagnosis.get('function')}.{node['method']}"]
-    # 同一方法的其他节点仍可能在启动时取参，不能因为一个节点改成现场输入就一起移除。
-    return bool(nodes) and all(any(field.get("name") == name
-                                  for field in node.get("runtimeInputs", [])) for node in nodes)
-
-
-def _declared_inputs(node: dict | None) -> dict[tuple[str, str, str], dict]:
-    """开始节点原始 inputs，按 (scope, function, name) 索引，供冻结时取作者填的类型与默认值。"""
+def _declared_inputs(node: dict | None) -> dict[str, dict]:
+    """开始节点原始 inputs，按名称索引，供冻结时取作者填的类型与默认值。"""
     raw = (node or {}).get("inputs")
-    result: dict[tuple[str, str, str], dict] = {}
+    result: dict[str, dict] = {}
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "").strip()
-        if not name:
-            continue
-        scope = "function" if item.get("scope") == "function" else "global"
-        function = str(item.get("function") or "").strip() if scope == "function" else ""
-        result.setdefault((scope, function, name), item)
+        if name:
+            result.setdefault(name, item)
     return result
 
 

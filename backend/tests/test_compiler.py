@@ -1,11 +1,13 @@
-"""validate_doc / compile_doc 的行为测试（spec 第 4、5 节）。"""
+"""validate_doc / compile_doc 的行为测试（spec 第 4、5、6 节）。
+
+v1.17 只有一种接入方式：节点槽位；每个槽位填一个外接工程的公开方法，
+参数来源只有固定值、启动输入、现场参数和上一槽结果四种。
+"""
 
 from __future__ import annotations
 
-import copy
 import json
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -18,17 +20,33 @@ from app.services.compiler import ValidationError, compile_doc, validate_doc
 from app.services.rules import can_connect, is_single_successor
 
 START_ID = "start"
+PROJECT = "冷却系统"
+MODULE = "motor"
+
+
+def construct(name: str = "motor") -> dict:
+    return {
+        "object": name, "project": PROJECT, "module": MODULE,
+        "interface": "Motor", "function": "Motor", "arguments": {},
+    }
+
+
+def slot(function: str, arguments: dict | None = None, **extra) -> dict:
+    return {
+        "object": "motor", "project": PROJECT, "module": MODULE,
+        "interface": f"Motor.{function}", "function": function,
+        "arguments": arguments or {}, **extra,
+    }
 
 
 def base_doc() -> dict:
-    """新格式：开始节点 → 排查 → 结论 → 处置 → 问题解决 / 上升。"""
+    """开始（构造）→ 排查（拉取／处理／展示／判定）→ 结论 → 处置 → 问题解决 / 上升。"""
     return {
         "format": 1,
         "name": "冷却系统诊断",
-        "mode": "parallel",
         "nodes": [
-            _start_node([{"name": "voltage", "scope": "global", "type": "number"}]),
-            _node("n1", "investigation", "检查母线电压", "读取母线电压是否低于 210V", code=True),
+            _start_node([{"name": "device", "type": "text"}], [construct()]),
+            _investigation("n1"),
             _node("c1", "conclusion", "电压不足", "母线电压低于 210V"),
             _node("n3", "remediation", "调整稳压器", "把稳压器输出调到 220V"),
             _node("n5", "problemSolved", "问题解决", "电压恢复正常"),
@@ -44,18 +62,10 @@ def base_doc() -> dict:
     }
 
 
-def legacy_doc() -> dict:
-    """旧格式：没有 start 节点，用 snapshotFields 表示全局参数。"""
-    doc = base_doc()
-    doc["nodes"] = [node for node in doc["nodes"] if node["id"] != START_ID]
-    doc["edges"] = [edge for edge in doc["edges"] if edge["from"] != START_ID]
-    doc["snapshotFields"] = ["voltage"]
-    return doc
-
-
-def _start_node(inputs: list[dict] | None = None) -> dict:
+def _start_node(inputs: list[dict] | None = None, constructs: list[dict] | None = None,
+                nid: str = START_ID) -> dict:
     node = {
-        "id": START_ID,
+        "id": nid,
         "kind": "start",
         "title": "开始",
         "detail": "",
@@ -63,20 +73,28 @@ def _start_node(inputs: list[dict] | None = None) -> dict:
     }
     if inputs is not None:
         node["inputs"] = inputs
+    if constructs is not None:
+        node["slots"] = {"constructs": constructs}
     return node
 
 
-def _node(nid, kind, title, detail, code=False) -> dict:
-    node = {"id": nid, "kind": kind, "title": title, "detail": detail, "position": {"x": 0, "y": 0}}
-    if kind == "investigation":
-        node["fields"] = {
-            "observation": "母线电压",
-            "acquisition": "调用数据服务器读取 voltage",
-            "assessment": "低于 210V 判为异常",
-        }
-        if code:
-            node["binding"] = {"project": "cooling", "function": "judge_voltage"}
-            node["outputs"] = ["voltage"]
+def _node(nid, kind, title, detail) -> dict:
+    return {"id": nid, "kind": kind, "title": title, "detail": detail,
+            "position": {"x": 0, "y": 0}}
+
+
+def _investigation(nid: str, slots: dict | None = None) -> dict:
+    node = _node(nid, "investigation", "检查母线电压", "读取母线电压是否低于 210V")
+    node["fields"] = {
+        "observation": "母线电压",
+        "acquisition": "调用数据服务器读取 voltage",
+        "assessment": "低于 210V 判为异常",
+    }
+    node["slots"] = slots if slots is not None else {
+        "fetch": slot("voltage", {"device": {"source": "input", "name": "device"}}),
+        "present": slot("plot", view="image"),
+        "decide": slot("judge", {"value": {"source": "previous"}}),
+    }
     return node
 
 
@@ -96,10 +114,19 @@ def node(doc: dict, nid: str) -> dict:
     return next(item for item in doc["nodes"] if item["id"] == nid)
 
 
-VOLTAGE_SIGNATURE = {
-    "cooling:judge_voltage": [
-        {"name": "voltage", "type": "float", "required": True, "default": None}
-    ]
+SIGNATURES = {
+    f"{PROJECT}:{MODULE}:Motor": [],
+    f"{PROJECT}:{MODULE}:Motor.voltage": [
+        {"name": "device", "type": "str", "required": True, "default": None},
+        {"name": "$keywords", "type": "no", "required": False, "default": None},
+    ],
+    f"{PROJECT}:{MODULE}:Motor.plot": [
+        {"name": "$keywords", "type": "no", "required": False, "default": None},
+    ],
+    f"{PROJECT}:{MODULE}:Motor.judge": [
+        {"name": "value", "type": "any", "required": False, "default": None},
+        {"name": "$keywords", "type": "no", "required": False, "default": None},
+    ],
 }
 
 
@@ -108,911 +135,383 @@ VOLTAGE_SIGNATURE = {
 
 def test_valid_doc_compiles_to_plan():
     doc = base_doc()
-    # 无签名时只给 warning，不阻断
     assert errors(doc) == []
 
-    plan = compile_doc(doc, "f1", 3)
+    plan = compile_doc(doc, "f1", 3, functions=SIGNATURES)
 
     assert plan["format"] == 1
     assert plan["flowId"] == "f1"
     assert plan["release"] == 3
-    assert plan["mode"] == "parallel"
     assert plan["entry"] == START_ID
-    assert plan["signature"] == {}
-    # steps 按节点 id 排序写入，保证同一 doc 编译结果可复现
-    assert list(plan["steps"]) == sorted(plan["steps"])
-
-    n1 = plan["steps"]["n1"]
-    assert n1["call"]["project"] == "cooling"
-    assert n1["call"]["function"] == "judge_voltage"
-    assert n1["call"]["args"] == {"voltage": {"snapshot": "voltage"}}
-    assert n1["next"] == {"yes": ["c1"], "no": ["n9"]}
-
-    assert plan["steps"]["c1"]["text"] == "母线电压低于 210V"
-    assert plan["steps"]["c1"]["next"] == {"default": ["n3"]}
-    assert plan["steps"]["n3"]["human"] is True
-    assert plan["steps"]["n5"]["terminal"] is True
-    assert plan["steps"]["n9"]["terminal"] is True
+    assert "composition" not in plan
+    assert "mode" not in plan
 
 
-def test_start_step_has_only_kind_and_next():
-    plan = compile_doc(base_doc(), "f1", 1)
+def test_start_step_carries_constructs():
+    plan = compile_doc(base_doc(), "f1", 1, functions=SIGNATURES)
+    step = plan["steps"][START_ID]
+    assert step["kind"] == "start"
+    assert step["next"] == {"default": ["n1"]}
+    assert step["slots"]["constructs"][0]["object"] == "motor"
 
-    assert plan["steps"][START_ID] == {"kind": "start", "next": {"default": ["n1"]}}
+
+def test_investigation_step_carries_slot_chain():
+    plan = compile_doc(base_doc(), "f1", 1, functions=SIGNATURES)
+    step = plan["steps"]["n1"]
+    assert step["next"] == {"yes": ["c1"], "no": ["n9"]}
+    assert step["slots"]["fetch"]["function"] == "voltage"
+    assert step["slots"]["present"]["view"] == "image"
+    assert step["slots"]["decide"]["function"] == "judge"
+    assert step["slots"]["decide"]["fingerprint"] == ""
+
+
+def test_cache_switch_compiled_into_step():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["fetch"]["useCache"] = False
+    step = compile_doc(doc, "f1", 1, functions=SIGNATURES)["steps"]["n1"]
+    assert step["slots"]["fetch"]["useCache"] is False
+
+
+def test_cache_switch_rejected_outside_fetch():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["present"]["useCache"] = False
+    assert "只有拉取槽会缓存" in messages(doc)
+
+
+def test_runtime_inputs_compiled_into_step():
+    doc = base_doc()
+    node(doc, "n1")["runtimeInputs"] = [{"name": "scale", "type": "number"}]
+    step = compile_doc(doc, "f1", 1, functions=SIGNATURES)["steps"]["n1"]
+    assert step["runtimeInputs"] == [{"name": "scale", "type": "number"}]
+
+
+def test_human_decide_keeps_slots():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["decide"] = {"human": True}
+    plan = compile_doc(doc, "f1", 1, functions=SIGNATURES)
+    assert plan["steps"]["n1"]["slots"]["decide"] == {"human": True}
+    assert not plan["steps"]["n1"].get("human")
+
+
+def test_investigation_without_slots_is_human():
+    doc = base_doc()
+    node(doc, "n1").pop("slots")
+    doc["nodes"][0]["slots"] = {"constructs": [construct()]}
+    plan = compile_doc(doc, "f1", 1, functions=SIGNATURES)
+    assert plan["steps"]["n1"]["human"] is True
 
 
 def test_start_supports_multiple_successors():
     doc = base_doc()
-    doc["nodes"].append(_node("n0", "investigation", "旁路排查", "另开一条排查线"))
-    doc["edges"].append({"id": "s2", "from": START_ID, "to": "n0", "order": 2})
-    doc["edges"].append({"id": "e10", "from": "n0", "to": "n9", "branch": "yes", "order": 1})
-
+    doc["nodes"].append(_investigation("n2"))
+    doc["edges"].append({"id": "s2", "from": START_ID, "to": "n2", "order": 2})
+    doc["edges"].append({"id": "e5", "from": "n2", "to": "n9", "branch": "no", "order": 1})
     assert errors(doc) == []
-    plan = compile_doc(doc, "f1", 1)
-    # 多出边按 order 排序，运行时一次全部投递
-    assert plan["steps"][START_ID]["next"] == {"default": ["n1", "n0"]}
-
-
-def test_human_investigation_has_no_call():
-    doc = base_doc()
-    del node(doc, "n1")["binding"]
-    del node(doc, "n1")["outputs"]
-
-    plan = compile_doc(doc, "f1", 1)
-
-    assert plan["steps"]["n1"]["human"] is True
-    assert "call" not in plan["steps"]["n1"]
-
-
-def test_explicit_param_binding_is_used():
-    doc = base_doc()
-    node(doc, "n1")["params"] = {"v": {"snapshot": "voltage"}, "limit": {"lit": 210}}
-
-    assert validate_doc(doc) == []
-    plan = compile_doc(doc, "f1", 1)
-    assert plan["steps"]["n1"]["call"]["args"] == {
-        "v": {"snapshot": "voltage"},
-        "limit": {"lit": 210},
+    assert compile_doc(doc, "f1", 1, functions=SIGNATURES)["steps"][START_ID]["next"] == {
+        "default": ["n1", "n2"]
     }
 
 
-def test_snapshot_field_binding():
-    doc = base_doc()
-    doc["snapshotFields"] = ["threshold"]
-    node(doc, "n1")["params"] = {"limit": "threshold"}
-
-    plan = compile_doc(doc, "f1", 1)
-    assert plan["steps"]["n1"]["call"]["args"] == {"limit": {"snapshot": "threshold"}}
-
-
-# ---------------------------------------------------------------- 开始节点校验
+# ---------------------------------------------------------------- 结构校验
 
 
 def test_missing_start_rejected_on_publish():
-    doc = legacy_doc()
-
+    doc = base_doc()
+    doc["nodes"] = [item for item in doc["nodes"] if item["id"] != START_ID]
+    doc["edges"] = [item for item in doc["edges"] if item["from"] != START_ID]
     assert "缺少开始节点" in messages(doc)
-    with pytest.raises(ValidationError):
-        compile_doc(doc, "f1", 1)
 
 
 def test_two_start_nodes_rejected():
     doc = base_doc()
-    second = _start_node()
-    second["id"] = "start2"
-    doc["nodes"].append(second)
-    doc["edges"].append({"id": "s9", "from": "start2", "to": "n1", "order": 2})
-
-    assert "全局唯一" in messages(doc)
+    doc["nodes"].append(_start_node([{"name": "second"}], [construct("motor2")], nid="start2"))
+    assert "开始节点必须全局唯一" in messages(doc)
 
 
 def test_start_with_incoming_edge_rejected():
     doc = base_doc()
-    doc["edges"].append({"id": "bad", "from": "n1", "to": START_ID, "order": 3})
-
-    start_issues = [i for i in errors(doc) if "入线" in i["message"]]
-    assert start_issues, messages(doc)
-    assert start_issues[0]["edgeId"] == "bad"
-    assert start_issues[0]["nodeId"] == START_ID
+    doc["edges"].append({"id": "back", "from": "n3", "to": START_ID})
+    assert "开始节点不能有入线" in messages(doc)
 
 
 def test_start_requires_outgoing_edge():
     doc = base_doc()
-    doc["edges"] = [edge for edge in doc["edges"] if edge["from"] != START_ID]
-
-    start_issues = [i for i in errors(doc) if "开始节点至少需要一条出线" in i["message"]]
-    assert start_issues, messages(doc)
-    assert start_issues[0]["nodeId"] == START_ID
+    doc["edges"] = [item for item in doc["edges"] if item["from"] != START_ID]
+    assert "开始节点至少需要一条出线" in messages(doc)
 
 
 def test_start_duplicate_target_rejected():
-    """start 出边会一次性全部投递，重复连接等于同一节点跑两遍。"""
     doc = base_doc()
-    doc["edges"].append({"id": "s2", "from": START_ID, "to": "n1", "order": 2})
+    doc["edges"].append({"id": "dup", "from": START_ID, "to": "n1"})
+    assert "开始节点重复连接到" in messages(doc)
 
-    assert "重复连接" in messages(doc)
 
-
-def test_start_rejects_binding_and_params():
+def test_start_input_type_and_duplicate_rejected():
     doc = base_doc()
-    start = node(doc, START_ID)
-    start["binding"] = {"project": "cooling", "function": "judge_voltage"}
-    start["params"] = {"voltage": {"snapshot": "voltage"}}
+    doc["nodes"][0]["inputs"] = [{"name": "device", "type": "text"},
+                                 {"name": "device", "type": "text"}]
+    assert "启动参数 device 重复" in messages(doc)
+    doc["nodes"][0]["inputs"] = [{"name": "device", "type": "unsupported"}]
+    assert "启动参数 device 的类型不支持" in messages(doc)
 
+
+def test_runtime_inputs_require_slots():
+    doc = base_doc()
+    node(doc, "n1").pop("slots")
+    node(doc, "n1")["runtimeInputs"] = [{"name": "threshold", "type": "number"}]
+    assert "节点现场参数需要先配置槽位" in messages(doc)
+
+
+def test_removed_binding_fields_rejected():
+    doc = base_doc()
+    node(doc, "n1")["operation"] = "old"
     text = messages(doc)
-    assert "不允许绑定函数" in text
-    assert "不允许配置参数绑定" in text
+    assert "已移除的旧接入字段" in text and "operation" in text
 
 
-def test_start_input_scope_requires_function():
+def test_flow_level_composition_rejected():
     doc = base_doc()
-    node(doc, START_ID)["inputs"] = [{"name": "voltage", "scope": "function"}]
+    doc["composition"] = {"objects": [], "resources": [], "operations": []}
+    assert "对象／资源／操作配置已移除" in messages(doc)
 
-    assert "没有指定函数" in messages(doc)
 
-
-def test_start_input_duplicate_rejected():
+def test_data_preparation_node_rejected():
     doc = base_doc()
-    node(doc, START_ID)["inputs"] = [
-        {"name": "voltage", "scope": "global"},
-        {"name": "voltage", "scope": "global"},
-    ]
-
-    assert "启动参数 voltage 重复" in messages(doc)
-
-
-# ---------------------------------------------------------------- 旧文档兼容
-
-
-def test_legacy_doc_without_start_still_compiles():
-    doc = legacy_doc()
-
-    plan = compile_doc(doc, "f1", 1, require_start=False)
-
-    assert plan["entry"] == "n1"
-    assert "start" not in plan["steps"]
-    # snapshotFields 视为全局参数，继续可用
-    assert plan["steps"]["n1"]["call"]["args"] == {"voltage": {"snapshot": "voltage"}}
-
-
-def test_legacy_multiple_entries_rejected():
-    doc = legacy_doc()
-    doc["nodes"].append(_node("x1", "investigation", "另一个排查", "孤立入口"))
-    doc["nodes"].append(_node("x2", "escalation", "上升", "孤立出口"))
-    doc["edges"].append({"id": "ex1", "from": "x1", "to": "x2", "branch": "yes"})
-
-    text = messages(doc, require_start=False)
-    assert "入口" in text
-    assert "2" in text
-
-
-def test_snapshot_fields_merge_into_global_params():
-    """迁移期文档同时有 start.inputs 和 snapshotFields，同名字段只算一次。"""
-    doc = base_doc()
-    doc["snapshotFields"] = ["voltage", "current"]
-    node(doc, "n1")["outputs"] = []
-    functions = {
-        "cooling:judge_voltage": [
-            {"name": "voltage", "type": "float", "required": True, "default": None},
-            {"name": "current", "type": "float", "required": True, "default": None},
-        ]
-    }
-
-    plan = compile_doc(doc, "f1", 1, functions=functions)
-
-    assert plan["steps"]["n1"]["call"]["args"] == {
-        "voltage": {"snapshot": "voltage"},
-        "current": {"snapshot": "current"},
-    }
-
-
-# ---------------------------------------------------------------- 绑定可见性
-
-
-def test_global_param_satisfies_required_param():
-    doc = base_doc()
-    node(doc, "n1")["outputs"] = []
-
-    plan = compile_doc(doc, "f1", 1, functions=VOLTAGE_SIGNATURE)
-
-    assert plan["steps"]["n1"]["call"]["args"] == {"voltage": {"snapshot": "voltage"}}
-
-
-def test_function_scoped_param_visible_to_its_function():
-    doc = base_doc()
-    node(doc, START_ID)["inputs"] = [
-        {"name": "voltage", "scope": "function", "function": "judge_voltage"}
-    ]
-    node(doc, "n1")["outputs"] = []
-
-    assert errors(doc, functions=VOLTAGE_SIGNATURE) == []
-    plan = compile_doc(doc, "f1", 1, functions=VOLTAGE_SIGNATURE)
-    assert plan["steps"]["n1"]["call"]["args"] == {"voltage": {"snapshot": "voltage"}}
-
-
-def test_function_scoped_param_not_leaked_to_other_function():
-    doc = base_doc()
-    node(doc, START_ID)["inputs"] = [
-        {"name": "voltage", "scope": "function", "function": "judge_voltage"}
-    ]
-    node(doc, "n1")["binding"] = {"project": "cooling", "function": "judge_current"}
-    node(doc, "n1")["outputs"] = []
-    functions = {
-        "cooling:judge_current": [
-            {"name": "voltage", "type": "float", "required": True, "default": None}
-        ]
-    }
-
-    issues = errors(doc, functions=functions)
-    assert any("函数 judge_current 的必填参数 voltage 没有来源" in i["message"] for i in issues)
-    assert issues[0]["nodeId"] == START_ID
-
-
-def test_global_param_beats_upstream_output():
-    """同名时全局启动参数优先，不再因为上游也有同名字段报歧义。"""
-    doc = base_doc()
-    doc["nodes"].append(_node("n2", "investigation", "复核", "复核电压"))
-    node(doc, "n2")["outputs"] = ["voltage"]
-    node(doc, "n2")["binding"] = {"project": "cooling", "function": "judge_voltage"}
-    # 拆成 n1 → n2 → 结论 / 上升，让 n2 同时具备上游输出和全局参数两个同名来源
-    doc["edges"] = [e for e in doc["edges"] if e["id"] not in ("e1", "e2")]
-    doc["edges"].append({"id": "e20", "from": "n1", "to": "n2", "branch": "yes", "order": 1})
-    doc["edges"].append({"id": "e21", "from": "n2", "to": "c1", "branch": "yes", "order": 1})
-    doc["edges"].append({"id": "e22", "from": "n2", "to": "n9", "branch": "no", "order": 2})
-
-    assert errors(doc, functions=VOLTAGE_SIGNATURE) == []
-    plan = compile_doc(doc, "f1", 1, functions=VOLTAGE_SIGNATURE)
-    assert plan["steps"]["n2"]["call"]["args"] == {"voltage": {"snapshot": "voltage"}}
-
-
-def test_missing_required_param_points_at_start():
-    doc = base_doc()
-    node(doc, START_ID)["inputs"] = [{"name": "current", "scope": "global"}]
-    node(doc, "n1")["outputs"] = []
-
-    with pytest.raises(ValidationError) as info:
-        compile_doc(doc, "f1", 1, functions=VOLTAGE_SIGNATURE)
-
-    issue = next(i for i in info.value.issues if "voltage" in i["message"])
-    assert "函数 judge_voltage 的必填参数 voltage 没有来源" in issue["message"]
-    assert issue["nodeId"] == START_ID
-
-
-# ---------------------------------------------------------------- 校验失败
+    doc["nodes"].append({**_node("prep", "dataPreparation", "数据准备", "旧节点"), "pipeline": {}})
+    assert "数据准备节点已移除" in messages(doc)
 
 
 def test_missing_branch_rejected():
     doc = base_doc()
-    edge(doc, "e1")["branch"] = None
-
-    assert "分支" in messages(doc)
+    edge(doc, "e1").pop("branch")
+    assert "必须指定是/否分支" in messages(doc)
 
 
 def test_conclusion_with_two_outgoing_rejected():
     doc = base_doc()
-    doc["edges"].append({"id": "e9", "from": "c1", "to": "n9", "order": 2})
-
-    assert "恰好一条出线" in messages(doc)
-
-
-# ---------------------------------------------------------------- 跳转节点
-
-
-def jump_doc() -> dict:
-    """排查：是 → 跳转（转交别的链路）→ 问题解决；否 → 上升。"""
-    return {
-        "format": 1,
-        "name": "转交流程",
-        "mode": "parallel",
-        "nodes": [
-            _start_node([]),
-            _node("n1", "investigation", "判断能否本流程处理", "本流程处理不了就转交"),
-            _node("j1", "jump", "转交整机链路", "转交给整机诊断流程继续排查"),
-            _node("p1", "problemSolved", "问题解决", "转交后确认解决"),
-            _node("e1", "escalation", "上升", "其余情况上升"),
-        ],
-        "edges": [
-            {"id": "s1", "from": START_ID, "to": "n1", "order": 1},
-            {"id": "e1", "from": "n1", "to": "j1", "branch": "yes", "order": 1},
-            {"id": "e2", "from": "n1", "to": "e1", "branch": "no", "order": 2},
-            {"id": "e3", "from": "j1", "to": "p1", "order": 1},
-        ],
-    }
+    doc["edges"].append({"id": "e6", "from": "c1", "to": "n9", "order": 2})
+    assert "必须恰好一条出线" in messages(doc)
 
 
 def test_jump_compiles_to_human_step():
-    doc = jump_doc()
-    assert errors(doc) == []
-
-    plan = compile_doc(doc, "f1", 3)
-
-    step = plan["steps"]["j1"]
-    assert step["kind"] == "jump"
-    assert step["human"] is True
-    assert step["next"] == {"default": ["p1"]}
-    # 转交是中间节点，不能标成终态，否则不会投递到问题解决
-    assert "terminal" not in step
-
-
-# 转交成功后可以接除 start 以外的任意节点类型。deepDiagnosis 不在 V1 面板暴露，
-# 也没有出边规则，只能在连接表层面覆盖，不构造整份文档。
-JUMP_TARGET_KINDS = (
-    "investigation",
-    "investigationAction",
-    "conclusion",
-    "remediation",
-    "problemSolved",
-    "escalation",
-    "deepDiagnosis",
-    "jump",
-)
+    doc = base_doc()
+    doc["nodes"].append(_node("j1", "jump", "转交专家", "转交给二线"))
+    doc["edges"] = [item for item in doc["edges"] if item["id"] != "e4"]
+    doc["edges"].append({"id": "e7", "from": "n3", "to": "j1", "order": 2})
+    doc["edges"].append({"id": "e8", "from": "j1", "to": "n5", "order": 1})
+    plan = compile_doc(doc, "f1", 1, functions=SIGNATURES)
+    assert plan["steps"]["j1"]["human"] is True
 
 
 def test_jump_connects_any_kind_except_start():
-    for kind in JUMP_TARGET_KINDS:
-        assert can_connect("jump", kind), kind
-
+    assert can_connect("jump", "investigation")
+    assert can_connect("jump", "remediation")
     assert not can_connect("jump", "start")
-    # 单后继约束不随可选目标变多而放宽
     assert is_single_successor("jump")
 
 
-def test_jump_edge_to_investigation_allowed():
-    # 旧规则下 jump 只能接问题解决，指回排查节点的边会被判成「不允许的连接」
-    doc = jump_doc()
-    edge(doc, "e3")["to"] = "n1"
-    # 转交回排查后沿「否」上升，p1 不再在路径上
-    doc["nodes"] = [item for item in doc["nodes"] if item["id"] != "p1"]
-
-    assert errors(doc) == []
-
-
 def test_jump_edge_to_start_rejected():
-    doc = jump_doc()
-    edge(doc, "e3")["to"] = START_ID
-
+    doc = base_doc()
+    doc["nodes"].append(_node("j1", "jump", "转交", "转交"))
+    doc["edges"].append({"id": "e7", "from": "n3", "to": "j1", "order": 2})
+    doc["edges"].append({"id": "e8", "from": "j1", "to": START_ID, "order": 1})
     assert "不允许的连接" in messages(doc)
-
-
-def test_jump_requires_exactly_one_outgoing():
-    doc = jump_doc()
-    doc["edges"].append({"id": "e4", "from": "j1", "to": "p1", "order": 2})
-
-    assert "跳转节点必须恰好一条出线" in messages(doc)
-
-
-def test_jump_requires_detail():
-    doc = jump_doc()
-    node(doc, "j1")["detail"] = ""
-
-    assert "跳转缺少说明" in messages(doc)
 
 
 def test_unreachable_terminal_rejected():
     doc = base_doc()
-    doc["nodes"].append(_node("x1", "investigation", "孤立排查", "不在主路径上"))
-    doc["nodes"].append(_node("x2", "investigationAction", "孤立动作", "不在主路径上"))
-    # 环有出口（x1 → c1），但整块从入口不可达
-    doc["edges"].append({"id": "ex1", "from": "x1", "to": "x2"})
-    doc["edges"].append({"id": "ex2", "from": "x2", "to": "x1"})
-    doc["edges"].append({"id": "ex3", "from": "x1", "to": "c1", "branch": "yes"})
-
-    assert "不可达" in messages(doc)
+    doc["nodes"].append(_node("lonely", "remediation", "孤立", "孤立"))
+    assert "节点不可达" in messages(doc)
 
 
 def test_cycle_without_exit_rejected():
     doc = base_doc()
-    doc["nodes"].append(_node("x1", "investigation", "环路排查", "只在本环节"))
-    doc["nodes"].append(_node("x2", "investigationAction", "环路动作", "只在本环节"))
-    doc["edges"].append({"id": "ex1", "from": "x1", "to": "x2"})
-    doc["edges"].append({"id": "ex2", "from": "x2", "to": "x1"})
-    doc["edges"].append({"id": "ex3", "from": "n1", "to": "x1", "branch": "yes"})
-
-    text = messages(doc)
-    assert "环" in text
+    doc["nodes"].append(_node("r1", "remediation", "反复", "反复"))
+    doc["nodes"].append(_node("r2", "remediation", "反复2", "反复2"))
+    doc["edges"].append({"id": "e7", "from": "n3", "to": "r1", "order": 2})
+    doc["edges"].append({"id": "e8", "from": "r1", "to": "r2", "order": 1})
+    doc["edges"].append({"id": "e9", "from": "r2", "to": "r1", "order": 1})
+    assert "没有出口的环" in messages(doc)
 
 
 def test_duplicate_node_id_rejected():
     doc = base_doc()
-    dup = copy.deepcopy(node(doc, "c1"))
-    dup["title"] = "重复结论"
-    doc["nodes"].append(dup)
-
+    doc["nodes"].append(_node("n1", "remediation", "重复", "重复"))
     assert "节点 id 重复" in messages(doc)
-
-
-def test_binding_requires_project_and_function():
-    doc = base_doc()
-    node(doc, "n1")["binding"] = {"project": "", "function": ""}
-
-    text = messages(doc)
-    assert "工程" in text and "函数" in text
 
 
 def test_investigation_requires_fields():
     doc = base_doc()
-    node(doc, "n1")["fields"]["assessment"] = ""
-
-    assert "判定依据" in messages(doc)
-
-
-# ---------------------------------------------------------------- 参数绑定
-
-
-def ambiguous_doc() -> dict:
-    """两个上游节点都声明 voltage，下游无法自动绑定。"""
-    doc = {
-        "format": 1,
-        "name": "参数歧义",
-        "mode": "parallel",
-        "nodes": [
-            _start_node(),
-            _node("n1", "investigation", "读电压", "读母线电压", code=True),
-            _node("n2", "investigation", "复核电压", "再读一次母线电压"),
-            _node("n3", "investigation", "判定", "判断是否需要处置"),
-            _node("c1", "conclusion", "判定结论", "需要处置"),
-            _node("r1", "remediation", "处置", "按结论处置"),
-            _node("n5", "problemSolved", "问题解决", "已处置"),
-            _node("n9", "escalation", "上升", "转交厂家"),
-        ],
-        "edges": [
-            {"id": "s0", "from": START_ID, "to": "n1", "order": 1},
-            {"id": "e1", "from": "n1", "to": "n2", "branch": "yes", "order": 1},
-            {"id": "e2", "from": "n1", "to": "n9", "branch": "no", "order": 2},
-            {"id": "e3", "from": "n2", "to": "n3", "branch": "yes", "order": 1},
-            {"id": "e4", "from": "n2", "to": "n9", "branch": "no", "order": 2},
-            {"id": "e5", "from": "n3", "to": "c1", "branch": "yes", "order": 1},
-            {"id": "e6", "from": "n3", "to": "n9", "branch": "no", "order": 2},
-            {"id": "e7", "from": "c1", "to": "r1", "order": 1},
-            {"id": "e8", "from": "r1", "to": "n5", "order": 1},
-        ],
-    }
-    doc["nodes"][2]["outputs"] = ["voltage"]  # n2 也声明了 outputs
-    doc["nodes"][3]["binding"] = {"project": "cooling", "function": "judge_voltage"}
-    return doc
-
-
-def test_ambiguous_param_rejected():
-    doc = ambiguous_doc()
-
+    node(doc, "n1")["fields"] = {"observation": "母线电压"}
     text = messages(doc)
-    assert "voltage" in text
-    assert "多个来源" in text
-    assert "n1" in text and "n2" in text
-    with pytest.raises(ValidationError) as info:
-        compile_doc(doc, "f1", 1)
-    assert any("多个来源" in issue["message"] for issue in info.value.issues)
+    assert "取数方式" in text and "判定依据" in text
 
 
-def test_param_source_must_be_upstream():
-    doc = ambiguous_doc()
-    node(doc, "n3")["params"] = {"v": {"run": "n5", "path": "output.voltage"}}
-
-    assert "不在上游" in messages(doc)
+# ---------------------------------------------------------------- 槽位校验
 
 
-def test_missing_param_source_rejected():
-    doc = ambiguous_doc()
-    node(doc, "n3")["params"] = {"v": "current"}
-
-    text = messages(doc)
-    assert "不存在或不在上游" in text
-    assert "voltage" in text  # 提示可用字段
-
-
-def test_explicit_param_disambiguates():
-    doc = ambiguous_doc()
-    node(doc, "n3")["params"] = {"v": {"run": "n2", "path": "output.voltage"}}
-
+def test_function_only_flow_needs_no_construct():
+    """纯函数工程不需要构造槽，只要没有槽位引用对象。"""
+    doc = base_doc()
+    doc["nodes"][0].pop("slots")
+    for name in ("fetch", "present", "decide"):
+        node(doc, "n1")["slots"][name].pop("object")
     assert errors(doc) == []
-    plan = compile_doc(doc, "f1", 1)
-    assert plan["steps"]["n3"]["call"]["args"] == {"v": {"run": "n2", "path": "output.voltage"}}
+
+
+def test_construct_object_name_must_be_identifier():
+    doc = base_doc()
+    doc["nodes"][0]["slots"]["constructs"] = [construct("电机-1")]
+    assert "合法标识符" in messages(doc)
+
+
+def test_duplicate_construct_name_rejected():
+    doc = base_doc()
+    doc["nodes"][0]["slots"]["constructs"].append(construct())
+    assert "构造槽的对象名重复" in messages(doc)
+
+
+def test_slot_object_must_be_declared():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["present"]["object"] = "unknown"
+    assert "引用了未声明的对象" in messages(doc)
+
+
+def test_investigation_requires_present():
+    doc = base_doc()
+    node(doc, "n1")["slots"].pop("present")
+    assert "缺少展示槽" in messages(doc)
+
+
+def test_present_requires_view():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["present"].pop("view")
+    assert "展示槽必须选择展示类型" in messages(doc)
+
+
+def test_only_present_carries_view():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["fetch"]["view"] = "image"
+    assert "只有展示槽能指定展示类型" in messages(doc)
+
+
+def test_investigation_requires_decide():
+    doc = base_doc()
+    node(doc, "n1")["slots"].pop("decide")
+    assert "缺少判定槽" in messages(doc)
+
+
+def test_decide_needs_method_or_human():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["decide"] = {}
+    assert "必须选择方法或人工判断" in messages(doc)
+
+
+def test_human_decide_cannot_carry_interface():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["decide"] = {**slot("judge"), "human": True}
+    assert "要么选人工判断" in messages(doc)
+
+
+def test_previous_rejected_in_construct():
+    doc = base_doc()
+    doc["nodes"][0]["slots"]["constructs"][0]["arguments"] = {"values": {"source": "previous"}}
+    assert "构造参数不能引用上一槽返回值" in messages(doc)
+
+
+def test_previous_requires_upstream_slot_in_node():
+    """上一槽结果只认本节点内的上游槽，跨节点不传值。"""
+    doc = base_doc()
+    node(doc, "n1")["slots"].pop("fetch")
+    assert "没有拉取或处理槽" in messages(doc)
+
+
+def test_process_previous_requires_fetch():
+    doc = base_doc()
+    node(doc, "n1")["slots"].pop("fetch")
+    node(doc, "n1")["slots"]["process"] = slot("plot", {"data": {"source": "previous"}})
+    assert "没有拉取槽" in messages(doc)
+
+
+def test_decide_can_use_presentation_result():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["decide"]["arguments"] = {"items": {"source": "presentation"}}
+    assert "展示结果" not in messages(doc)
+
+
+def test_presentation_requires_present_slot():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["decide"]["arguments"] = {"items": {"source": "presentation"}}
+    node(doc, "n1")["slots"].pop("present")
+    assert "只有判定槽能这样做" in messages(doc)
+
+
+def test_presentation_rejected_outside_decide():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["present"]["arguments"] = {"data": {"source": "presentation"}}
+    assert "只有判定槽能这样做" in messages(doc)
+
+
+def test_removed_sources_rejected():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["fetch"]["arguments"] = {"device": {"source": "resource", "name": "x"}}
+    assert "来源无效" in messages(doc)
+
+
+def test_parameter_must_be_declared():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["fetch"]["arguments"] = {"device": {"source": "parameter", "name": "device"}}
+    assert "未声明的现场参数 device" in messages(doc)
+
+
+def test_input_must_be_declared_on_start():
+    doc = base_doc()
+    doc["nodes"][0]["inputs"] = [{"name": "other", "type": "text"}]
+    assert "未在开始节点声明的启动输入 device" in messages(doc)
+
+
+def test_missing_probed_interface_rejected():
+    doc = base_doc()
+    assert "尚未成功探测" in messages(doc, functions={})
+
+
+def test_missing_required_interface_argument_rejected():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["fetch"]["arguments"] = {}
+    assert "缺少必填参数 device" in messages(doc, functions=SIGNATURES)
+
+
+def test_unknown_interface_argument_rejected():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["fetch"]["arguments"] = {
+        "device": {"source": "input", "name": "device"}, "other": {"lit": 1}}
+    assert "接口未声明的参数" in messages(doc, functions=SIGNATURES)
+
+
+def test_lax_commit_downgrades_slot_issues():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["fetch"]["arguments"] = {}
+    assert errors(doc, functions=SIGNATURES, strict_binding=True)
+    lax = [issue for issue in validate_doc(doc, SIGNATURES, strict_binding=False)
+           if issue["level"] == "error"]
+    assert lax == []
+
+
+def test_lax_commit_keeps_structural_errors():
+    doc = base_doc()
+    doc["edges"] = [item for item in doc["edges"] if item["from"] != START_ID]
+    assert errors(doc, strict_binding=False)
 
 
 def test_issues_are_json_safe():
     doc = base_doc()
-    edge(doc, "e1")["branch"] = None
-    for issue in validate_doc(doc):
-        json.dumps(issue)  # 必须能直接进 API 响应
-        assert set(issue) <= {"level", "message", "nodeId", "edgeId"}
+    node(doc, "n1")["slots"]["present"].pop("view")
+    json.dumps(validate_doc(doc, functions=SIGNATURES), ensure_ascii=False)
 
 
-def test_signature_binds_only_real_params():
-    """函数只有一个参数，候选有三个字段：plan 里只能出现那一个。"""
+def test_validation_error_carries_issues():
     doc = base_doc()
-    doc["snapshotFields"] = ["current", "temperature"]
-    node(doc, "n1")["outputs"] = []
-
-    plan = compile_doc(doc, "f1", 1, functions=VOLTAGE_SIGNATURE)
-
-    assert plan["steps"]["n1"]["call"]["args"] == {"voltage": {"snapshot": "voltage"}}
-
-
-def test_signature_omits_optional_param_without_source():
-    doc = base_doc()
-    node(doc, "n1")["outputs"] = []
-    functions = {
-        "cooling:judge_voltage": [
-            {"name": "voltage", "type": "float", "required": True, "default": None},
-            {"name": "threshold", "type": "float", "required": False, "default": 210.0},
-        ]
-    }
-
-    plan = compile_doc(doc, "f1", 1, functions=functions)
-
-    # threshold 缺来源又有默认值，直接省略，交给 Python
-    assert plan["steps"]["n1"]["call"]["args"] == {"voltage": {"snapshot": "voltage"}}
-
-
-def test_no_signature_emits_warning():
-    doc = base_doc()
-    node(doc, "n1")["outputs"] = []
-
-    issues = validate_doc(doc)
-    assert [issue for issue in issues if issue["level"] == "error"] == []
-    warnings = [issue for issue in issues if issue["level"] == "warning"]
-    assert any("未提供函数签名" in issue["message"] for issue in warnings)
-    # 无签名时仍然全量绑定
-    plan = compile_doc(doc, "f1", 1)
-    assert plan["steps"]["n1"]["call"]["args"] == {"voltage": {"snapshot": "voltage"}}
-
-
-def test_signature_ignores_ambiguous_unused_field():
-    """候选里同名多来源，但函数用不到该字段时不该拦。"""
-    doc = ambiguous_doc()
-    node(doc, "n3")["params"] = {}
-    functions = {
-        "cooling:judge_voltage": [
-            {"name": "current", "type": "float", "required": False, "default": 0.0}
-        ]
-    }
-    doc["snapshotFields"] = ["current"]
-
-    assert errors(doc, functions=functions) == []
-    plan = compile_doc(doc, "f1", 1, functions=functions)
-    assert plan["steps"]["n3"]["call"]["args"] == {
-        "current": {"snapshot": "current", "optional": True}
-    }
-
-
-def test_params_outside_signature_rejected():
-    doc = base_doc()
-    node(doc, "n1")["params"] = {"nope": {"lit": 1}}
-
-    with pytest.raises(ValidationError) as info:
-        compile_doc(doc, "f1", 1, functions=VOLTAGE_SIGNATURE)
-    text = " ".join(issue["message"] for issue in info.value.issues)
-    assert "不在函数签名里" in text
-    assert "voltage" in text
-
-
-def test_unused_candidate_warns():
-    doc = base_doc()
-    doc["snapshotFields"] = ["current"]
-    node(doc, "n1")["outputs"] = []
-
-    issues = validate_doc(doc, VOLTAGE_SIGNATURE)
-    assert [i for i in issues if i["level"] == "error"] == []
-    warnings = " ".join(i["message"] for i in issues if i["level"] == "warning")
-    assert "current" in warnings and "不在函数签名里" in warnings
-
-    plan = compile_doc(doc, "f1", 1, functions=VOLTAGE_SIGNATURE)
-    assert plan["steps"]["n1"]["call"]["args"] == {"voltage": {"snapshot": "voltage"}}
-
-
-# ---------------------------------------------------------------- 轻校验开关
-
-
-def test_lax_binding_downgrades_ambiguity():
-    doc = ambiguous_doc()
-
-    strict = errors(doc)
-    assert any("多个来源" in i["message"] for i in strict)
-
-    lax = validate_doc(doc, strict_binding=False)
-    assert [i for i in lax if i["level"] == "error"] == []
-    assert any(i["level"] == "warning" and "多个来源" in i["message"] for i in lax)
-
-
-def test_lax_binding_keeps_structural_errors():
-    doc = ambiguous_doc()
-    node(doc, "n1")["fields"]["assessment"] = ""
-
-    lax = validate_doc(doc, strict_binding=False)
-    assert any(i["level"] == "error" and "判定依据" in i["message"] for i in lax)
-
-
-def test_lax_binding_downgrades_missing_required_param():
-    doc = base_doc()
-    node(doc, START_ID)["inputs"] = [{"name": "current", "scope": "global"}]
-    node(doc, "n1")["outputs"] = []
-
-    lax = validate_doc(doc, VOLTAGE_SIGNATURE, strict_binding=False)
-    assert [i for i in lax if i["level"] == "error"] == []
-    assert any(
-        i["level"] == "warning" and "必填参数 voltage 没有来源" in i["message"] for i in lax
-    )
-
-
-def test_optional_param_carries_optional_flag():
-    """可选参数有来源时仍然绑定，但带上 optional：运行期缺值就省略。"""
-    doc = base_doc()
-    node(doc, "n1")["outputs"] = []
-    node(doc, START_ID)["inputs"].append({"name": "threshold", "scope": "global"})
-    functions = {
-        "cooling:judge_voltage": [
-            {"name": "voltage", "type": "float", "required": True, "default": None},
-            {"name": "threshold", "type": "float", "required": False, "default": 210.0},
-        ]
-    }
-
-    plan = compile_doc(doc, "f1", 1, functions=functions)
-
-    assert plan["steps"]["n1"]["call"]["args"] == {
-        "voltage": {"snapshot": "voltage"},
-        "threshold": {"snapshot": "threshold", "optional": True},
-    }
-
-
-def test_optional_param_from_upstream_output_carries_optional_flag():
-    doc = base_doc()
-    node(doc, "n1")["outputs"] = ["rating"]
-    doc["nodes"].append(_node("n2", "investigation", "复核", "复核电压"))
-    node(doc, "n2")["binding"] = {"project": "cooling", "function": "judge_rating"}
-    doc["edges"] = [e for e in doc["edges"] if e["id"] not in ("e1", "e2")]
-    doc["edges"].append({"id": "e20", "from": "n1", "to": "n2", "branch": "yes", "order": 1})
-    doc["edges"].append({"id": "e21", "from": "n2", "to": "c1", "branch": "yes", "order": 1})
-    doc["edges"].append({"id": "e22", "from": "n2", "to": "n9", "branch": "no", "order": 2})
-    functions = {
-        "cooling:judge_rating": [
-            {"name": "rating", "type": "float", "required": False, "default": 1.0}
-        ]
-    }
-
-    plan = compile_doc(doc, "f1", 1, functions=functions)
-
-    assert plan["steps"]["n2"]["call"]["args"] == {
-        "rating": {"run": "n1", "path": "output.rating", "optional": True}
-    }
-
-
-def test_explicit_param_is_never_optional():
-    """作者显式绑定的来源就是要传，缺值必须报错。"""
-    doc = base_doc()
-    node(doc, "n1")["outputs"] = []
-    node(doc, "n1")["params"] = {"threshold": {"snapshot": "threshold"}}
-    functions = {
-        "cooling:judge_voltage": [
-            {"name": "voltage", "type": "float", "required": True, "default": None},
-            {"name": "threshold", "type": "float", "required": False, "default": 210.0},
-        ]
-    }
-
-    plan = compile_doc(doc, "f1", 1, functions=functions)
-
-    assert plan["steps"]["n1"]["call"]["args"]["threshold"] == {"snapshot": "threshold"}
-
-
-# ---------------------------------------------------------------- 探针默认值
-
-
-def test_probe_marks_repr_default_untrusted():
-    """repr 兜底的默认值不能当真实默认值用，必须带不可信标记。"""
-    from app.worker.probe import _describe
-
-    moment = datetime(2020, 1, 1)
-
-    def sample(count=3, when=moment, tags=("a", "b")):
-        pass
-
-    probed = {p["name"]: p for p in _describe("sample", sample)["params"]}
-    assert probed["count"]["defaultTrusted"] is True
-    assert probed["tags"]["defaultTrusted"] is True
-    assert probed["when"]["defaultTrusted"] is False
-    assert probed["when"]["default"] == repr(moment)
-
-
-def test_param_list_keeps_trust_flag_without_changing_hash():
-    """信任标记只是附带信息，不能改变签名指纹，否则已发布版本会全部报签名变更。"""
-    from app.services import signatures
-
-    params = [
-        {
-            "name": "when",
-            "type": "datetime",
-            "required": False,
-            "default": "x",
-            "defaultTrusted": False,
-        }
-    ]
-    listed = signatures._param_list({"name": "f", "params": params})
-    assert listed[0]["defaultTrusted"] is False
-
-    trusted = [{**params[0], "defaultTrusted": True}]
-    assert signatures._hash_params("f", listed) == signatures._hash_params("f", trusted)
-
-
-# ---------------------------------------------------------------- 四阶段函数管线
-
-
-def pipeline_doc(
-    judge_arguments: dict,
-    *,
-    parse_arguments: dict | None = None,
-    manual_fields: list[dict] | None = None,
-) -> dict:
-    """取数 → 解析 → 判断 → 展示；judge/parse 的参数映射与人工字段由用例决定。"""
-    doc = base_doc()
-    n1 = node(doc, "n1")
-    n1.pop("binding", None)
-    n1.pop("outputs", None)
-    n1["pipeline"] = {
-        "acquire": {"project": "cooling", "function": "read_voltage"},
-        "parse": {
-            "project": "cooling",
-            "function": "parse_voltage",
-            "arguments": parse_arguments or {},
-        },
-        "judge": {
-            "project": "cooling",
-            "function": "judge_voltage",
-            "arguments": judge_arguments,
-        },
-        "present": {"project": "cooling", "function": "present_voltage"},
-    }
-    if manual_fields is not None:
-        n1["pipeline"]["manualFields"] = manual_fields
-    return doc
-
-
-def pipeline_functions(
-    judge_param: dict | None = None, parse_param: dict | None = None
-) -> dict:
-    param = judge_param or {
-        "name": "voltage", "type": "float", "required": True, "default": None
-    }
-    parsed = parse_param or {
-        "name": "raw", "type": "any", "required": True, "default": None
-    }
-    return {
-        "cooling:read_voltage": [
-            {"name": "voltage", "type": "number", "required": True, "default": None}
-        ],
-        "cooling:parse_voltage": [parsed],
-        "cooling:judge_voltage": [param],
-        "cooling:present_voltage": [
-            {"name": "parsed", "type": "any", "required": True, "default": None},
-            {"name": "decision", "type": "text", "required": False, "default": None},
-        ],
-    }
-
-
-def test_judge_scalar_param_without_path_rejected():
-    """judge 拿到整段解析结果会把它塞进 float 参数，必须编译期拦下。"""
-    doc = pipeline_doc({"voltage": {"source": "parsed"}})
-    functions = pipeline_functions()
-
-    with pytest.raises(ValidationError) as info:
-        compile_doc(doc, "f1", 1, functions=functions)
-
-    text = " ".join(issue["message"] for issue in info.value.issues)
-    assert "需要指定上游数据的字段路径" in text
-    assert "voltage" in text
-
-
-def test_judge_scalar_param_with_path_compiles():
-    doc = pipeline_doc({"voltage": {"source": "parsed", "path": "voltage"}})
-    functions = pipeline_functions()
-
-    assert errors(doc, functions=functions) == []
-    plan = compile_doc(doc, "f1", 1, functions=functions)
-    assert plan["steps"]["n1"]["pipeline"]["judge"]["arguments"] == {
-        "voltage": {"source": "parsed", "path": "voltage"}
-    }
-
-
-@pytest.mark.parametrize(
-    "judge_param",
-    [
-        {"name": "voltage", "type": "dict", "required": True, "default": None},
-        # 无类型注解，探针给 any
-        {"name": "voltage", "required": True, "default": None},
-    ],
-)
-def test_judge_non_scalar_param_without_path_allowed(judge_param):
-    """整段数据本来就是这个参数想要的，不触发标量字段路径校验。"""
-    doc = pipeline_doc({"voltage": {"source": "parsed"}})
-    functions = pipeline_functions(judge_param)
-
-    assert errors(doc, functions=functions) == []
-    compile_doc(doc, "f1", 1, functions=functions)
-
-
-@pytest.mark.parametrize("stage", ["present", "judge"])
-def test_only_parse_can_reference_raw(stage):
-    """人工判断恢复只重跑展示，上下文里没有 raw；允许引用会让恢复路径拿到空值。"""
-    doc = pipeline_doc({"voltage": {"source": "parsed", "path": "voltage"}})
-    binding = node(doc, "n1")["pipeline"][stage]
-    binding["arguments"] = (
-        {"parsed": {"source": "raw"}} if stage == "present"
-        else {"voltage": {"source": "raw", "path": "voltage"}}
-    )
-
-    with pytest.raises(ValidationError) as info:
-        compile_doc(doc, "f1", 1, functions=pipeline_functions())
-
-    text = " ".join(issue["message"] for issue in info.value.issues)
-    assert f"{stage}" in text and "数据来源无效" in text
-
-
-# ---------------------------------------------------------------- 文件字段路径归一化
-
-
-def file_parse_doc(
-    path: str, field_type: str = "file", param_type: str = "str"
-) -> tuple[dict, dict]:
-    """人工上传 report 字段，parse 阶段把它映射给 report 参数。"""
-    doc = pipeline_doc(
-        {"voltage": {"source": "parsed", "path": "voltage"}},
-        parse_arguments={"report": {"source": "raw", "path": path}},
-        manual_fields=[{"name": "report", "type": field_type}],
-    )
-    functions = pipeline_functions(
-        parse_param={"name": "report", "type": param_type, "required": True, "default": None}
-    )
-    return doc, functions
-
-
-def path_warnings(doc: dict, functions: dict) -> list[dict]:
-    return [
-        issue
-        for issue in validate_doc(doc, functions)
-        if issue["level"] == "warning" and "已按路径传入" in issue["message"]
-    ]
-
-
-def test_file_field_parse_param_rewritten_to_path_with_warning():
-    """函数要 str 时传 {hash, path} 字典必炸，编译期直接改写成字段路径。"""
-    doc, functions = file_parse_doc("report")
-
-    assert errors(doc, functions=functions) == []
-    warnings = path_warnings(doc, functions)
-    assert len(warnings) == 1
-    assert "report" in warnings[0]["message"]
-
-    plan = compile_doc(doc, "f1", 1, functions=functions)
-    assert plan["steps"]["n1"]["pipeline"]["parse"]["arguments"]["report"]["path"] == "report.path"
-
-
-def test_file_field_dict_param_keeps_whole_reference():
-    """声明为 dict 的参数要的就是整份文件引用，不能改写。"""
-    doc, functions = file_parse_doc("report", param_type="dict")
-
-    assert errors(doc, functions=functions) == []
-    assert path_warnings(doc, functions) == []
-
-    plan = compile_doc(doc, "f1", 1, functions=functions)
-    assert plan["steps"]["n1"]["pipeline"]["parse"]["arguments"]["report"]["path"] == "report"
-
-
-@pytest.mark.parametrize("path", ["report.path", "report.hash"])
-def test_file_field_explicit_suffix_unchanged(path):
-    """已手写下钻路径的不再二次加后缀，避免 report.path.path。"""
-    doc, functions = file_parse_doc(path)
-
-    assert errors(doc, functions=functions) == []
-    assert path_warnings(doc, functions) == []
-
-    plan = compile_doc(doc, "f1", 1, functions=functions)
-    assert plan["steps"]["n1"]["pipeline"]["parse"]["arguments"]["report"]["path"] == path
-
-
-def test_non_file_field_path_unchanged():
-    """text 字段不是文件引用，行为与改动前一致。"""
-    doc, functions = file_parse_doc("report", field_type="text")
-
-    assert errors(doc, functions=functions) == []
-    assert path_warnings(doc, functions) == []
-
-    plan = compile_doc(doc, "f1", 1, functions=functions)
-    assert plan["steps"]["n1"]["pipeline"]["parse"]["arguments"]["report"]["path"] == "report"
+    doc["edges"] = []
+    with pytest.raises(ValidationError) as caught:
+        compile_doc(doc, "f1", 1)
+    assert caught.value.issues

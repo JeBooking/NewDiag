@@ -9,7 +9,6 @@ export interface InstanceFilter {
 export interface RollbackPayload {
   targetNodeId: string
   targetTokenId?: string
-  mode?: 'branch' | 'retry'
   branch?: string
   reason?: string
 }
@@ -28,6 +27,10 @@ export function listInstances(filter: InstanceFilter = {}): Promise<InstanceSumm
 
 export function getInstance(id: string): Promise<InstanceDetail> {
   return request<InstanceDetail>(`/instances/${encodeURIComponent(id)}`)
+}
+
+export function instanceCodeExportUrl(id: string): string {
+  return `/api/instances/${encodeURIComponent(id)}/code-export`
 }
 
 export function terminateInstance(id: string): Promise<InstanceDetail> {

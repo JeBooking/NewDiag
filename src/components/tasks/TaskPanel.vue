@@ -7,6 +7,7 @@ import { useInstancesStore } from '@/stores/instances'
 import ActionTask from './ActionTask.vue'
 import DecisionTask from './DecisionTask.vue'
 import DataTask from './DataTask.vue'
+import FailureTask from './FailureTask.vue'
 import RollbackDialog from './RollbackDialog.vue'
 
 const props = defineProps<{
@@ -82,15 +83,20 @@ const formatTime = (value?: string | null): string =>
   value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
 
 function kindLabel(review: ReviewTask): string {
+  if (review.kind === 'failure') return '执行报错'
   if (review.request.type === 'parameters') return '填写参数'
-  if (review.request.type === 'acquisition') return '提供数据'
   if (review.request.type === 'after_success') return '串行决策'
   if (review.kind === 'decision') return '判断'
   // 转交节点的「完成」语义是把问题交给别的链路，不是处置动作，标签要区分
   return review.request.nodeKind === 'jump' ? '转交' : '处置'
 }
 
-async function decide(result: 'yes' | 'no' | 'done' | 'continue', reason?: string): Promise<void> {
+function tagType(review: ReviewTask): 'primary' | 'success' | 'danger' {
+  if (review.kind === 'failure') return 'danger'
+  return review.kind === 'decision' ? 'primary' : 'success'
+}
+
+async function decide(result: 'yes' | 'no' | 'done' | 'continue' | 'stop', reason?: string): Promise<void> {
   if (!selected.value) return
   busy.value = true
   submitError.value = ''
@@ -165,7 +171,7 @@ function onRolledBack(): void {
           @click="onCardClick(review)"
         >
           <div class="review-head">
-            <el-tag size="small" :type="review.kind === 'decision' ? 'primary' : 'success'" effect="plain">
+            <el-tag size="small" :type="tagType(review)" effect="plain">
               {{ kindLabel(review) }}
             </el-tag>
             <span class="review-title">{{ review.request.title || nodeTitle(review.nodeId) }}</span>
@@ -180,7 +186,7 @@ function onRolledBack(): void {
       <div v-if="selected" class="detail">
         <div class="detail-node">{{ selectedTitle }}</div>
         <DataTask
-          v-if="selected.request.type === 'acquisition' || selected.request.type === 'parameters'"
+          v-if="selected.request.type === 'parameters'"
           :review="selected" :busy="busy" :error="submitError" @submit="submitData"
         />
         <DecisionTask
@@ -189,6 +195,13 @@ function onRolledBack(): void {
           :busy="busy"
           :error="submitError"
           @decide="decide"
+        />
+        <FailureTask
+          v-else-if="selected.kind === 'failure'"
+          :review="selected"
+          :busy="busy"
+          @stop="decide('stop')"
+          @rollback="rollbackVisible = true"
         />
         <ActionTask
           v-else

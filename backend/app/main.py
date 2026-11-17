@@ -50,8 +50,38 @@ async def lifespan(_app: FastAPI):
         os.getcwd(),
         os.environ.get("NEWDIAG_DB") or "(默认 backend/data/newdiag.db)",
     )
+    _report_stale_instances()
     yield
+    from app.services.generated_runner import runner
+    runner.shutdown()
     logger.info("进程退出 pid=%s", os.getpid())
+
+
+def _report_stale_instances() -> None:
+    """启动时点名上次没跑完的实例。
+
+    诊断分支是后端的子进程，后端退出（含开发态改代码触发的重启）会把整棵树带走，
+    库里的 token 却还停在 running。不打这行日志，界面看起来就是「卡在某个节点」。
+    """
+    from sqlalchemy import select
+
+    from app import models
+
+    try:
+        with db.SessionLocal() as session:
+            rows = session.scalars(select(models.Instance).where(
+                models.Instance.status.in_(("running", "waiting", "paused"))
+            )).all()
+    except Exception:
+        logger.warning("检查遗留实例失败", exc_info=True)
+        return
+    if not rows:
+        return
+    sample = "、".join(f"{item.id}({item.status})" for item in rows[:5])
+    logger.warning(
+        "发现 %d 个上次未结束的实例，诊断进程已随父进程退出，它们会一直停在原状态：%s%s",
+        len(rows), sample, " 等" if len(rows) > 5 else "",
+    )
 
 
 app = FastAPI(title="NewDiag 诊断流程平台", version="1.0.0", lifespan=lifespan)
@@ -94,6 +124,7 @@ async def reject_oversized_upload(request: Request, call_next):
 async def access_log(request: Request, call_next):
     """每个请求一行日志，带 request id，方便和前端报错对上。"""
     request_id = uuid.uuid4().hex[:8]
+    request.state.request_id = request_id
     started = time.perf_counter()
     try:
         response = await call_next(request)
@@ -122,6 +153,18 @@ async def access_log(request: Request, call_next):
 
 for module in (flows, releases, instances, projects, files):
     app.include_router(module.router, prefix="/api")
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    """兜底：任何未捕获异常都变成带请求 id 的 500，不让客户端拿到裸 HTML。"""
+    request_id = getattr(request.state, "request_id", "-")
+    logger.error("[%s] 未捕获异常：%s %s", request_id, request.method, request.url.path, exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"服务器内部错误（请求 id {request_id}），请把该 id 发给管理员"},
+        headers={"X-Request-ID": request_id},
+    )
 
 
 @app.get("/api/health", tags=["meta"])

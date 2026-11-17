@@ -16,8 +16,8 @@ export interface NodeCardData {
   kind: NodeKind
   title: string
   detail: string
+  /** 判定由方法给出（自动）而不是等人（人工）；只用于节点上的自动／人工标记 */
   hasBinding: boolean
-  executionLabel?: string
   /** 入口节点不画左侧 target handle */
   hasTarget: boolean
   /** 仅 start：已声明的启动参数数量，用于副标题；不传按 0 处理 */

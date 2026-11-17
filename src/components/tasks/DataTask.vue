@@ -40,9 +40,6 @@ function submit(): void {
     <strong>{{ review.request.title }}</strong>
     <p>{{ review.request.instructions }}</p>
     <p v-if="review.request.detail">{{ review.request.detail }}</p>
-    <details v-if="review.request.pipeline?.inputs">
-      <summary>已绑定的输入</summary><pre>{{ JSON.stringify(review.request.pipeline.inputs, null, 2) }}</pre>
-    </details>
     <el-form label-position="top" @submit.prevent="submit">
       <el-form-item v-for="field in review.request.fields" :key="`${review.id}:${field.name}`"
         :label="`${field.label || field.name}${field.unit ? `（${field.unit}）` : ''}`"

@@ -18,12 +18,9 @@ import { layoutDoc } from '@/components/canvas/autolayout'
 import FlowPanel from '@/components/panels/FlowPanel.vue'
 import NodePanel from '@/components/panels/NodePanel.vue'
 import { useLint } from '@/components/canvas/lint'
-import type { DocNode, FlowDoc, FlowMode, LintIssue } from '@/domain/types'
+import type { DocNode, FlowDoc, LintIssue } from '@/domain/types'
 import { errorText, isApiError } from '@/services/api'
 import { updateFlow } from '@/services/flows'
-import {
-  fetchProjectFunctions, listProjects, type ProjectFunction,
-} from '@/services/projects'
 import { useEditorStore } from '@/stores/editor'
 
 const route = useRoute()
@@ -33,54 +30,53 @@ const editor = useEditorStore()
 const loadError = ref<string | null>(null)
 const issuesVisible = ref(false)
 const propertiesExpanded = ref(true)
+
+/* ---------- 属性栏宽度：可拖动，宽度记在本地 ---------- */
+
+const PANEL_MIN = 280
+const PANEL_MAX = 720
+const PANEL_KEY = 'newdiag.panelWidth'
+const storedPanel = Number(localStorage.getItem(PANEL_KEY))
+const panelWidth = ref(
+  Number.isFinite(storedPanel) && storedPanel >= PANEL_MIN ? Math.min(PANEL_MAX, storedPanel) : 320,
+)
+const resizing = ref(false)
+
+function startResize(event: PointerEvent): void {
+  if (event.button !== 0) return
+  event.preventDefault()
+  resizing.value = true
+  const startX = event.clientX
+  const startWidth = panelWidth.value
+  const move = (moveEvent: PointerEvent): void => {
+    // 拖的是左边缘：往左拖变宽
+    const next = startWidth - (moveEvent.clientX - startX)
+    panelWidth.value = Math.min(PANEL_MAX, Math.max(PANEL_MIN, next))
+  }
+  const stop = (): void => {
+    resizing.value = false
+    localStorage.setItem(PANEL_KEY, String(panelWidth.value))
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', stop)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+  }
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', stop)
+}
+
+function resetPanelWidth(): void {
+  panelWidth.value = 320
+  localStorage.setItem(PANEL_KEY, '320')
+}
 const canvas = ref<InstanceType<typeof FlowCanvas> | null>(null)
 
 const flowId = computed(() => String(route.params.id))
 
-/** 函数签名只用于 lint 的 judge 标量参数检查；涉及工程变化时才重新拉取 */
-const signatures = ref<ReadonlyMap<string, ProjectFunction[]>>(new Map())
-const signatureProjects = computed(() => {
-  const names = new Set<string>()
-  for (const node of editor.doc?.nodes ?? []) {
-    for (const stage of ['acquire', 'parse', 'present', 'judge'] as const) {
-      const project = node.pipeline?.[stage]?.project
-      if (project) names.add(project)
-    }
-  }
-  return [...names].sort().join('|')
-})
-
-let signatureRequest = 0
-async function loadSignatures(key: string): Promise<void> {
-  const request = ++signatureRequest
-  const names = key ? key.split('|') : []
-  if (!names.length) {
-    signatures.value = new Map()
-    return
-  }
-  try {
-    const projects = await listProjects()
-    if (request !== signatureRequest) return
-    const ids = new Map(projects.map((project) => [project.name, project.id]))
-    const result = new Map<string, ProjectFunction[]>()
-    await Promise.all(names.map(async (name) => {
-      const id = ids.get(name)
-      if (!id) return
-      try {
-        result.set(name, await fetchProjectFunctions(id))
-      } catch {
-        // 探针失败由发布校验兜底，lint 不重复报错
-      }
-    }))
-    if (request === signatureRequest) signatures.value = result
-  } catch {
-    if (request === signatureRequest) signatures.value = new Map()
-  }
-}
-watch(signatureProjects, (key) => void loadSignatures(key), { immediate: true })
-
-/** 实时校验：editor.doc 或签名变化都重算，不依赖保存 */
-const liveIssues = useLint(() => editor.doc, () => signatures.value)
+/** 实时校验：文档一变就重算，不依赖保存 */
+const liveIssues = useLint(() => editor.doc)
 
 /**
  * 编辑期靠本地校验即时反馈，保存/发布失败时后端还会回一份更严格的结果。
@@ -282,19 +278,13 @@ function startRun(): void {
   router.push({ name: 'flow-run', params: { id: flowId.value } })
 }
 
-function patchSnapshotFields(fields: string[]): void {
-  const doc = editor.doc
-  if (!doc) return
-  editor.applyDoc({ ...doc, snapshotFields: fields })
-}
-
-async function patchMeta(patch: { name?: string; mode?: FlowMode }): Promise<void> {  if (!editor.flow) return
+async function patchMeta(patch: { name?: string }): Promise<void> {
+  if (!editor.flow) return
   try {
     const updated = await updateFlow(editor.flow.id, patch)
     editor.patchFlowMeta({
       name: updated.name,
       description: updated.description,
-      mode: updated.mode,
       updatedAt: updated.updatedAt,
     })
     ElMessage.success('已更新流程属性')
@@ -501,14 +491,16 @@ onBeforeRouteLeave(async () => {
           </el-icon>
         </button>
 
-        <aside id="designer-properties" v-show="propertiesExpanded" class="panel" aria-label="属性栏">
+        <aside id="designer-properties" v-show="propertiesExpanded" class="panel" aria-label="属性栏"
+          :style="{ width: `${panelWidth}px` }">
+          <div class="panel-resizer" role="separator" aria-orientation="vertical"
+            :class="{ active: resizing }" title="拖动调整宽度，双击还原"
+            @pointerdown="startResize" @dblclick="resetPanelWidth" />
           <NodePanel
             v-if="editor.selectedNode"
             :node="editor.selectedNode"
             :successor-groups="successorGroups"
-            :mode="editor.doc?.mode ?? 'parallel'"
             :readonly="editor.readonly"
-            :flow-id="editor.flow?.id"
             :doc="editor.doc ?? undefined"
             @update="patchNode"
             @delete="deleteNode"
@@ -517,13 +509,9 @@ onBeforeRouteLeave(async () => {
           <FlowPanel
             v-else-if="editor.flow"
             :flow="editor.flow"
-            :diagnosis="editor.doc?.diagnosis"
-            :snapshot-fields="editor.doc?.snapshotFields ?? []"
             :readonly="editor.readonly"
             :publishing="editor.publishing"
             @update-meta="patchMeta"
-            @update-snapshot-fields="patchSnapshotFields"
-            @update-diagnosis="editor.doc && editor.applyDoc({ ...editor.doc, diagnosis: $event })"
             @publish="publish"
           />
         </aside>
@@ -637,12 +625,31 @@ onBeforeRouteLeave(async () => {
 }
 
 .panel {
-  width: var(--app-panel-width);
+  position: relative;
   flex: none;
+  box-sizing: border-box;
+  min-width: 0;
+  height: 100%;
   border-left: 1px solid var(--el-border-color-light);
   background: var(--el-bg-color);
   padding: 14px 16px 24px;
   overflow: auto;
+}
+
+/* 左缘的拖拽条压在边框上，留 6px 好抓，视觉上只比发丝线略重 */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 4;
+}
+
+.panel-resizer:hover,
+.panel-resizer.active {
+  background: var(--el-color-primary-light-7);
 }
 
 /* 展开与收起共用同一位置：整块贴在属性栏左边框外侧，收起后自然落在画布右缘 */

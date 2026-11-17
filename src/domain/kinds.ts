@@ -16,18 +16,12 @@ export interface KindMeta {
   entry?: boolean
 }
 
-export const KIND_META: Record<NodeKind, KindMeta> = {
+const META: Record<NodeKind, KindMeta> = {
   start: {
     label: '开始',
     color: '#0f766e',
     branch: 'single',
     entry: true,
-  },
-  dataPreparation: {
-    label: '数据准备',
-    color: '#0e7490',
-    codeCapable: true,
-    branch: 'single',
   },
   investigation: {
     label: '排查',
@@ -65,11 +59,6 @@ export const KIND_META: Record<NodeKind, KindMeta> = {
     terminal: true,
     branch: 'none',
   },
-  deepDiagnosis: {
-    label: '深度诊断',
-    color: '#4f46e5',
-    branch: 'single',
-  },
   jump: {
     label: '跳转',
     color: '#64748b',
@@ -80,8 +69,19 @@ export const KIND_META: Record<NodeKind, KindMeta> = {
   },
 }
 
+/** 旧文档可能带已移除的节点类型；渲染层统一退到这个占位，避免整页崩掉。 */
+const UNKNOWN_KIND: KindMeta = { label: '未知节点', color: '#94a3b8', branch: 'single' }
+
+export const KIND_META = new Proxy(META, {
+  get(target, key, receiver) {
+    if (typeof key === 'string' && !(key in target)) return UNKNOWN_KIND
+    return Reflect.get(target, key, receiver)
+  },
+}) as Record<NodeKind, KindMeta>
+
+export const isKnownKind = (kind: string): boolean => kind in META
+
 export const V1_KINDS: NodeKind[] = [
-  'dataPreparation',
   'investigation',
   'investigationAction',
   'conclusion',

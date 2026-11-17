@@ -17,12 +17,23 @@ const STATUS_TEXT: Record<RunStatus, string> = {
   ok: '成功',
   failed: '失败',
   abandoned: '已放弃',
+  rollback: '回退',
 }
 
-const STATUS_TYPE: Record<RunStatus, 'success' | 'danger' | 'info'> = {
+const STATUS_TYPE: Record<RunStatus, 'success' | 'danger' | 'info' | 'warning'> = {
   ok: 'success',
   failed: 'danger',
   abandoned: 'info',
+  rollback: 'warning',
+}
+
+/** 同一条时间线口径：执行报错和排查失败分开显示 */
+function statusText(run: RunRecord): string {
+  if (run.status !== 'failed') return STATUS_TEXT[run.status]
+  const error = String(run.error ?? '')
+  if (error.startsWith('route/')) return '排查失败'
+  if (error.startsWith('execution/')) return '执行报错'
+  return STATUS_TEXT.failed
 }
 
 const REVIEW_STATUS_TEXT: Record<ReviewStatus, string> = {
@@ -128,7 +139,7 @@ const verdict = computed(() => {
 
 const headTag = computed(() => {
   const run = currentRun.value
-  if (run) return { text: STATUS_TEXT[run.status], type: STATUS_TYPE[run.status] }
+  if (run) return { text: statusText(run), type: STATUS_TYPE[run.status] }
   const review = currentReview.value
   if (review) {
     return { text: REVIEW_STATUS_TEXT[review.status], type: REVIEW_STATUS_TYPE[review.status] }
@@ -155,7 +166,6 @@ const headMeta = computed<string[]>(() => {
 
 function reviewKindText(review: ReviewTask): string {
   if (review.request.type === 'parameters') return '现场参数'
-  if (review.request.type === 'acquisition') return '提供数据'
   if (review.request.type === 'after_success') return '串行决策'
   return review.kind === 'decision' ? '人工判断' : '人工处置'
 }
@@ -445,6 +455,10 @@ function pretty(value: unknown): string {
 
 .dot.failed {
   background: var(--el-color-danger);
+}
+
+.dot.rollback {
+  background: var(--el-color-warning);
 }
 
 .dot.pending {

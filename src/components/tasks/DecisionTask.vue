@@ -8,7 +8,7 @@ const props = defineProps<{ review: ReviewTask; busy?: boolean; error?: string }
 const emit = defineEmits<{ (e: 'decide', result: 'yes' | 'no' | 'done' | 'continue', reason?: string): void }>()
 const reason = ref('')
 watch(() => props.review.id, () => { reason.value = '' })
-const missingReason = computed(() => props.review.request.type === 'judgment' && !reason.value.trim())
+const missingReason = computed(() => !gate.value && !reason.value.trim())
 
 /** 串行模式跑到问题解决节点后的收敛待办：结束还是继续剩下的队列 */
 const gate = computed(() => props.review.request.type === 'after_success')
@@ -41,7 +41,7 @@ function pretty(value: unknown): string {
       :attachments="review.request.attachments"
       dense
     />
-    <template v-if="review.request.type === 'judgment'">
+    <template v-if="!gate">
       <label for="judgment-reason">判断依据（必填）</label>
       <el-input
         id="judgment-reason" v-model="reason" type="textarea" :rows="3" :disabled="busy"

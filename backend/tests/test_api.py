@@ -100,6 +100,12 @@ def client(tmp_path, monkeypatch):
 
     with TestClient(app) as test_client:
         yield test_client
+        # 停掉本用例启动的分支进程，避免后续用例切换到新数据目录后旧进程仍在写库
+        from app.services.generated_runner import runner
+        runner.shutdown()
+        # 停掉本用例启动的分支进程，避免后续用例切换到新数据目录后旧进程仍在写库
+        from app.services.generated_runner import runner
+        runner.shutdown()
 
 
 def create_flow(client, name: str = "冷却诊断") -> dict:
@@ -159,13 +165,12 @@ def test_patch_flow_metadata(client):
     flow = create_flow(client)
     response = client.patch(
         f"/api/flows/{flow['id']}",
-        json={"name": "冷却诊断 v2", "description": "母线电压排查", "mode": "serial"},
+        json={"name": "冷却诊断 v2", "description": "母线电压排查"},
     )
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["name"] == "冷却诊断 v2"
     assert body["description"] == "母线电压排查"
-    assert body["mode"] == "serial"
 
 
 def test_checkout_save_and_discard(client):
@@ -297,7 +302,7 @@ def test_release_and_instance(client):
 
     instance_detail = client.get(f"/api/instances/{instance['id']}").json()
     # 快照是 global/scope 两层：前端按层提交，调度器按层取值
-    assert instance_detail["snapshot"]["payload"] == {"global": {"voltage": 205.0}, "scope": {}}
+    assert instance_detail["snapshot"]["payload"] == {"global": {"voltage": 205.0}}
     assert instance_detail["snapshot"]["source"] == "start"
     assert isinstance(instance_detail["tokens"], list)
     assert isinstance(instance_detail["reviews"], list)
@@ -310,7 +315,7 @@ def test_release_and_instance(client):
     if pending:
         decided = client.post(
             f"/api/instances/{instance['id']}/reviews/{pending[0]['id']}",
-            json={"result": "yes"},
+            json={"result": "yes", "reason": "人工确认"},
         )
         assert decided.status_code == 200, decided.text
         assert "tokens" in decided.json() and "reviews" in decided.json()
@@ -391,6 +396,56 @@ def test_project_registration_and_discovery(client):
     assert client.get("/api/projects/missing/functions").status_code == 404
 
 
+def test_instance_code_export(client):
+    import io
+    import json
+    import zipfile
+
+    assert client.get('/api/instances/missing/code-export').status_code == 404
+    flow_id, release = seed_published(client, valid_doc())
+    started = client.post(f'/api/flows/{flow_id}/instances', json={
+        'releaseId': release['id'], 'input': {'voltage': 230},
+    })
+    assert started.status_code == 200, started.text
+    instance_id = started.json()['id']
+    exported = client.get(f'/api/instances/{instance_id}/code-export')
+    assert exported.status_code == 200, exported.text
+    assert exported.headers['content-type'] == 'application/zip'
+    assert 'code.zip' in exported.headers['content-disposition']
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        assert 'flow.py' in archive.namelist()
+        assert 'runtime/generated_runtime.py' in archive.namelist()
+        assert 'runtime/terminal_runner.py' in archive.namelist()
+        assert json.loads(archive.read('configuration.json'))['input']['global']['voltage'] is None
+        assert not any(name.endswith('.pkl') or name.startswith('branches/') for name in archive.namelist())
+    client.post(f'/api/instances/{instance_id}/terminate').raise_for_status()
+
+
+def test_plain_class_project_catalog(client):
+    project_dir = BACKEND_DIR.parent / 'examples' / 'composed-basic' / 'data_tools'
+    created = client.post('/api/projects', json={
+        'name': '普通数据工程', 'path': str(project_dir), 'module': 'records',
+    })
+    assert created.status_code == 200, created.text
+    project_id = created.json()['id']
+
+    legacy = client.get(f'/api/projects/{project_id}/functions')
+    assert legacy.status_code == 200
+    assert legacy.json() == []
+    catalog = client.get(f'/api/projects/{project_id}/functions?catalog=true&module=records')
+    assert catalog.status_code == 200, catalog.text
+    entries = {entry['name']: entry for entry in catalog.json()}
+    assert {'Dataset', 'Dataset.from_file', 'Dataset.series'} <= entries.keys()
+    assert entries['Dataset']['kind'] == 'constructor'
+    assert entries['Dataset.from_file']['kind'] == 'class_method'
+    assert entries['Dataset.series']['kind'] == 'instance_method'
+    assert entries['Dataset']['params'][0]['name'] == 'values'
+
+    broken = client.get(f'/api/projects/{project_id}/functions?catalog=true&module=missing_module')
+    assert broken.status_code == 422
+    assert 'missing_module' in broken.json()['detail']
+
+
 def register_demo_project(client, tmp_path, name: str = "冷却系统") -> dict:
     """在本机真实目录里造一个可 import 的工程，让 probe 子进程能跑起来。"""
     project_dir = tmp_path / "demo-project"
@@ -423,49 +478,124 @@ def publish_doc(client, doc: dict) -> tuple[int, dict]:
     return response.status_code, response.json()
 
 
-def test_publish_binds_only_real_params(client, tmp_path):
-    """发布时按探测到的签名过滤参数：threshold 有默认值就不要传。"""
+def composed_doc(
+    project: str,
+    module: str,
+    interface: str,
+    inputs: list[dict] | None = None,
+    arguments: dict | None = None,
+) -> dict:
+    """开始节点 + 一个槽位排查节点（展示与判定指向同一接口）+ 上升。"""
+    declared = inputs if inputs is not None else [{"name": "voltage", "type": "number"}]
+    args = arguments if arguments is not None else {"voltage": {"source": "input", "name": "voltage"}}
+    call = {"project": project, "module": module, "interface": interface,
+            "function": interface, "arguments": args}
+    return {
+        "format": 1,
+        "name": "槽位发布诊断",
+        "nodes": [
+            start_doc_node(declared),
+            {
+                "id": "n1",
+                "kind": "investigation",
+                "title": "调用槽位接口",
+                "detail": "读取接口返回值",
+                "fields": {
+                    "observation": "返回值",
+                    "acquisition": "调用接口",
+                    "assessment": "返回 True 判为命中",
+                },
+                "slots": {"present": {**call, "view": "text"}, "decide": {**call}},
+                "position": {"x": 0, "y": 100},
+            },
+            {
+                "id": "n2",
+                "kind": "escalation",
+                "title": "上升",
+                "detail": "转交专家",
+                "position": {"x": 0, "y": 200},
+            },
+        ],
+        "edges": [
+            {"id": "e0", "from": "n0", "to": "n1"},
+            {"id": "e1", "from": "n1", "to": "n2", "branch": "yes", "order": 1},
+        ],
+    }
+
+
+def test_publish_compiles_slot_chain(client, tmp_path):
+    """发布按槽位生成步骤表，并记录接口签名指纹。"""
     register_demo_project(client, tmp_path)
 
-    doc = valid_doc()
-    doc["snapshotFields"] = ["voltage"]
-    node_of(doc, "n1")["binding"] = {"project": "冷却系统", "function": "judge_voltage"}
-
+    doc = composed_doc("冷却系统", "cooling.diagnosis", "judge_voltage",
+                       arguments={"voltage": {"source": "input", "name": "voltage"}})
     status, body = publish_doc(client, doc)
     assert status == 200, body
 
     detail = client.get(f"/api/releases/{body['id']}").json()
-    assert detail["plan"]["steps"]["n1"]["call"] == {
-        "project": "冷却系统",
-        "function": "judge_voltage",
-        "args": {"voltage": {"snapshot": "voltage"}},
-    }
-    assert "冷却系统:judge_voltage" in detail["signature"]
+    step = detail["plan"]["steps"]["n1"]
+    assert step["slots"]["decide"]["interface"] == "judge_voltage"
+    assert step["slots"]["present"]["view"] == "text"
+    assert "冷却系统:cooling.diagnosis:judge_voltage" in detail["signature"]
 
 
-def test_publish_reports_missing_required_param(client, tmp_path):
-    """启动参数里没有 voltage 时，缺必填参数要在发布期就报错，不能拖到执行。"""
+def test_publish_reports_missing_required_argument(client, tmp_path):
+    """接口必填参数没有来源时，发布期就报错，不拖到执行。"""
     register_demo_project(client, tmp_path, name="冷却系统2")
 
-    doc = valid_doc()
-    node_of(doc, "n0")["inputs"] = []  # 开始节点没声明 voltage，节点也就没有来源
-    node_of(doc, "n1")["binding"] = {"project": "冷却系统2", "function": "judge_voltage"}
-
+    doc = composed_doc("冷却系统2", "cooling.diagnosis", "judge_voltage", arguments={})
     status, body = publish_doc(client, doc)
     assert status == 422, body
     messages = " ".join(item.get("message", "") for item in body["detail"])
-    assert "voltage" in messages
+    assert "缺少必填参数 voltage" in messages
 
 
 def test_publish_rejects_unprobeable_project(client):
     """探测失败不降级放行：工程没登记就直接拒绝发布。"""
-    doc = valid_doc()
-    node_of(doc, "n1")["binding"] = {"project": "没登记的工程", "function": "judge_voltage"}
-
+    doc = composed_doc("没登记的工程", "cooling.diagnosis", "judge_voltage",
+                       arguments={"voltage": {"source": "input", "name": "voltage"}})
     status, body = publish_doc(client, doc)
     assert status == 422, body
     messages = " ".join(item.get("message", "") for item in body["detail"])
-    assert "接口探测失败" in messages
+    assert "工程未登记" in messages
+
+
+def test_import_rejects_removed_format(client):
+    """旧接入格式导入直接 422，不能静默变成人工流程。"""
+    doc = valid_doc()
+    node_of(doc, "n1")["binding"] = {"project": "旧工程", "function": "judge"}
+    response = client.post("/api/flows/import", json={"doc": doc})
+    assert response.status_code == 422, response.text
+    messages = " ".join(item.get("message", "") for item in response.json()["detail"])
+    assert "已移除" in messages
+
+    flow = create_flow(client)
+    client.post(f"/api/flows/{flow['id']}/checkout").raise_for_status()
+    client.put(f"/api/flows/{flow['id']}/working", json={"doc": doc}).raise_for_status()
+    commit = client.post(f"/api/flows/{flow['id']}/commit")
+    assert commit.status_code == 200, commit.text
+    assert any("已移除" in item["message"] for item in commit.json()["issues"])
+    publish = client.post(f"/api/flows/{flow['id']}/releases", json={})
+    assert publish.status_code == 422, publish.text
+
+
+def test_import_rejects_removed_format(client):
+    """旧接入格式导入直接 422，不能静默变成人工流程。"""
+    doc = valid_doc()
+    node_of(doc, "n1")["binding"] = {"project": "旧工程", "function": "judge"}
+    response = client.post("/api/flows/import", json={"doc": doc})
+    assert response.status_code == 422, response.text
+    messages = " ".join(item.get("message", "") for item in response.json()["detail"])
+    assert "已移除" in messages
+
+    flow = create_flow(client)
+    client.post(f"/api/flows/{flow['id']}/checkout").raise_for_status()
+    client.put(f"/api/flows/{flow['id']}/working", json={"doc": doc}).raise_for_status()
+    commit = client.post(f"/api/flows/{flow['id']}/commit")
+    assert commit.status_code == 200, commit.text
+    assert any("已移除" in item["message"] for item in commit.json()["issues"])
+    publish = client.post(f"/api/flows/{flow['id']}/releases", json={})
+    assert publish.status_code == 422, publish.text
 
 
 def test_escalation_ends_as_escalated(client):
@@ -513,7 +643,7 @@ def test_escalation_ends_as_escalated(client):
     instance = client.post(f"/api/flows/{flow_id}/instances", json={"input": {}}).json()
     review = wait_for_review(client, instance["id"], "decision")
     client.post(
-        f"/api/instances/{instance['id']}/reviews/{review['id']}", json={"result": "no"}
+        f"/api/instances/{instance['id']}/reviews/{review['id']}", json={"result": "no", "reason": "人工确认"}
     ).raise_for_status()
 
     deadline = time.time() + 8
@@ -542,61 +672,25 @@ def wait_for_review(client, instance_id: str, kind: str, timeout: float = 8.0) -
 
 
 def test_commit_is_lenient_but_publish_is_strict(client, tmp_path):
-    """保存允许半成品：参数来源找不到只给 warning；发布时才 422 拦下。"""
+    """保存允许半成品：组合配置问题只给 warning；发布时才 422 拦下。"""
     register_demo_project(client, tmp_path, name="冷却系统B")
 
-    fields = {
-        "observation": "母线电压",
-        "acquisition": "读取 voltage",
-        "assessment": "低于 210V 判为异常",
-    }
-    doc = {
-        "format": 1,
-        "name": "半成品",
-        "mode": "parallel",
-        "nodes": [
-            start_doc_node([{"name": "voltage", "scope": "global"}]),
-            {
-                "id": "n1",
-                "kind": "investigation",
-                "title": "读电压",
-                "detail": "读取母线电压",
-                "fields": fields,
-                "binding": {"project": "冷却系统B", "function": "judge_voltage"},
-                # 显式指向一个不存在的来源：保存放过，发布必须拦
-                "params": {"voltage": "还没建的上游节点"},
-                "outputs": ["voltage"],
-                "position": {"x": 0, "y": 0},
-            },
-            {
-                "id": "n2",
-                "kind": "escalation",
-                "title": "上升",
-                "detail": "转交专家",
-                "position": {"x": 0, "y": 200},
-            },
-        ],
-        "edges": [
-            {"id": "e0", "from": "n0", "to": "n1"},
-            {"id": "e1", "from": "n1", "to": "n2", "branch": "yes", "order": 1},
-        ],
-    }
-
-    flow = create_flow(client, name="半成品")
+    doc = composed_doc("冷却系统B", "cooling.diagnosis", "judge_voltage",
+                       arguments={"voltage": {"source": "resource", "name": "还没建的上游资源"}})
+    flow = create_flow(client)
     flow_id = flow["id"]
     client.post(f"/api/flows/{flow_id}/checkout").raise_for_status()
     client.put(f"/api/flows/{flow_id}/working", json={"doc": doc}).raise_for_status()
-
     commit = client.post(f"/api/flows/{flow_id}/commit")
     assert commit.status_code == 200, commit.text
     warnings = commit.json()["issues"]
-    assert any("还没建的上游节点" in item["message"] for item in warnings), warnings
+    assert any("来源无效" in item["message"] for item in warnings), warnings
     assert all(item["level"] == "warning" for item in warnings), warnings
 
     publish = client.post(f"/api/flows/{flow_id}/releases", json={})
     assert publish.status_code == 422, publish.text
     messages = " ".join(item["message"] for item in publish.json()["detail"])
-    assert "还没建的上游节点" in messages
+    assert "来源无效" in messages
 
 
 def test_rollback_to_single_exit_node(client):
@@ -613,7 +707,7 @@ def test_rollback_to_single_exit_node(client):
 
     decision = wait_for_review(client, instance["id"], "decision")
     client.post(
-        f"/api/instances/{instance['id']}/reviews/{decision['id']}", json={"result": "yes"}
+        f"/api/instances/{instance['id']}/reviews/{decision['id']}", json={"result": "yes", "reason": "人工确认"}
     ).raise_for_status()
 
     # 动作待办出现 = 结论 n2 已执行、n3 正在等人工
@@ -628,6 +722,18 @@ def test_rollback_to_single_exit_node(client):
     assert body["status"] in {"running", "waiting", "paused"}
     # 旧待办被取消，不该再有待处理项挂在新一代上
     assert any(item["status"] == "cancelled" for item in body["reviews"])
+    # 回退本身也要留痕：轨迹里能看到从哪个到访退、按哪个分支、为什么
+    rolled = [run for run in body["runs"] if run["status"] == "rollback"]
+    assert rolled, [run["status"] for run in body["runs"]]
+    assert rolled[0]["nodeId"] == "n2"
+    assert rolled[0]["input"]["reason"] == "结论有误，重判"
+    assert rolled[0]["input"]["branch"] == "default"
+    # 回退本身也要留痕：轨迹里能看到从哪个到访退、按哪个分支、为什么
+    rolled = [run for run in body["runs"] if run["status"] == "rollback"]
+    assert rolled, [run["status"] for run in body["runs"]]
+    assert rolled[0]["nodeId"] == "n2"
+    assert rolled[0]["input"]["reason"] == "结论有误，重判"
+    assert rolled[0]["input"]["branch"] == "default"
 
 
 # ---------------------------------------------------------------- 目录与移动
@@ -766,21 +872,26 @@ def register_input_project(client, tmp_path, name: str = "输入工程") -> dict
     return response.json()
 
 
-def input_doc(project: str, inputs: list[dict] | None = None) -> dict:
-    """开始节点声明 global 与 function 两种作用域的启动参数。"""
+def input_doc(
+    project: str,
+    inputs: list[dict] | None = None,
+    arguments: dict | None = None,
+) -> dict:
+    """开始节点声明全局启动参数，排查节点在展示与判定槽里调用 check。"""
+    declared = inputs if inputs is not None else [
+        {"name": "fault_time", "type": "datetime"},
+        {"name": "device_id", "type": "text"},
+    ]
+    args = arguments if arguments is not None else {
+        item["name"]: {"source": "input", "name": item["name"]} for item in declared
+    }
+    call = {"project": project, "module": "inputs.diagnosis",
+            "interface": "check", "function": "check", "arguments": args}
     return {
         "format": 1,
         "name": "带启动参数",
-        "mode": "parallel",
         "nodes": [
-            start_doc_node(
-                inputs
-                if inputs is not None
-                else [
-                    {"name": "fault_time", "scope": "global"},
-                    {"name": "device_id", "scope": "function", "function": "check"},
-                ]
-            ),
+            start_doc_node(declared),
             {
                 "id": "n1",
                 "kind": "investigation",
@@ -791,7 +902,7 @@ def input_doc(project: str, inputs: list[dict] | None = None) -> dict:
                     "acquisition": "调用 check",
                     "assessment": "返回 True 判为命中",
                 },
-                "binding": {"project": project, "function": "check"},
+                "slots": {"present": {**call, "view": "text"}, "decide": {**call}},
                 "position": {"x": 0, "y": 100},
             },
             {
@@ -831,22 +942,18 @@ def test_release_freezes_start_inputs(client, tmp_path):
 
     # datetime 注解 → datetime 控件；签名无默认值 → 必填
     assert inputs["fault_time"]["type"] == "datetime"
-    assert inputs["fault_time"]["scope"] == "global"
     assert inputs["fault_time"]["required"] is True
-    assert inputs["fault_time"]["function"] is None
 
-    # 函数作用域按函数名隔离
-    assert inputs["device_id"]["scope"] == "function"
-    assert inputs["device_id"]["function"] == "check"
+    assert inputs["device_id"]["type"] == "text"
     assert inputs["device_id"]["required"] is True
 
     # 改 doc 后重新发布，老版本的冻结结果不能变
     changed = input_doc(
         "输入工程",
         [
-            {"name": "fault_time", "scope": "global"},
-            {"name": "device_id", "scope": "function", "function": "check"},
-            {"name": "retry", "scope": "global"},
+            {"name": "fault_time", "type": "datetime"},
+            {"name": "device_id", "type": "text"},
+            {"name": "retry", "type": "number"},
         ],
     )
     client.post(f"/api/flows/{flow_id}/checkout").raise_for_status()
@@ -875,7 +982,6 @@ def test_instance_start_requires_required_inputs(client, tmp_path):
     assert missing_all.status_code == 400, missing_all.text
     assert missing_all.json()["detail"] == "缺少启动参数：fault_time, device_id"
 
-    # 只给全局那一层还差函数作用域的 device_id
     partial = client.post(
         f"/api/flows/{flow_id}/instances",
         json={"releaseId": release["id"], "input": {"global": {"fault_time": "2026-01-01T08:00:00"}}},
@@ -887,21 +993,17 @@ def test_instance_start_requires_required_inputs(client, tmp_path):
         f"/api/flows/{flow_id}/instances",
         json={
             "releaseId": release["id"],
-            "input": {
-                "global": {"fault_time": "2026-01-01T08:00:00"},
-                "scope": {"check": {"device_id": "D-17"}},
-            },
+            "input": {"global": {"fault_time": "2026-01-01T08:00:00", "device_id": "D-17"}},
         },
     )
     assert full.status_code == 200, full.text
     detail = client.get(f"/api/instances/{full.json()['id']}").json()
     assert detail["snapshot"]["payload"] == {
-        "global": {"fault_time": "2026-01-01T08:00:00"},
-        "scope": {"check": {"device_id": "D-17"}},
+        "global": {"fault_time": "2026-01-01T08:00:00", "device_id": "D-17"},
     }
     assert detail["snapshot"]["source"] == "start"
 
-    # 老前端提交扁平对象时按全局处理，同样落成两层
+    # 老前端提交扁平对象时按全局处理，同样落成 global 层
     flat = client.post(
         f"/api/flows/{flow_id}/instances",
         json={
@@ -909,21 +1011,24 @@ def test_instance_start_requires_required_inputs(client, tmp_path):
             "input": {"fault_time": "2026-01-02T08:00:00", "device_id": "D-18"},
         },
     )
-    # 扁平对象里的 device_id 属于 global 层，函数作用域仍然缺
-    assert flat.status_code == 400, flat.text
+    assert flat.status_code == 200, flat.text
 
 
 def test_instance_fills_release_defaults(client, tmp_path):
-    """启动时先补发布版本冻结的默认值再校验必填；函数局部默认值不泄漏到 global。"""
+    """启动时先补发布版本冻结的默认值再校验必填。"""
     register_input_project(client, tmp_path, name="输入工程3")
     doc = input_doc(
         "输入工程3",
         [
-            {"name": "fault_time", "scope": "global"},
-            {"name": "chamber", "scope": "global"},
-            {"name": "device_id", "scope": "function", "function": "check"},
-            {"name": "retry", "scope": "function", "function": "check", "default": 3},
+            {"name": "fault_time", "type": "datetime"},
+            {"name": "chamber", "type": "text"},
+            {"name": "device_id", "type": "text"},
+            {"name": "retry", "type": "number", "default": 3},
         ],
+        arguments={
+            "fault_time": {"source": "input", "name": "fault_time"},
+            "device_id": {"source": "input", "name": "device_id"},
+        },
     )
     flow_id, release = seed_published(client, doc)
 
@@ -942,32 +1047,29 @@ def test_instance_fills_release_defaults(client, tmp_path):
         f"/api/flows/{flow_id}/instances",
         json={
             "releaseId": release["id"],
-            "input": {
-                "global": {"fault_time": "2026-03-01T09:00:00"},
-                "scope": {"check": {"device_id": "D-9"}},
-            },
+            "input": {"global": {"fault_time": "2026-03-01T09:00:00", "device_id": "D-9"}},
         },
     )
     assert started.status_code == 200, started.text
     payload = client.get(f"/api/instances/{started.json()['id']}").json()["snapshot"]["payload"]
-    assert payload["global"] == {"fault_time": "2026-03-01T09:00:00", "chamber": "A1"}
-    assert payload["scope"]["check"] == {"device_id": "D-9", "retry": 3}
+    assert payload["global"] == {
+        "fault_time": "2026-03-01T09:00:00", "device_id": "D-9",
+        "chamber": "A1", "retry": 3,
+    }
 
     # 请求里给了值就以请求为准，默认不覆盖用户输入
     override = client.post(
         f"/api/flows/{flow_id}/instances",
         json={
             "releaseId": release["id"],
-            "input": {
-                "global": {"fault_time": "2026-03-02T09:00:00", "chamber": "B2"},
-                "scope": {"check": {"device_id": "D-10", "retry": 5}},
-            },
+            "input": {"global": {"fault_time": "2026-03-02T09:00:00", "device_id": "D-10",
+                                 "chamber": "B2", "retry": 5}},
         },
     )
     assert override.status_code == 200, override.text
     payload = client.get(f"/api/instances/{override.json()['id']}").json()["snapshot"]["payload"]
     assert payload["global"]["chamber"] == "B2"
-    assert payload["scope"]["check"]["retry"] == 5
+    assert payload["global"]["retry"] == 5
 
 
 def test_freeze_inputs_skips_untrusted_default():
@@ -1028,50 +1130,16 @@ def test_publish_skips_untrusted_signature_default(client, tmp_path):
     )
     assert registered.status_code == 200, registered.text
 
-    doc = {
-        "format": 1,
-        "name": "默认值诊断",
-        "mode": "parallel",
-        "nodes": [
-            start_doc_node([{"name": "when", "scope": "global"}]),
-            {
-                "id": "n1",
-                "kind": "investigation",
-                "title": "按时间判断",
-                "detail": "调用 scheduled",
-                "fields": {
-                    "observation": "计划时间",
-                    "acquisition": "调用 scheduled",
-                    "assessment": "返回 True 判为命中",
-                },
-                "binding": {"project": "默认值工程", "function": "scheduled"},
-                "position": {"x": 0, "y": 100},
-            },
-            {
-                "id": "n2",
-                "kind": "escalation",
-                "title": "上升",
-                "detail": "转交专家",
-                "position": {"x": 0, "y": 200},
-            },
-        ],
-        "edges": [
-            {"id": "e0", "from": "n0", "to": "n1"},
-            {"id": "e1", "from": "n1", "to": "n2", "branch": "yes", "order": 1},
-        ],
-    }
-    _flow_id, release = seed_published(client, doc)
-
+    doc = composed_doc("默认值工程", "untrusted.diagnosis", "scheduled",
+                       inputs=[{"name": "when", "type": "datetime"}], arguments={})
+    flow_id, release = seed_published(client, doc)
     detail = client.get(f"/api/releases/{release['id']}").json()
     inputs = {item["name"]: item for item in detail["inputs"]}
     assert inputs["when"]["required"] is False
-    assert inputs["when"]["type"] == "datetime"
-    # 关键：不能出现 "datetime.datetime(2020, 1, 1, 0, 0)" 这种 repr 假值
     assert inputs["when"]["default"] is None
 
-    # 留空也能跑：plan 里这个可选参数标了 optional，调度期取不到值就省略，交给函数默认值
     started = client.post(
-        f"/api/flows/{_flow_id}/instances", json={"releaseId": release["id"], "input": {}}
+        f"/api/flows/{flow_id}/instances", json={"releaseId": release["id"], "input": {}}
     )
     assert started.status_code == 200, started.text
     instance_id = started.json()["id"]
@@ -1085,8 +1153,6 @@ def test_publish_skips_untrusted_signature_default(client, tmp_path):
     assert body["status"] != "failed", [run.get("error") for run in body["runs"]]
     call_run = next(run for run in body["runs"] if run["nodeId"] == "n1")
     assert call_run["status"] == "ok"
-    # 参数被省略，而不是塞一个空值或 repr 字符串
-    assert "when" not in (call_run["input"] or {})
 
 
 def test_probe_returns_function_signatures(client, tmp_path):
@@ -1097,21 +1163,22 @@ def test_probe_returns_function_signatures(client, tmp_path):
     response = client.post(f"/api/flows/{flow['id']}/probe", json={"doc": doc})
     assert response.status_code == 200, response.text
     probed = response.json()
-    assert "探测工程:check" in probed
-    params = {item["name"]: item for item in probed["探测工程:check"]}
+    assert "探测工程:inputs.diagnosis:check" in probed
+    params = {item["name"]: item for item in probed["探测工程:inputs.diagnosis:check"]}
     assert params["fault_time"]["required"] is True
     assert params["fault_time"]["type"] == "datetime"
     assert params["retry"]["required"] is False
 
-    # 探测失败按 {"error"} 回给面板，不冒 500（工程未登记时错误挂在工程名上）
+    # 探测失败按 {"error"} 回给面板，不冒 500
     unknown = client.post(
         f"/api/flows/{flow['id']}/probe",
         json={"doc": input_doc("没登记的工程")},
     )
     assert unknown.status_code == 200, unknown.text
     reported = unknown.json()
-    failed = reported.get("没登记的工程") or reported.get("没登记的工程:check")
-    assert isinstance(failed, dict) and failed.get("error"), reported
+    failed = next((value for value in reported.values()
+                   if isinstance(value, dict) and value.get("error")), None)
+    assert failed, reported
 
     assert client.post("/api/flows/missing/probe", json={"doc": doc}).status_code == 404
 
@@ -1181,3 +1248,342 @@ def test_init_db_migrates_old_database(tmp_path, monkeypatch):
         # 老版本没有启动表单列，读出空数组而不是报错
         release = client.get("/api/releases/r1").json()
         assert release["inputs"] == []
+
+        # 已废弃的 mode 列必须删掉：旧库里它是 NOT NULL 无默认值，留着会让新建流程撞约束
+        created = client.post("/api/flows", json={"name": "迁移后新建"})
+        assert created.status_code == 200, created.text
+        assert created.json()["name"] == "迁移后新建"
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(flows)")}
+    conn.close()
+    assert "mode" not in columns
+
+
+def test_startup_reports_stale_instances(client, caplog):
+    """后端重启后，未结束的实例必须被点名，否则界面看起来只是「卡在某个节点」。"""
+    import logging
+
+    from app import db, models
+
+    flow = create_flow(client)
+    with db.SessionLocal() as session:
+        session.add(models.Instance(id="stale1", flow_id=flow["id"], release_id="r1", status="running"))
+        session.add(models.Instance(id="stale2", flow_id=flow["id"], release_id="r1", status="waiting"))
+        session.commit()
+
+    from app import main as app_main
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        app_main._report_stale_instances()
+
+    text = caplog.text
+    assert "2 个上次未结束的实例" in text
+    assert "stale1(running)" in text and "stale2(waiting)" in text
+
+
+def test_startup_reports_stale_instances(client, caplog):
+    """后端重启后，未结束的实例必须被点名，否则界面看起来只是「卡在某个节点」。"""
+    import logging
+
+    from app import db, models
+
+    flow = create_flow(client)
+    with db.SessionLocal() as session:
+        session.add(models.Instance(id="stale1", flow_id=flow["id"], release_id="r1", status="running"))
+        session.add(models.Instance(id="stale2", flow_id=flow["id"], release_id="r1", status="waiting"))
+        session.commit()
+
+    from app import main as app_main
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        app_main._report_stale_instances()
+
+    text = caplog.text
+    assert "2 个上次未结束的实例" in text
+    assert "stale1(running)" in text and "stale2(waiting)" in text
+
+
+def test_node_error_creates_failure_review(client, tmp_path):
+    """执行报错不直接判失败：挂起并按「回退 / 结束」交给人决定。"""
+    register_demo_project(client, tmp_path)
+    doc = composed_doc("冷却系统", "cooling.diagnosis", "judge_voltage",
+                       inputs=[{"name": "voltage", "type": "text"}],
+                       arguments={"voltage": {"source": "input", "name": "voltage"}})
+    flow_id, release = seed_published(client, doc)
+
+    started = client.post(f"/api/flows/{flow_id}/instances", json={
+        "releaseId": release["id"], "input": {"voltage": "abc"},
+    })
+    assert started.status_code == 200, started.text
+    instance = started.json()["id"]
+
+    review = wait_for_review(client, instance, "failure")
+    assert "TypeError" in review["request"]["detail"]
+
+    detail = client.get(f"/api/instances/{instance}").json()
+    assert detail["status"] == "waiting"
+    failed = [run for run in detail["runs"] if run["status"] == "failed"]
+    assert failed and failed[0]["error"].startswith("execution/")
+
+    stopped = client.post(f"/api/instances/{instance}/reviews/{review['id']}", json={"result": "stop"})
+    assert stopped.status_code == 200, stopped.text
+    body = stopped.json()
+    assert body["status"] == "failed"
+    assert all(item["status"] != "pending" for item in body["reviews"])
+
+
+def test_node_error_creates_failure_review(client, tmp_path):
+    """执行报错不直接判失败：挂起并按「回退 / 结束」交给人决定。"""
+    register_demo_project(client, tmp_path)
+    doc = composed_doc("冷却系统", "cooling.diagnosis", "judge_voltage",
+                       inputs=[{"name": "voltage", "type": "text"}],
+                       arguments={"voltage": {"source": "input", "name": "voltage"}})
+    flow_id, release = seed_published(client, doc)
+
+    started = client.post(f"/api/flows/{flow_id}/instances", json={
+        "releaseId": release["id"], "input": {"voltage": "abc"},
+    })
+    assert started.status_code == 200, started.text
+    instance = started.json()["id"]
+
+    review = wait_for_review(client, instance, "failure")
+    assert "TypeError" in review["request"]["detail"]
+
+    detail = client.get(f"/api/instances/{instance}").json()
+    assert detail["status"] == "waiting"
+    failed = [run for run in detail["runs"] if run["status"] == "failed"]
+    assert failed and failed[0]["error"].startswith("execution/")
+
+    stopped = client.post(f"/api/instances/{instance}/reviews/{review['id']}", json={"result": "stop"})
+    assert stopped.status_code == 200, stopped.text
+    body = stopped.json()
+    assert body["status"] == "failed"
+    assert all(item["status"] != "pending" for item in body["reviews"])
+
+
+def error_doc(project: str, bad_voltage: str) -> dict:
+    """n1 人工判断通过 → n2 用非法入参触发执行报错，用来验证「回退」入口。"""
+    call = {"project": project, "module": "cooling.diagnosis", "interface": "judge_voltage",
+            "function": "judge_voltage", "arguments": {"voltage": {"lit": bad_voltage}}}
+    return {
+        "format": 1, "name": "报错回退",
+        "nodes": [
+            start_doc_node([{"name": "voltage", "type": "number"}]),
+            {"id": "n1", "kind": "investigation", "title": "先看一眼", "detail": "人工确认电压",
+             "fields": {"observation": "电压", "acquisition": "人工", "assessment": "正常继续"},
+             "slots": {"present": {**call, "arguments": {"voltage": {"source": "input", "name": "voltage"}},
+                                   "view": "text"},
+                       "decide": {"human": True}},
+             "position": {"x": 0, "y": 0}},
+            {"id": "n2", "kind": "investigation", "title": "再判一次", "detail": "用非法入参触发报错",
+             "fields": {"observation": "电压", "acquisition": "调用", "assessment": "异常上升"},
+             "slots": {"present": {**call, "view": "text"}, "decide": {**call}},
+             "position": {"x": 0, "y": 100}},
+            {"id": "esc", "kind": "escalation", "title": "上升", "detail": "转人工",
+             "position": {"x": 0, "y": 200}},
+        ],
+        "edges": [
+            {"id": "e0", "from": "n0", "to": "n1"},
+            {"id": "e1", "from": "n1", "to": "n2", "branch": "yes", "order": 1},
+            {"id": "e2", "from": "n1", "to": "esc", "branch": "no", "order": 2},
+            {"id": "e3", "from": "n2", "to": "esc", "branch": "yes", "order": 1},
+        ],
+    }
+
+
+def test_no_successor_is_route_failure(client, tmp_path):
+    """判定为否但没配否分支：记排查失败，不生成报错待办。"""
+    register_demo_project(client, tmp_path)
+    doc = composed_doc("冷却系统", "cooling.diagnosis", "judge_voltage",
+                       inputs=[{"name": "voltage", "type": "number"}],
+                       arguments={"voltage": {"source": "input", "name": "voltage"}})
+    doc["nodes"] = [node for node in doc["nodes"] if node["id"] != "n2"]
+    doc["nodes"] += [
+        {"id": "c1", "kind": "conclusion", "title": "结论：电压正常", "detail": "无需处置"},
+        {"id": "esc", "kind": "escalation", "title": "上升", "detail": "转人工", "position": {"x": 0, "y": 200}},
+    ]
+    doc["edges"] = [{"id": "e0", "from": "n0", "to": "n1"},
+                    {"id": "e1", "from": "n1", "to": "c1", "branch": "yes", "order": 1},
+                    {"id": "e2", "from": "c1", "to": "esc"}]
+    flow_id, release = seed_published(client, doc)
+
+    started = client.post(f"/api/flows/{flow_id}/instances", json={
+        "releaseId": release["id"], "input": {"voltage": 200},
+    })
+    assert started.status_code == 200, started.text
+    instance = started.json()["id"]
+
+    deadline = time.time() + 10
+    detail = client.get(f"/api/instances/{instance}").json()
+    while time.time() < deadline and detail["status"] in {"running", "waiting"}:
+        time.sleep(0.2)
+        detail = client.get(f"/api/instances/{instance}").json()
+    assert detail["status"] == "failed"
+    failed = [run for run in detail["runs"] if run["status"] == "failed"]
+    assert failed and failed[0]["error"].startswith("route/no-successor")
+    assert not [item for item in detail["reviews"] if item["kind"] == "failure"]
+
+
+def test_failure_review_allows_rollback(client, tmp_path):
+    """报错待办未处理时也能回退：回退接口不能只看实例状态。"""
+    register_demo_project(client, tmp_path)
+    flow_id, release = seed_published(client, error_doc("冷却系统", "abc"))
+
+    started = client.post(f"/api/flows/{flow_id}/instances", json={
+        "releaseId": release["id"], "input": {"voltage": 205},
+    })
+    assert started.status_code == 200, started.text
+    instance = started.json()["id"]
+
+    decision = wait_for_review(client, instance, "decision")
+    client.post(f"/api/instances/{instance}/reviews/{decision['id']}",
+                json={"result": "yes", "reason": "人工确认"}).raise_for_status()
+    wait_for_review(client, instance, "failure")
+
+    rolled = client.post(f"/api/instances/{instance}/rollback",
+                         json={"targetNodeId": "n1", "branch": "yes", "reason": "换个方向"})
+    assert rolled.status_code == 200, rolled.text
+    body = rolled.json()
+    assert body["status"] in {"running", "waiting"}
+    assert all(item["status"] != "pending" or item["kind"] != "failure" for item in body["reviews"])
+
+
+def parallel_error_doc(project: str) -> dict:
+    """两条并行思路：n1 用非法入参报错，n2 正常走完后上升。"""
+    broken = {"project": project, "module": "cooling.diagnosis", "interface": "judge_voltage",
+              "function": "judge_voltage", "arguments": {"voltage": {"lit": "abc"}}}
+    good = {"project": project, "module": "cooling.diagnosis", "interface": "judge_voltage",
+            "function": "judge_voltage", "arguments": {"voltage": {"source": "input", "name": "voltage"}}}
+    return {
+        "format": 1, "name": "并行报错",
+        "nodes": [
+            start_doc_node([{"name": "voltage", "type": "number"}]),
+            {"id": "n1", "kind": "investigation", "title": "会报错的一路", "detail": "非法入参",
+             "fields": {"observation": "电压", "acquisition": "调用", "assessment": "异常"},
+             "slots": {"present": {**broken, "view": "text"}, "decide": {**broken}},
+             "position": {"x": 0, "y": 0}},
+            {"id": "n2", "kind": "investigation", "title": "正常的一路", "detail": "正常判定",
+             "fields": {"observation": "电压", "acquisition": "调用", "assessment": "正常"},
+             "slots": {"present": {**good, "view": "text"}, "decide": {**good}},
+             "position": {"x": 0, "y": 100}},
+            {"id": "esc", "kind": "escalation", "title": "上升", "detail": "转人工",
+             "position": {"x": 0, "y": 200}},
+        ],
+        "edges": [
+            {"id": "e0", "from": "n0", "to": "n1", "order": 1},
+            {"id": "e1", "from": "n0", "to": "n2", "order": 2},
+            {"id": "e2", "from": "n1", "to": "esc", "branch": "yes", "order": 1},
+            {"id": "e3", "from": "n2", "to": "esc", "branch": "yes", "order": 1},
+        ],
+    }
+
+
+def test_parallel_failure_stop_keeps_other_branch(client, tmp_path):
+    """并行下选择结束流程，只结束出错的分支，另一条思路继续跑完。"""
+    register_demo_project(client, tmp_path)
+    flow_id, release = seed_published(client, parallel_error_doc("冷却系统"))
+
+    started = client.post(f"/api/flows/{flow_id}/instances", json={
+        "releaseId": release["id"], "input": {"voltage": 215},
+        "runtime": {"mode": "parallel", "maxParallel": 2},
+    })
+    assert started.status_code == 200, started.text
+    instance = started.json()["id"]
+
+    review = wait_for_review(client, instance, "failure")
+    stopped = client.post(f"/api/instances/{instance}/reviews/{review['id']}", json={"result": "stop"})
+    assert stopped.status_code == 200, stopped.text
+    assert stopped.json()["status"] != "terminated"
+
+    deadline = time.time() + 20
+    detail = client.get(f"/api/instances/{instance}").json()
+    while time.time() < deadline and detail["status"] in {"running", "waiting"}:
+        time.sleep(0.2)
+        detail = client.get(f"/api/instances/{instance}").json()
+
+    assert detail["status"] == "escalated", detail["status"]
+    assert any(run["status"] == "failed" and run["nodeId"] == "n1" for run in detail["runs"])
+
+
+def test_failure_review_holds_queued_branches(client, tmp_path):
+    """报错待办没处理前，排队中的分支不能抢先跑。"""
+    register_demo_project(client, tmp_path)
+    flow_id, release = seed_published(client, parallel_error_doc("冷却系统"))
+
+    started = client.post(f"/api/flows/{flow_id}/instances", json={
+        "releaseId": release["id"], "input": {"voltage": 215},
+        "runtime": {"mode": "parallel", "maxParallel": 1},
+    })
+    assert started.status_code == 200, started.text
+    instance = started.json()["id"]
+
+    wait_for_review(client, instance, "failure")
+    time.sleep(0.5)
+    detail = client.get(f"/api/instances/{instance}").json()
+    queued = [token for token in detail["tokens"] if token["nodeId"] == "n2"]
+    assert queued and queued[0]["status"] == "queued", queued
+    assert all(run["nodeId"] != "n2" for run in detail["runs"])
+
+    review = next(item for item in detail["reviews"] if item["kind"] == "failure")
+    client.post(f"/api/instances/{instance}/reviews/{review['id']}",
+                json={"result": "stop"}).raise_for_status()
+
+    deadline = time.time() + 10
+    detail = client.get(f"/api/instances/{instance}").json()
+    while time.time() < deadline and detail["status"] in {"running", "waiting"}:
+        time.sleep(0.2)
+        detail = client.get(f"/api/instances/{instance}").json()
+    assert detail["status"] == "escalated", detail["status"]
+    assert any(run["nodeId"] == "n2" for run in detail["runs"])
+
+
+def test_failure_review_holds_queued_branches(client, tmp_path):
+    """报错待办没处理前，排队中的分支不能抢先跑。"""
+    register_demo_project(client, tmp_path)
+    flow_id, release = seed_published(client, parallel_error_doc("冷却系统"))
+
+    started = client.post(f"/api/flows/{flow_id}/instances", json={
+        "releaseId": release["id"], "input": {"voltage": 215},
+        "runtime": {"mode": "parallel", "maxParallel": 1},
+    })
+    assert started.status_code == 200, started.text
+    instance = started.json()["id"]
+
+    wait_for_review(client, instance, "failure")
+    time.sleep(0.5)
+    detail = client.get(f"/api/instances/{instance}").json()
+    queued = [token for token in detail["tokens"] if token["nodeId"] == "n2"]
+    assert queued and queued[0]["status"] == "queued", queued
+    assert all(run["nodeId"] != "n2" for run in detail["runs"])
+
+    review = next(item for item in detail["reviews"] if item["kind"] == "failure")
+    client.post(f"/api/instances/{instance}/reviews/{review['id']}",
+                json={"result": "stop"}).raise_for_status()
+
+    deadline = time.time() + 10
+    detail = client.get(f"/api/instances/{instance}").json()
+    while time.time() < deadline and detail["status"] in {"running", "waiting"}:
+        time.sleep(0.2)
+        detail = client.get(f"/api/instances/{instance}").json()
+    assert detail["status"] == "escalated", detail["status"]
+    assert any(run["nodeId"] == "n2" for run in detail["runs"])
+
+
+def test_human_decision_requires_reason(client, tmp_path):
+    """人工判断必须写依据：没有依据直接拒绝，写了才推进。"""
+    register_demo_project(client, tmp_path)
+    flow_id, release = seed_published(client, error_doc("冷却系统", "abc"))
+    started = client.post(f"/api/flows/{flow_id}/instances", json={
+        "releaseId": release["id"], "input": {"voltage": 205},
+    })
+    instance = started.json()["id"]
+    review = wait_for_review(client, instance, "decision")
+
+    rejected = client.post(f"/api/instances/{instance}/reviews/{review['id']}", json={"result": "yes"})
+    assert rejected.status_code == 409
+    assert "判断依据" in rejected.json()["detail"]
+
+    accepted = client.post(f"/api/instances/{instance}/reviews/{review['id']}",
+                           json={"result": "yes", "reason": "电压正常，继续排查"})
+    assert accepted.status_code == 200, accepted.text
