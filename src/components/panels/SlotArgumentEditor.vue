@@ -23,6 +23,7 @@ const mode = computed(() => {
 })
 const name = computed(() => (props.value && 'name' in props.value ? props.value.name : ''))
 const path = computed(() => (props.value && 'path' in props.value ? props.value.path ?? '' : ''))
+const asReference = computed(() => Boolean(props.value && 'file' in props.value && props.value.file === false))
 const literal = computed(() => (props.value && 'lit' in props.value ? JSON.stringify(props.value.lit) : 'null'))
 const draft = ref('')
 watch(literal, (value) => {
@@ -76,7 +77,7 @@ function changeMode(value: string): void {
   else if (value === 'presentation') emit('update', { source: 'presentation' })
   else emit('update', { source: value as 'input' | 'parameter', name: '' })
 }
-function patch(value: { name?: string; path?: string }): void {
+function patch(value: { name?: string; path?: string; file?: boolean }): void {
   if (props.value && 'source' in props.value) emit('update', { ...props.value, ...value })
 }
 function changeLiteral(text: string): void {
@@ -165,6 +166,13 @@ function addField(name: string): void {
       </p>
       <el-input :model-value="path" :disabled="readonly" size="small"
         placeholder="字段路径，留空用完整值" @update:model-value="patch({ path: $event })" />
+      <el-checkbox :model-value="asReference" :disabled="readonly"
+        @change="patch({ file: $event ? false : undefined })">
+        传上传引用而不是路径
+      </el-checkbox>
+      <p class="hint">
+        上传的文件默认换成本地路径；勾上后原样传 { hash, name }
+      </p>
     </template>
     <el-input v-if="mode === 'lit'" :model-value="draft" :disabled="readonly" size="small"
       placeholder='例如 12、"vibration"、{"peak":12}' @update:model-value="changeLiteral" />

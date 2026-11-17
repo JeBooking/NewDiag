@@ -313,25 +313,25 @@ function patchRuntimeInputs(value: ManualField[]): void {
               可不填；不构造对象时，后面的槽位只能选模块级函数
             </div>
 
-            <SlotCallEditor title="拉取数据" hint="可选；取到的数据由方法自己存进对象，后续节点从对象里取" allow-cache
+            <SlotCallEditor key="start-fetch" title="拉取数据" hint="可选；取到的数据由方法自己存进对象，后续节点从对象里取" allow-cache
               :value="slots.fetch" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
               :readonly="readonly" @update="updateSlot('fetch', $event)" />
-            <SlotCallEditor title="处理数据" hint="可选；上一槽的返回值用「上一槽结果」接收"
+            <SlotCallEditor key="start-process" title="处理数据" hint="可选；上一槽的返回值用「上一槽结果」接收"
               :value="slots.process" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
               :allow-previous="hasFetch" :readonly="readonly" @update="updateSlot('process', $event)" />
           </template>
 
           <template v-else-if="node.kind === 'investigation'">
-            <SlotCallEditor title="拉取数据" hint="可选；取到的数据由方法自己存进对象，后续节点从对象里取" allow-cache
+            <SlotCallEditor key="fetch" title="拉取数据" hint="可选；取到的数据由方法自己存进对象，后续节点从对象里取" allow-cache
               :value="slots.fetch" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
               :readonly="readonly" @update="updateSlot('fetch', $event)" />
-            <SlotCallEditor title="处理数据" hint="可选；接收本节点拉取的结果"
+            <SlotCallEditor key="process" title="处理数据" hint="可选；接收本节点拉取的结果"
               :value="slots.process" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
               :allow-previous="hasFetch" :readonly="readonly" @update="updateSlot('process', $event)" />
-            <SlotCallEditor title="展示数据" hint="必填；用本节点拉取或处理的结果来画" required show-view
+            <SlotCallEditor key="present" title="展示数据" hint="必填；用本节点拉取或处理的结果来画" required show-view
               :value="slots.present" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
               :allow-previous="hasFetch || hasProcess" :readonly="readonly" @update="updateSlot('present', $event)" />
-            <SlotCallEditor title="判定结果" hint="必填；可用本节点拉取、处理的结果或展示结果来判" required allow-human
+            <SlotCallEditor key="decide" title="判定结果" hint="必填；可用本节点拉取、处理的结果或展示结果来判" required allow-human
               :value="slots.decide" :object-names="objectNames" :inputs="startInputs" :parameters="parameters"
               :allow-previous="hasFetch || hasProcess" :allow-presentation="Boolean(slots.present)"
               :readonly="readonly" @update="updateSlot('decide', $event)" />
