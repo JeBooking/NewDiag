@@ -21,9 +21,16 @@ const releaseError = ref<string | null>(null)
 const starting = ref(false)
 
 const formRef = ref<InstanceType<typeof ReleaseInputForm> | null>(null)
+const runtimeMode = ref<'serial' | 'parallel'>('serial')
+const maxParallel = ref(4)
 const missingLabels = ref<string[]>([])
 
 const latest = computed(() => releases.value[0] ?? null)
+/** 从发布页跳过来时带 ?release=xxx，指定要跑哪一版；不带就跑最新 */
+const requestedRelease = computed(() => String(route.query.release ?? ''))
+const active = computed(() =>
+  releases.value.find((item) => item.id === requestedRelease.value) ?? latest.value,
+)
 
 /** 老版本没有冻结启动输入，直接开始即可 */
 const hasInputs = computed(() => (release.value?.inputs?.length ?? 0) > 0)
@@ -42,7 +49,7 @@ async function load(): Promise<void> {
     loading.value = false
     return
   }
-  const target = latest.value
+  const target = active.value
   if (target) {
     try {
       release.value = await getRelease(target.id)
@@ -56,7 +63,7 @@ async function load(): Promise<void> {
 onMounted(load)
 
 async function start(): Promise<void> {
-  if (!latest.value) return
+  if (!active.value) return
   const missing = formRef.value?.missing() ?? []
   if (missing.length > 0) {
     ElMessage.warning(`请填写：${missing.join('、')}`)
@@ -65,8 +72,9 @@ async function start(): Promise<void> {
   starting.value = true
   try {
     const instance = await startInstance(flowId.value, {
-      releaseId: latest.value.id,
+      releaseId: active.value.id,
       input: formRef.value?.build() ?? { global: {} },
+      runtime: { mode: runtimeMode.value, maxParallel: maxParallel.value },
     })
     await router.push({ name: 'instance', params: { id: instance.id } })
   } catch (err) {
@@ -95,7 +103,7 @@ async function start(): Promise<void> {
           <div>
             <h1>{{ flow?.name || '未命名流程' }}</h1>
             <p class="meta">
-              <template v-if="latest">按 v{{ latest.versionNo }} 的步骤表执行，启动时固定本次参数</template>
+              <template v-if="active">按 v{{ active.versionNo }} 的步骤表执行，启动时固定本次参数</template>
               <template v-else>还没有发布版本</template>
             </p>
           </div>
@@ -141,6 +149,20 @@ async function start(): Promise<void> {
             :inputs="release?.inputs ?? []"
             @update:missing="missingLabels = $event"
           />
+
+          <div class="runtime">
+            <span class="runtime-label">执行模式</span>
+            <el-radio-group v-model="runtimeMode" :disabled="starting">
+              <el-radio-button value="serial">串行排查</el-radio-button>
+              <el-radio-button value="parallel">并行排查</el-radio-button>
+            </el-radio-group>
+            <template v-if="runtimeMode === 'parallel'">
+              <span class="runtime-label">分支上限</span>
+              <el-input-number v-model="maxParallel" :min="1" :max="128" :precision="0"
+                :disabled="starting" />
+            </template>
+            <span class="runtime-hint">人工等待中的分支占名额，超出排队</span>
+          </div>
 
           <div class="actions">
             <span v-if="missingLabels.length" class="missing">
@@ -207,6 +229,24 @@ h1 {
   font-size: 12px;
   color: var(--el-text-color-secondary);
   line-height: 1.6;
+}
+
+.runtime {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 16px 0 4px;
+}
+
+.runtime-label {
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+}
+
+.runtime-hint {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
 }
 
 .actions {
