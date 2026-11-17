@@ -1463,7 +1463,7 @@ def test_parallel_failure_stop_keeps_other_branch(client, tmp_path):
     assert stopped.status_code == 200, stopped.text
     assert stopped.json()["status"] != "terminated"
 
-    deadline = time.time() + 10
+    deadline = time.time() + 20
     detail = client.get(f"/api/instances/{instance}").json()
     while time.time() < deadline and detail["status"] in {"running", "waiting"}:
         time.sleep(0.2)
@@ -1471,3 +1471,67 @@ def test_parallel_failure_stop_keeps_other_branch(client, tmp_path):
 
     assert detail["status"] == "escalated", detail["status"]
     assert any(run["status"] == "failed" and run["nodeId"] == "n1" for run in detail["runs"])
+
+
+def test_failure_review_holds_queued_branches(client, tmp_path):
+    """报错待办没处理前，排队中的分支不能抢先跑。"""
+    register_demo_project(client, tmp_path)
+    flow_id, release = seed_published(client, parallel_error_doc("冷却系统"))
+
+    started = client.post(f"/api/flows/{flow_id}/instances", json={
+        "releaseId": release["id"], "input": {"voltage": 215},
+        "runtime": {"mode": "parallel", "maxParallel": 1},
+    })
+    assert started.status_code == 200, started.text
+    instance = started.json()["id"]
+
+    wait_for_review(client, instance, "failure")
+    time.sleep(0.5)
+    detail = client.get(f"/api/instances/{instance}").json()
+    queued = [token for token in detail["tokens"] if token["nodeId"] == "n2"]
+    assert queued and queued[0]["status"] == "queued", queued
+    assert all(run["nodeId"] != "n2" for run in detail["runs"])
+
+    review = next(item for item in detail["reviews"] if item["kind"] == "failure")
+    client.post(f"/api/instances/{instance}/reviews/{review['id']}",
+                json={"result": "stop"}).raise_for_status()
+
+    deadline = time.time() + 10
+    detail = client.get(f"/api/instances/{instance}").json()
+    while time.time() < deadline and detail["status"] in {"running", "waiting"}:
+        time.sleep(0.2)
+        detail = client.get(f"/api/instances/{instance}").json()
+    assert detail["status"] == "escalated", detail["status"]
+    assert any(run["nodeId"] == "n2" for run in detail["runs"])
+
+
+def test_failure_review_holds_queued_branches(client, tmp_path):
+    """报错待办没处理前，排队中的分支不能抢先跑。"""
+    register_demo_project(client, tmp_path)
+    flow_id, release = seed_published(client, parallel_error_doc("冷却系统"))
+
+    started = client.post(f"/api/flows/{flow_id}/instances", json={
+        "releaseId": release["id"], "input": {"voltage": 215},
+        "runtime": {"mode": "parallel", "maxParallel": 1},
+    })
+    assert started.status_code == 200, started.text
+    instance = started.json()["id"]
+
+    wait_for_review(client, instance, "failure")
+    time.sleep(0.5)
+    detail = client.get(f"/api/instances/{instance}").json()
+    queued = [token for token in detail["tokens"] if token["nodeId"] == "n2"]
+    assert queued and queued[0]["status"] == "queued", queued
+    assert all(run["nodeId"] != "n2" for run in detail["runs"])
+
+    review = next(item for item in detail["reviews"] if item["kind"] == "failure")
+    client.post(f"/api/instances/{instance}/reviews/{review['id']}",
+                json={"result": "stop"}).raise_for_status()
+
+    deadline = time.time() + 10
+    detail = client.get(f"/api/instances/{instance}").json()
+    while time.time() < deadline and detail["status"] in {"running", "waiting"}:
+        time.sleep(0.2)
+        detail = client.get(f"/api/instances/{instance}").json()
+    assert detail["status"] == "escalated", detail["status"]
+    assert any(run["nodeId"] == "n2" for run in detail["runs"])

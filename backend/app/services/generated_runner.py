@@ -96,6 +96,11 @@ class GeneratedRunner(Scheduler):
     def _dispatch(self, db, instance):
         if instance.status in ("paused", "success", "failed", "escalated", "terminated"):
             return
+        # 报错待办还没处理：整个实例先停住，别把后面的节点提前跑掉
+        if db.scalar(select(models.Review.id).where(
+                models.Review.instance_id == instance.id, models.Review.kind == "failure",
+                models.Review.status == "pending")):
+            return
         handles = self.branches.setdefault(instance.id, [])
         options = _loads(instance.runtime_json)
         limit = 1 if options["mode"] == "serial" else options["maxParallel"]
@@ -455,6 +460,7 @@ class GeneratedRunner(Scheduler):
             logger.info("实例 %s 执行报错，串行结束：%s", instance.id, review.node_id)
         else:
             self._settle_generated(db, instance)
+            self._dispatch(db, instance)
             logger.info("实例 %s 执行报错，并行分支继续：%s", instance.id, review.node_id)
         db.commit()
         return None
