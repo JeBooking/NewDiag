@@ -315,7 +315,7 @@ def test_release_and_instance(client):
     if pending:
         decided = client.post(
             f"/api/instances/{instance['id']}/reviews/{pending[0]['id']}",
-            json={"result": "yes"},
+            json={"result": "yes", "reason": "人工确认"},
         )
         assert decided.status_code == 200, decided.text
         assert "tokens" in decided.json() and "reviews" in decided.json()
@@ -643,7 +643,7 @@ def test_escalation_ends_as_escalated(client):
     instance = client.post(f"/api/flows/{flow_id}/instances", json={"input": {}}).json()
     review = wait_for_review(client, instance["id"], "decision")
     client.post(
-        f"/api/instances/{instance['id']}/reviews/{review['id']}", json={"result": "no"}
+        f"/api/instances/{instance['id']}/reviews/{review['id']}", json={"result": "no", "reason": "人工确认"}
     ).raise_for_status()
 
     deadline = time.time() + 8
@@ -707,7 +707,7 @@ def test_rollback_to_single_exit_node(client):
 
     decision = wait_for_review(client, instance["id"], "decision")
     client.post(
-        f"/api/instances/{instance['id']}/reviews/{decision['id']}", json={"result": "yes"}
+        f"/api/instances/{instance['id']}/reviews/{decision['id']}", json={"result": "yes", "reason": "人工确认"}
     ).raise_for_status()
 
     # 动作待办出现 = 结论 n2 已执行、n3 正在等人工
@@ -1392,6 +1392,39 @@ def error_doc(project: str, bad_voltage: str) -> dict:
     }
 
 
+def test_no_successor_is_route_failure(client, tmp_path):
+    """判定为否但没配否分支：记排查失败，不生成报错待办。"""
+    register_demo_project(client, tmp_path)
+    doc = composed_doc("冷却系统", "cooling.diagnosis", "judge_voltage",
+                       inputs=[{"name": "voltage", "type": "number"}],
+                       arguments={"voltage": {"source": "input", "name": "voltage"}})
+    doc["nodes"] = [node for node in doc["nodes"] if node["id"] != "n2"]
+    doc["nodes"] += [
+        {"id": "c1", "kind": "conclusion", "title": "结论：电压正常", "detail": "无需处置"},
+        {"id": "esc", "kind": "escalation", "title": "上升", "detail": "转人工", "position": {"x": 0, "y": 200}},
+    ]
+    doc["edges"] = [{"id": "e0", "from": "n0", "to": "n1"},
+                    {"id": "e1", "from": "n1", "to": "c1", "branch": "yes", "order": 1},
+                    {"id": "e2", "from": "c1", "to": "esc"}]
+    flow_id, release = seed_published(client, doc)
+
+    started = client.post(f"/api/flows/{flow_id}/instances", json={
+        "releaseId": release["id"], "input": {"voltage": 200},
+    })
+    assert started.status_code == 200, started.text
+    instance = started.json()["id"]
+
+    deadline = time.time() + 10
+    detail = client.get(f"/api/instances/{instance}").json()
+    while time.time() < deadline and detail["status"] in {"running", "waiting"}:
+        time.sleep(0.2)
+        detail = client.get(f"/api/instances/{instance}").json()
+    assert detail["status"] == "failed"
+    failed = [run for run in detail["runs"] if run["status"] == "failed"]
+    assert failed and failed[0]["error"].startswith("route/no-successor")
+    assert not [item for item in detail["reviews"] if item["kind"] == "failure"]
+
+
 def test_failure_review_allows_rollback(client, tmp_path):
     """报错待办未处理时也能回退：回退接口不能只看实例状态。"""
     register_demo_project(client, tmp_path)
@@ -1405,7 +1438,7 @@ def test_failure_review_allows_rollback(client, tmp_path):
 
     decision = wait_for_review(client, instance, "decision")
     client.post(f"/api/instances/{instance}/reviews/{decision['id']}",
-                json={"result": "yes"}).raise_for_status()
+                json={"result": "yes", "reason": "人工确认"}).raise_for_status()
     wait_for_review(client, instance, "failure")
 
     rolled = client.post(f"/api/instances/{instance}/rollback",
@@ -1535,3 +1568,22 @@ def test_failure_review_holds_queued_branches(client, tmp_path):
         detail = client.get(f"/api/instances/{instance}").json()
     assert detail["status"] == "escalated", detail["status"]
     assert any(run["nodeId"] == "n2" for run in detail["runs"])
+
+
+def test_human_decision_requires_reason(client, tmp_path):
+    """人工判断必须写依据：没有依据直接拒绝，写了才推进。"""
+    register_demo_project(client, tmp_path)
+    flow_id, release = seed_published(client, error_doc("冷却系统", "abc"))
+    started = client.post(f"/api/flows/{flow_id}/instances", json={
+        "releaseId": release["id"], "input": {"voltage": 205},
+    })
+    instance = started.json()["id"]
+    review = wait_for_review(client, instance, "decision")
+
+    rejected = client.post(f"/api/instances/{instance}/reviews/{review['id']}", json={"result": "yes"})
+    assert rejected.status_code == 409
+    assert "判断依据" in rejected.json()["detail"]
+
+    accepted = client.post(f"/api/instances/{instance}/reviews/{review['id']}",
+                           json={"result": "yes", "reason": "电压正常，继续排查"})
+    assert accepted.status_code == 200, accepted.text

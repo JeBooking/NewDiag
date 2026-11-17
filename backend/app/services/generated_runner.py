@@ -282,11 +282,15 @@ class GeneratedRunner(Scheduler):
             if kind == "complete":
                 handle.states = event["states"]
                 self._register_files(db, event.get("files", []))
-                self._write_run(db, instance, token, status="ok", output=event.get("output"),
+                no_successor = bool(event.get("failed"))
+                self._write_run(db, instance, token,
+                                status="failed" if no_successor else "ok",
+                                error="route/no-successor: 当前分支没有后继" if no_successor else None,
+                                output=event.get("output"),
                                 evidence={**event.get("evidence", {}), "branch": event.get("branch")},
                                 args=event.get("arguments"), started=event.get("startedAt"))
-                token.status = "failed" if event.get("failed") else "done"
-                if event.get("failed"):
+                token.status = "failed" if no_successor else "done"
+                if no_successor:
                     logger.info("实例 %s 节点 %s route/no-successor: 当前分支没有后继", instance.id, token.node_id)
                 token.updated_at = now_iso()
                 state = {"states": handle.states, "history": event["history"]}
@@ -419,7 +423,8 @@ class GeneratedRunner(Scheduler):
                 raise ValueError("请使用回退入口或确认完成")
             elif phase == "after_success" and decision.get("result") not in ("continue", "done", "yes", "no"):
                 raise ValueError("请选择结束或继续")
-            if phase == "judgment" and (not isinstance(decision.get("reason"), str) or not decision["reason"].strip()):
+            if phase in ("decision", "judgment") and (
+                    not isinstance(decision.get("reason"), str) or not decision["reason"].strip()):
                 raise ValueError("请填写判断依据")
             review.status, review.decision_json = "done", _dumps(decision)
             review.decided_at, review.decided_by = now_iso(), "local"

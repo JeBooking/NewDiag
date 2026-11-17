@@ -111,7 +111,10 @@ function stateOf(chain: Token[], leaf: Token): PathState {
   const failed = latest.some((token) =>
     (runsByToken.value.get(token.id) ?? []).some((run) =>
       run.status === 'failed' && String(run.error ?? '').startsWith('route/')))
-  if (failed) return { text: '排查失败', type: 'danger' }
+  // 旧实例的缺分支记录成 status=ok + token=failed，没有 error 可看，按同样语义兜底
+  const silent = latest.some((token) => token.status === 'failed'
+    && (runsByToken.value.get(token.id) ?? []).every((run) => run.status === 'ok'))
+  if (failed || silent) return { text: '排查失败', type: 'danger' }
   if (latest.every((token) => token.status === 'done')) return { text: '已完成', type: 'success' }
   if (latest.some((token) => token.status === 'failed')) return { text: '执行报错', type: 'danger' }
   return { text: '已停止', type: 'info' }
