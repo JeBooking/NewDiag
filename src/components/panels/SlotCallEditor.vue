@@ -178,8 +178,8 @@ function clear(): void {
 
         <template v-if="construct">
           <label>对象名</label>
-          <el-input :model-value="value?.object" :disabled="readonly" size="small" placeholder="例如 presenter"
-            @change="patch({ object: String($event).trim() })" />
+          <el-input :model-value="value?.object ?? ''" :disabled="readonly" size="small" placeholder="例如 presenter"
+            @update:model-value="patch({ object: String($event) })" />
         </template>
         <template v-else>
           <label>目标对象</label>
@@ -188,6 +188,9 @@ function clear(): void {
             <el-option label="模块级函数" value="" />
             <el-option v-for="name in objectNames ?? []" :key="name" :label="name" :value="name" />
           </el-select>
+          <p v-if="!objectNames?.length" class="hint">
+            还没有可用对象：先在开始节点的构造槽填好对象名，这里才能选实例方法。
+          </p>
         </template>
 
         <label>接口</label>
@@ -197,7 +200,12 @@ function clear(): void {
             :disabled="Boolean(item.interfaceError)" />
         </el-select>
         <p v-if="selected?.doc" class="hint">{{ selected.doc }}</p>
-        <p v-if="value?.project && !selected && !loading[key] && catalogues[key]" class="hint">
+        <p v-if="value?.project && catalogues[key] && !loading[key] && !choices.length" class="hint">
+          {{ value?.object
+            ? '这个对象下没有可调用的实例方法，换一个对象或检查模块。'
+            : '这个模块没有模块级函数；先构造对象，再按目标对象调用实例方法。' }}
+        </p>
+        <p v-else-if="value?.project && !selected && !loading[key] && catalogues[key]" class="hint">
           接口目录里找不到这个接口，重新选一次或点「读取接口」刷新目录。
         </p>
         <p v-if="value?.project && !catalogues[key] && !loading[key]" class="hint">
