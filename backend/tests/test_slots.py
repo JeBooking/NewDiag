@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sys
+
+import pytest
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -66,6 +68,48 @@ def test_decide_reads_presentation_result(tmp_path):
     assert result['result'] == 'yes'
     assert result['reason'] == '峰值越线'
     assert result['blocks'][0]['type'] == 'metrics'
+
+
+def test_upload_input_becomes_local_path(tmp_path):
+    """上传参数默认换成本地路径；显式 file=false 才拿原始引用。"""
+    digest = 'a' * 64
+    (tmp_path / 'aa').mkdir()
+    (tmp_path / 'aa' / digest).write_text('x', encoding='utf-8')
+
+    runtime = SlotRuntime(str(tmp_path), lambda *args: None, str(tmp_path))
+    runtime.inputs = {'doc': {'hash': digest, 'name': 'a.txt'}}
+    resolved = runtime.resolve({'source': 'input', 'name': 'doc'})
+    assert resolved.endswith(digest)
+    raw = runtime.resolve({'source': 'input', 'name': 'doc', 'file': False})
+    assert raw == {'hash': digest, 'name': 'a.txt'}
+
+
+def test_upload_input_becomes_local_path(tmp_path):
+    """上传参数默认换成本地路径；显式 file=false 才拿原始引用。"""
+    digest = 'a' * 64
+    (tmp_path / 'aa').mkdir()
+    (tmp_path / 'aa' / digest).write_text('x', encoding='utf-8')
+
+    runtime = SlotRuntime(str(tmp_path), lambda *args: None, str(tmp_path))
+    runtime.inputs = {'doc': {'hash': digest, 'name': 'a.txt'}}
+    resolved = runtime.resolve({'source': 'input', 'name': 'doc'})
+    assert resolved.endswith(digest)
+    raw = runtime.resolve({'source': 'input', 'name': 'doc', 'file': False})
+    assert raw == {'hash': digest, 'name': 'a.txt'}
+
+
+def test_slot_error_names_slot(tmp_path):
+    """报错带上槽位名：展示和判定同节点时，光看函数名分不清。"""
+
+    def invoke(project, request):
+        raise RuntimeError('参数解析失败')
+
+    runtime = SlotRuntime(str(tmp_path), invoke)
+    step = {'slots': {'present': {'project': 'p', 'interface': 'View.metrics',
+                                  'function': 'metrics', 'arguments': {}, 'view': 'metrics'}}}
+    with pytest.raises(ValueError) as info:
+        runtime.run(step)
+    assert '展示槽 View.metrics 调用失败' in str(info.value)
 
 
 def start_doc(slots):

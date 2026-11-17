@@ -77,21 +77,29 @@ class SlotRuntime:
         # 跨节点不传值；下一个节点要数据就自己取，或从对象、数据源里拿。
         value = None
         if isinstance(slots.get("fetch"), dict):
-            value = self.fetch(slots["fetch"])
+            value = self._slot("拉取", self.fetch, slots["fetch"])
         if isinstance(slots.get("process"), dict):
-            value = self.call(slots["process"], value)
+            value = self._slot("处理", self.call, slots["process"], value)
         self.previous = value
         blocks = []
         if isinstance(slots.get("present"), dict):
-            blocks = self.present(slots["present"], value)
+            blocks = self._slot("展示", self.present, slots["present"], value)
         result, reason, human = None, None, False
         decide = slots.get("decide")
         if isinstance(decide, dict):
             if decide.get("human"):
                 human = True
             else:
-                result, reason = self.decide(decide, value)
+                result, reason = self._slot("判定", self.decide, decide, value)
         return {"blocks": blocks, "result": result, "reason": reason, "human": human, "value": value}
+
+    def _slot(self, label, handler, call, *args):
+        """带上槽位名的报错：同一个节点里展示和判定都可能调业务方法，光看函数名分不清是谁。"""
+        try:
+            return handler(call, *args)
+        except Exception as exc:  # noqa: BLE001 - 原样上抛，只补槽位上下文
+            name = call.get("interface") or call.get("function") or "?"
+            raise ValueError(f"{label}槽 {name} 调用失败：{exc}") from exc
 
     def construct(self, call):
         name = str(call.get("object") or "")
@@ -197,9 +205,18 @@ class SlotRuntime:
             value = self.presentation
         else:
             raise ValueError(f"未知参数来源 {source}")
-        if argument.get("file"):
+        # 上传参数默认换成本地路径：业务方法拿到 {hash, name} 基本都用不了；
+        # 明确写 "file": false 才要原始引用
+        if argument.get("file") is False:
+            return value
+        if argument.get("file") or self._upload_ref(value):
             return self.file_path(value)
         return value
+
+    @staticmethod
+    def _upload_ref(value):
+        return (isinstance(value, dict) and isinstance(value.get("hash"), str)
+                and set(value) <= {"hash", "name"})
 
     def file_path(self, value):
         if isinstance(value, str) and self.file_root is not None:
