@@ -279,6 +279,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 {"source": "input", "name": "device"}
 {"source": "parameter", "name": "threshold"}
 {"source": "previous"}
+{"source": "presentation"}
 {"items": [...]}
 {"fields": {"k": <表达式>}}
 ```
@@ -286,6 +287,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 - `input`：启动表单的全局输入
 - `parameter`：现场参数，必须在节点 `runtimeInputs` 声明
 - `previous`：本节点内上一步的结果；处理槽要求有拉取槽，展示与判定要求有拉取或处理槽
+- `presentation`：展示槽这次调用的返回值，只有判定槽能用，且节点必须先有展示槽
 - `path` 可下钻字段；`file: true` 把上传引用转成本地路径
 - 不支持对象、资源、节点输出、系统路径等旧来源
 
@@ -342,7 +344,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 7. 环允许存在，但必须能从环内走出去
 8. 构造槽的 `object` 合法且唯一；没有构造槽时，所有槽位只能是模块级函数
 9. 槽位引用的接口必须探测得到，且同步、支持关键字参数
-10. 参数来源只允许上表；`parameter` 必须在节点 `runtimeInputs` 声明；`previous` 只能出现在允许的槽
+10. 参数来源只允许上表；`parameter` 必须在节点 `runtimeInputs` 声明；`previous`、`presentation` 只能出现在允许的槽
 11. 排查节点必须有 `present` 且指定 `view`；必须有 `decide`，要么给方法，要么 `human: true`
 12. 启动参数名称不重复，类型受支持
 13. 旧接入字段（`composition`、`operation`、`binding`、`method`、`pipeline`、`outputs`、`dataPreparation`）不再接受：导入返回 422，发布也会拦下

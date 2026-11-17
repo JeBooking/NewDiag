@@ -81,6 +81,7 @@ class Dataset:
 | `{"source": "input", "name": "limit"}` | 开始节点声明的启动参数 |
 | `{"source": "parameter", "name": "scale"}` | 节点现场参数，必须在 `runtimeInputs` 声明 |
 | `{"source": "previous"}` | 本节点内上一步的结果；只能出现在处理／展示／判定，且要有拉取或处理槽 |
+| `{"source": "presentation"}` | 展示槽这次调用的返回值；只有判定槽能用，且要先配展示槽 |
 
 另有 `{"items": [...]}` 与 `{"fields": {...}}` 递归组合列表和字典。表达式可带 `path` 下钻、`file: true` 把上传引用转成本地路径。
 

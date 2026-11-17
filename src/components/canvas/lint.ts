@@ -107,6 +107,15 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
     return ((argument.items as unknown[]) ?? []).some(usesPrevious)
       || Object.values((argument.fields as Record<string, unknown>) ?? {}).some(usesPrevious)
   }
+  const usesPresentation = (value: unknown): boolean => {
+    if (!value || typeof value !== 'object') return false
+    const argument = value as Record<string, unknown>
+    if (argument.source === 'presentation') return true
+    return ((argument.items as unknown[]) ?? []).some(usesPresentation)
+      || Object.values((argument.fields as Record<string, unknown>) ?? {}).some(usesPresentation)
+  }
+  const presentationIn = (call?: SlotCall): boolean =>
+    Boolean(call) && Object.values(call?.arguments ?? {}).some(usesPresentation)
   const previousIn = (call?: SlotCall): boolean =>
     Boolean(call) && Object.values(call?.arguments ?? {}).some(usesPrevious)
   const collectSources = (value: unknown, names: Set<string>): void => {
@@ -138,6 +147,14 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
     if ((previousIn(slots.present) || previousIn(slots.decide)) && !slots.fetch && !slots.process) {
       issues.push({ id: `node:${node.id}:previous:value`, nodeId: node.id, level: 'error',
         message: '要用上一槽结果，但这个节点没有拉取或处理槽：下一节点的数据要自己取' })
+    }
+    if (presentationIn(slots.decide) && !slots.present) {
+      issues.push({ id: `node:${node.id}:presentation`, nodeId: node.id, level: 'error',
+        message: '判定槽引用了展示结果，但这个节点没有展示槽' })
+    }
+    if ([slots.fetch, slots.process, slots.present].some(presentationIn)) {
+      issues.push({ id: `node:${node.id}:presentation-scope`, nodeId: node.id, level: 'error',
+        message: '只有判定槽能引用展示结果' })
     }
     const calls = [...(slots.constructs ?? []),
       ...[slots.fetch, slots.process, slots.present, slots.decide].filter(Boolean)]

@@ -69,7 +69,7 @@ def interface_key(call):
 def _shape_errors(doc):
     errors = []
 
-    def argument(value, owner, where, allow_previous=True):
+    def argument(value, owner, where, allow_previous=True, allow_presentation=False):
         if not isinstance(value, dict):
             errors.append(f"{owner} 的{where}必须为对象")
             return
@@ -82,6 +82,10 @@ def _shape_errors(doc):
             if source == "previous":
                 if not allow_previous:
                     errors.append("构造参数不能引用上一槽返回值")
+                return
+            if source == "presentation":
+                if not allow_presentation:
+                    errors.append(f"{owner} 的{where}引用了展示结果，但只有判定槽能这样做，且必须先有展示槽")
                 return
             if source not in ("input", "parameter"):
                 errors.append(f"{owner} 的{where}来源无效：{source}")
@@ -96,14 +100,14 @@ def _shape_errors(doc):
                 errors.append(f"{owner} 的组合列表无效")
             else:
                 for item in items:
-                    argument(item, owner, where, allow_previous)
+                    argument(item, owner, where, allow_previous, allow_presentation)
         elif "fields" in value:
             fields = value["fields"]
             if not isinstance(fields, dict):
                 errors.append(f"{owner} 的组合字段无效")
             else:
                 for item in fields.values():
-                    argument(item, owner, where, allow_previous)
+                    argument(item, owner, where, allow_previous, allow_presentation)
 
     nodes = [node for node in doc.get("nodes") or [] if isinstance(node, dict)]
     for node in nodes:
@@ -158,10 +162,11 @@ def _shape_errors(doc):
             if arguments is not None and not isinstance(arguments, dict):
                 errors.append(f"{owner} 的参数必须为参数名到来源的对象")
             else:
+                presentation = name == "decide" and isinstance(slots.get("present"), dict)
                 for key, value in (arguments or {}).items():
                     if not isinstance(key, str) or not key.strip():
                         errors.append(f"{owner} 存在空参数名")
-                    argument(value, owner, "参数", allow_previous)
+                    argument(value, owner, "参数", allow_previous, presentation)
         _previous_scope(slots, label, errors)
     return errors
 

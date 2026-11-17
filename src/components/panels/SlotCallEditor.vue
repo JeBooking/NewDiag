@@ -13,6 +13,7 @@ const props = defineProps<{
   inputs?: string[]
   parameters?: string[]
   allowPrevious?: boolean
+  allowPresentation?: boolean
   construct?: boolean
   allowHuman?: boolean
   allowCache?: boolean
@@ -221,7 +222,7 @@ function clear(): void {
           </div>
           <SlotArgumentEditor v-if="parameter.name in (value?.arguments ?? {})"
             :value="value?.arguments[parameter.name]" :inputs="inputs" :parameters="parameters"
-            :previous="allowPrevious" :readonly="readonly"
+            :previous="allowPrevious" :presentation="allowPresentation" :readonly="readonly"
             @update="setArgument(parameter.name, $event)" />
         </div>
 

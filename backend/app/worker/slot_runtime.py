@@ -69,6 +69,7 @@ class SlotRuntime:
     def run(self, step, parameters=None):
         """执行一个节点的槽位；返回展示块、判定结果与是否需要人工。"""
         self.parameters = parameters or {}
+        self.presentation = None
         slots = step.get("slots") or {}
         for call in slots.get("constructs") or []:
             self.construct(call)
@@ -139,6 +140,7 @@ class SlotRuntime:
         if view not in ("image", "line", "metrics", "table", "text"):
             raise ValueError("展示槽必须先选择展示类型")
         value = self.call(call, previous)
+        self.presentation = value
         if view == "image":
             src = value.get("image") if isinstance(value, dict) else value
             if not isinstance(src, str) or not re.fullmatch(r"[0-9a-f]{64}", src):
@@ -191,6 +193,8 @@ class SlotRuntime:
             value = self.parameters[argument["name"]]
         elif source == "previous":
             value = previous
+        elif source == "presentation":
+            value = self.presentation
         else:
             raise ValueError(f"未知参数来源 {source}")
         if argument.get("file"):

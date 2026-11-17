@@ -55,6 +55,8 @@ export type SlotArgument =
   | { lit: unknown }
   | { source: 'input' | 'parameter'; name: string; path?: string; file?: boolean }
   | { source: 'previous' }
+  /** 仅判定槽：展示槽这次调用的返回值 */
+  | { source: 'presentation' }
   | { items: SlotArgument[] }
   | { fields: Record<string, SlotArgument> }
 

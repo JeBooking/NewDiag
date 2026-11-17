@@ -45,6 +45,29 @@ def test_disabling_cache_refetches_and_updates_it(tmp_path):
     assert len(calls) == 2
 
 
+def test_decide_reads_presentation_result(tmp_path):
+    """判定槽的「展示结果」拿到的是 present 这次调用的返回值。"""
+    values = {
+        'View.metrics': [{'label': '峰值', 'value': 82.8}],
+        'Rules.check': {'result': True, 'reason': '峰值越线'},
+    }
+
+    def invoke(project, request):
+        return {'value': values[request['interface']]}
+
+    runtime = SlotRuntime(str(tmp_path), invoke)
+    step = {'slots': {
+        'present': {'project': 'p', 'interface': 'View.metrics', 'function': 'metrics',
+                    'arguments': {}, 'view': 'metrics'},
+        'decide': {'project': 'p', 'interface': 'Rules.check', 'function': 'check',
+                   'arguments': {'items': {'source': 'presentation'}}},
+    }}
+    result = runtime.run(step)
+    assert result['result'] == 'yes'
+    assert result['reason'] == '峰值越线'
+    assert result['blocks'][0]['type'] == 'metrics'
+
+
 def start_doc(slots):
     return {"nodes": [{"id": "s1", "kind": "start", "slots": slots}]}
 

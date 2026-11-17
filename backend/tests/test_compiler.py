@@ -433,6 +433,25 @@ def test_process_previous_requires_fetch():
     assert "没有拉取槽" in messages(doc)
 
 
+def test_decide_can_use_presentation_result():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["decide"]["arguments"] = {"items": {"source": "presentation"}}
+    assert "展示结果" not in messages(doc)
+
+
+def test_presentation_requires_present_slot():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["decide"]["arguments"] = {"items": {"source": "presentation"}}
+    node(doc, "n1")["slots"].pop("present")
+    assert "只有判定槽能这样做" in messages(doc)
+
+
+def test_presentation_rejected_outside_decide():
+    doc = base_doc()
+    node(doc, "n1")["slots"]["present"]["arguments"] = {"data": {"source": "presentation"}}
+    assert "只有判定槽能这样做" in messages(doc)
+
+
 def test_removed_sources_rejected():
     doc = base_doc()
     node(doc, "n1")["slots"]["fetch"]["arguments"] = {"device": {"source": "resource", "name": "x"}}
