@@ -70,6 +70,26 @@ def test_decide_reads_presentation_result(tmp_path):
     assert result['blocks'][0]['type'] == 'metrics'
 
 
+def test_present_accepts_multiple_images(tmp_path):
+    """一次展示多张图：返回摘要列表就生成多个 image 块。"""
+    runtime = SlotRuntime(str(tmp_path), lambda *args: None)
+    digests = ['a' * 64, 'b' * 64]
+    runtime.call = lambda call, previous=None: digests  # type: ignore[method-assign]
+    blocks = runtime.present({'view': 'image'})
+    assert [block['src'] for block in blocks] == digests
+    assert all(block['type'] == 'image' for block in blocks)
+
+
+def test_present_accepts_multiple_images(tmp_path):
+    """一次展示多张图：返回摘要列表就生成多个 image 块。"""
+    runtime = SlotRuntime(str(tmp_path), lambda *args: None)
+    digests = ['a' * 64, 'b' * 64]
+    runtime.call = lambda call, previous=None: digests  # type: ignore[method-assign]
+    blocks = runtime.present({'view': 'image'})
+    assert [block['src'] for block in blocks] == digests
+    assert all(block['type'] == 'image' for block in blocks)
+
+
 def test_upload_input_becomes_local_path(tmp_path):
     """上传参数默认换成本地路径；显式 file=false 才拿原始引用。"""
     digest = 'a' * 64
@@ -82,6 +102,26 @@ def test_upload_input_becomes_local_path(tmp_path):
     assert resolved.endswith(digest)
     raw = runtime.resolve({'source': 'input', 'name': 'doc', 'file': False})
     assert raw == {'hash': digest, 'name': 'a.txt'}
+
+
+def test_present_accepts_multiple_images(tmp_path):
+    """一次展示多张图：返回摘要列表就生成多个 image 块。"""
+    runtime = SlotRuntime(str(tmp_path), lambda *args: None)
+    digests = ['a' * 64, 'b' * 64]
+    runtime.call = lambda call, previous=None: digests  # type: ignore[method-assign]
+    blocks = runtime.present({'view': 'image'})
+    assert [block['src'] for block in blocks] == digests
+    assert all(block['type'] == 'image' for block in blocks)
+
+
+def test_present_accepts_multiple_images(tmp_path):
+    """一次展示多张图：返回摘要列表就生成多个 image 块。"""
+    runtime = SlotRuntime(str(tmp_path), lambda *args: None)
+    digests = ['a' * 64, 'b' * 64]
+    runtime.call = lambda call, previous=None: digests  # type: ignore[method-assign]
+    blocks = runtime.present({'view': 'image'})
+    assert [block['src'] for block in blocks] == digests
+    assert all(block['type'] == 'image' for block in blocks)
 
 
 def test_upload_input_becomes_local_path(tmp_path):

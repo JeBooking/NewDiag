@@ -150,10 +150,21 @@ class SlotRuntime:
         value = self.call(call, previous)
         self.presentation = value
         if view == "image":
-            src = value.get("image") if isinstance(value, dict) else value
-            if not isinstance(src, str) or not re.fullmatch(r"[0-9a-f]{64}", src):
-                raise ValueError("图片展示需要返回图片摘要：请用 node_sdk.save_file 保存图片或返回文件路径")
-            block = {"type": "image", "src": src}
+            # 允许多张图：返回摘要列表（或 {"images": [...]}）就画成多块
+            items = value
+            if isinstance(value, dict) and "images" in value:
+                items = value["images"]
+            if not isinstance(items, list):
+                items = [items]
+            if not items:
+                raise ValueError("图片展示至少要有一张图")
+            blocks = []
+            for item in items:
+                src = item.get("image") if isinstance(item, dict) else item
+                if not isinstance(src, str) or not re.fullmatch(r"[0-9a-f]{64}", src):
+                    raise ValueError("图片展示需要返回图片摘要：请在方法里返回 PNG 字节或 node_sdk.save_file 的结果")
+                blocks.append({"type": "image", "src": src})
+            return presentation({"blocks": blocks})["blocks"]
         elif view == "line":
             if not isinstance(value, list) or not value:
                 raise ValueError("折线展示需要返回非空数值数组")

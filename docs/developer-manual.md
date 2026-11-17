@@ -98,7 +98,7 @@ class Dataset:
 | 展示（line） | 非空数值数组 | 画折线 |
 | 展示（metrics） | `[{label, value, unit?}]` | 指标卡 |
 | 展示（table） | `{columns: [...], rows: [[...]]}` | 表格 |
-| 展示（image） | 附件摘要（`node_sdk.save_file` 的结果） | 图片块 |
+| 展示（image） | 附件摘要；也接受摘要列表或 `{"images": [...]}`，列表渲染多个图片块 | 图片块 |
 | 判定 | bool、`yes`/`no`、`{result, reason}` | 走是／否分支，依据写进记录 |
 
 图片要先用 `node_sdk.save_file(bytes)` 落盘，它返回 64 位摘要；不接受文件路径或 URL 直接当 `src`。业务生成的图片只收 png／jpg／webp／gif，单张上限 10 MB。

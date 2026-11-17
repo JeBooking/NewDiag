@@ -81,7 +81,7 @@ Windows 源码环境装好依赖后，双击仓库根目录的 [start-dev.cmd](.
 
 **判定方法返回什么**：布尔值、`yes`／`no`，或 `{"result": true, "reason": "峰值 9 超过阈值 5"}`。依据会写进执行轨迹。
 
-**展示方法返回什么**：图片返回附件摘要（用 `node_sdk.save_file` 存 bytes），曲线返回数值数组，指标返回 `{label, value, unit?}` 列表，表格返回 `{columns, rows}`，文字返回字符串。
+**展示方法返回什么**：图片返回附件摘要（用 `node_sdk.save_file` 存 bytes，或直接返回 bytes；返回摘要列表则一次展示多张），曲线返回数值数组，指标返回 `{label, value, unit?}` 列表，表格返回 `{columns, rows}`，文字返回字符串。
 
 ### 3.4 现场参数
 
