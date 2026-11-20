@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from app import db as database, models
 from app.db import data_dir, new_id, now_iso
 from app.services import codegen
+from app.services.manual_runner import ManualFlow
 from app.services.scheduler import Scheduler, _serialized, _loads, _dumps
 from app.worker.node_sdk import validate_fields
 from app.worker.processes import stop_tree, process_options
@@ -54,6 +55,8 @@ class GeneratedRunner(Scheduler):
     def __init__(self):
         super().__init__(database.SessionLocal)
         self.branches = {}
+        # 手动模式不生成代码、不起子进程，推进交给平台侧，但与自动模式共用同一把实例锁
+        self.manual = ManualFlow(self)
 
     def _directory(self, instance):
         return data_dir() / "executions" / instance
@@ -69,6 +72,10 @@ class GeneratedRunner(Scheduler):
         with self._open() as db:
             instance = db.get(models.Instance, instance_id)
             if instance is None or instance.status in ("success", "escalated", "terminated"):
+                return
+            if (_loads(instance.runtime_json) or {}).get("mode") == "manual":
+                # 手动模式：建入口 token 后停下来等人工，不走复制源码与子进程那条链路
+                self.manual.start(db, instance)
                 return
             if self._tokens(db, instance_id):
                 if not self.branches.get(instance_id):
@@ -101,8 +108,10 @@ class GeneratedRunner(Scheduler):
                 models.Review.instance_id == instance.id, models.Review.kind == "failure",
                 models.Review.status == "pending")):
             return
-        handles = self.branches.setdefault(instance.id, [])
         options = _loads(instance.runtime_json)
+        if options["mode"] == "manual":
+            return  # 手动模式没有进程可派发
+        handles = self.branches.setdefault(instance.id, [])
         limit = 1 if options["mode"] == "serial" else options["maxParallel"]
         owned = set().union(*(handle.owned for handle in handles)) if handles else set()
         for token in self._tokens(db, instance.id):
@@ -402,6 +411,10 @@ class GeneratedRunner(Scheduler):
             request = _loads(review.request_json)
             if request.get("type") == "failure":
                 return self._resolve_failure(db, instance, review, decision)
+            if (_loads(instance.runtime_json) or {}).get("mode") == "manual":
+                # 手动模式没有进程可回执：提交即推进，异常直接抛给调用方
+                self.manual.submit(db, instance, review, decision)
+                return None
             handle = next((item for item in self.branches.get(instance_id, []) if item.token == review.token_id), None)
             if handle is None:
                 raise ValueError("等待进程已结束")
@@ -509,6 +522,11 @@ class GeneratedRunner(Scheduler):
             if instance.status not in ("waiting", "paused", "failed") and failing is None:
                 raise ValueError("请在人工待办或排查结束后回退")
             tokens = self._tokens(db, instance_id)
+            if (_loads(instance.runtime_json) or {}).get("mode") == "manual":
+                # 手动到访同样能当回退目标：复用当时的选择，作废旧代，开新代
+                self.manual.rollback(db, instance, target, branch, reason,
+                                     target_token_id=target_token_id)
+                return
             candidates = [item for item in tokens if item.id == target_token_id] if target_token_id else [
                 item for item in tokens if item.node_id == target and item.visited_at]
             selected = candidates[-1] if candidates else None
@@ -561,6 +579,63 @@ class GeneratedRunner(Scheduler):
             db.commit()
             logger.info("实例 %s 回退到访 %s，复用结果选择 %s，新代 %s：%s",
                         instance_id, selected.id, branch, generation, reason or "未填原因")
+            self._dispatch(db, instance)
+
+    @_serialized
+    def switch_to_auto(self, instance_id, mode="serial", max_parallel=4):
+        """手动转自动（单向）：补跑开始节点槽位，再跳回手动停住的位置继续。
+
+        人工走过的到访与它们的 run 全部保留；只有还在等待／排队的作废，
+        之后由生成进程按常规串行／并行逻辑推进。
+        """
+        with self._open() as db:
+            instance = db.get(models.Instance, instance_id)
+            if instance is None:
+                raise ValueError("实例不存在")
+            options = _loads(instance.runtime_json) or {}
+            if options.get("mode") != "manual":
+                raise ValueError("只有手动模式的实例可以切换到自动")
+            if mode not in ("serial", "parallel"):
+                raise ValueError("运行方式只能是串行或并行")
+            if instance.status in ("success", "escalated", "failed", "terminated"):
+                raise ValueError("已结束的实例不能切换")
+            tokens = self._tokens(db, instance_id)
+            stopped = next((item for item in tokens if item.status == "waiting"), None) or next(
+                (item for item in tokens if item.status == "queued"), None)
+            if stopped is None:
+                raise ValueError("当前没有停住的节点")
+            # 还没开始走的同级思路一起带过去，串行会按顺序接着问
+            siblings = [item.node_id for item in tokens
+                        if item.status == "queued" and item.id != stopped.id]
+            release = db.get(models.Release, instance.release_id)
+            if release is None:
+                raise ValueError("实例的发布版本不存在")
+            runtime = {"engine": "python/v1", "mode": mode, "maxParallel": max_parallel}
+            plan, _ = codegen.prepare(db, instance, release, runtime,
+                                      resume=[stopped.node_id, *siblings])
+
+            for token in tokens:
+                if token.status not in ("done", "failed"):
+                    token.status, token.updated_at = "abandoned", now_iso()
+            for review in db.scalars(select(models.Review).where(
+                    models.Review.instance_id == instance.id, models.Review.status == "pending")):
+                review.status, review.decided_at = "cancelled", now_iso()
+            generation = max((item.generation for item in tokens), default=1) + 1
+            instance.runtime_json = _dumps(runtime)
+            instance.plan_json = _dumps(plan)
+            instance.status, instance.ended_at = "running", None
+            stamp = now_iso()
+            token = models.Token(
+                id=new_id(), instance_id=instance.id, node_id=plan["entry"], status="queued",
+                sort_order=self._next_order(db, instance.id), generation=generation,
+                created_at=stamp, updated_at=stamp,
+            )
+            db.add(token)
+            db.flush()
+            self._save_launch(instance.id, token, {})
+            db.commit()
+            logger.info("实例 %s 手动转自动：%s/%s，从节点 %s 续跑（新代 %s）",
+                        instance_id, mode, max_parallel, stopped.node_id, generation)
             self._dispatch(db, instance)
 
     def shutdown(self):

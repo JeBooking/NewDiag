@@ -19,6 +19,51 @@ from app.services.compiler import compile_doc
 logger = logging.getLogger(__name__)
 
 
+def penetrate(plan):
+    """自动模式下分类节点等于不存在：把它的后继并回前驱的出线。
+
+    保留前驱原有的分支键与顺序位置；分类节点本身不进 steps，因此也不进 NODES，
+    运行期不会为它建 token 或 run。手动模式不调用这里，直接使用带分类的 plan。
+    """
+    steps = plan.get("steps") or {}
+    categories = {
+        node_id: list((step.get("next") or {}).get("default") or [])
+        for node_id, step in steps.items()
+        if step.get("kind") == "category"
+    }
+    if not categories:
+        return plan
+
+    def expand(target):
+        # 分类节点只能连排查，不会嵌套；seen 只为防御性去重
+        seen, queue, found = set(), [target], []
+        while queue:
+            node_id = queue.pop(0)
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            if node_id in categories:
+                queue.extend(categories[node_id])
+            else:
+                found.append(node_id)
+        return found
+
+    penetrated = {}
+    for node_id, step in steps.items():
+        if step.get("kind") == "category":
+            continue
+        next_map = {}
+        for branch, targets in (step.get("next") or {}).items():
+            flattened = []
+            for target in targets:
+                for item in expand(target):
+                    if item not in flattened:
+                        flattened.append(item)
+            next_map[branch] = flattened
+        penetrated[node_id] = {**step, "next": next_map}
+    return {**plan, "steps": penetrated}
+
+
 def generate(plan):
     steps = plan["steps"]
     names = {key: "node_" + hashlib.sha256(key.encode()).hexdigest()[:16] for key in steps}
@@ -38,8 +83,12 @@ def generate(plan):
     return "\n".join(lines)
 
 
-def prepare(db, instance, release, runtime):
-    """启动时固定工程源码，之后的进程和回退均使用此目录。"""
+def prepare(db, instance, release, runtime, resume=None):
+    """启动时固定工程源码，之后的进程和回退均使用此目录。
+
+    resume 供手动转自动使用：给定时把开始节点的出线改成这些节点，
+    先跑完开始节点的构造槽与拉取槽，再跳回手动停住的位置继续。
+    """
     directory = data_dir() / "executions" / instance.id
     directory.mkdir(parents=True, exist_ok=True)
     revision = db.get(models.Revision, release.revision_id)
@@ -81,6 +130,10 @@ def prepare(db, instance, release, runtime):
     if errors:
         raise ValueError("槽位接口探测失败：" + "；".join(errors))
     plan = compile_doc(doc, instance.flow_id, release.version_no, functions=signatures)
+    if resume:
+        entry = plan["entry"]
+        plan["steps"][entry]["next"] = {"default": list(dict.fromkeys(resume))}
+    plan = penetrate(plan)
     package = Path(__file__).resolve().parents[1] / "worker"
     shutil.copytree(package, directory / "runtime", ignore=shutil.ignore_patterns("__pycache__"))
     (directory / "flow.py").write_text(generate(plan), encoding="utf-8")

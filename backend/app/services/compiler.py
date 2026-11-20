@@ -138,6 +138,13 @@ class HumanNode(NodeDefinition):
         return {**super().compile(node, nodes, edges, start, functions), "human": True}
 
 
+class CategoryNode(NodeDefinition):
+    """纯文本分流：没有槽位、不跑代码，只有拓扑。文案由执行侧从 doc 取。"""
+
+    def compile(self, node, nodes, edges, start, functions):
+        return {"kind": node["kind"], "next": _next_map(node["id"], node["kind"], edges)}
+
+
 class InvestigationActionNode(HumanNode):
     pass
 
@@ -170,7 +177,7 @@ class EscalationNode(TerminalNode):
 
 
 NODE_DEFINITIONS = {
-    "start": StartNode(), "investigation": InvestigationNode(),
+    "start": StartNode(), "category": CategoryNode(), "investigation": InvestigationNode(),
     "investigationAction": InvestigationActionNode(), "remediation": RemediationNode(),
     "jump": JumpNode(), "conclusion": ConclusionNode(),
     "problemSolved": ProblemSolvedNode(), "escalation": EscalationNode(),
@@ -265,13 +272,13 @@ def _check_edges(edges: list[dict], nodes_by_id: dict[str, dict], issues: list[d
         from_kind = nodes_by_id[src].get("kind", "")
         to_kind = nodes_by_id[dst].get("kind", "")
         if not rules.can_connect(from_kind, to_kind):
-            issues.append(
-                _issue(
-                    LEVEL_ERROR,
-                    f"不允许的连接：{_label(nodes_by_id[src])} → {_label(nodes_by_id[dst])}",
-                    edge_id=eid,
-                )
+            # 分类节点的目标是它给人的选项，文案单列，避免和普通连线报错混在一起
+            message = (
+                "分类节点的出线只能连到排查节点"
+                if rules.is_category_kind(from_kind)
+                else f"不允许的连接：{_label(nodes_by_id[src])} → {_label(nodes_by_id[dst])}"
             )
+            issues.append(_issue(LEVEL_ERROR, message, edge_id=eid))
             continue
         valid.append(edge)
     return valid
@@ -282,6 +289,11 @@ def _check_node_fields(nodes_by_id: dict[str, dict], issues: list[dict]) -> None
         kind = node.get("kind", "")
         if rules.is_start_kind(kind):
             # 开始节点只有参数声明，没有诊断描述，标题/说明都不强制
+            continue
+        if rules.is_category_kind(kind):
+            # 分类节点只是可读的分流说明：必须起标题，说明可以不填
+            if not _text(node.get("title")):
+                issues.append(_issue(LEVEL_ERROR, "分类节点缺少标题", node_id=nid))
             continue
 
         for key, label in rules.REQUIRED_TEXT.items():
@@ -309,6 +321,10 @@ def _check_out_edges(
 
         if rules.is_start_kind(kind):
             continue  # 出线由 _check_start 统一检查，避免重复报错
+
+        if rules.is_category_kind(kind):
+            _check_category_edges(nid, out_edges, issues)
+            continue
 
         if rules.is_terminal_kind(kind):
             for edge in out_edges:
@@ -346,6 +362,23 @@ def _check_out_edges(
                 )
         elif len(_unique(targets)) > 1 and not rules.allows_multiple_targets(kind):
             issues.append(_issue(LEVEL_ERROR, "不支持隐式分叉，请为每个后继单独建节点", node_id=nid))
+
+
+def _check_category_edges(node_id: str, out_edges: list[dict], issues: list[dict]) -> None:
+    """分类节点的选项：至少两条、全走 default、目标已在 _check_edges 确保是排查。"""
+    if len(out_edges) < 2:
+        issues.append(_issue(LEVEL_ERROR, "分类节点至少需要两条出线", node_id=node_id))
+    for edge in out_edges:
+        branch = edge.get("branch")
+        if branch not in (None, "", rules.DEFAULT_BRANCH):
+            issues.append(
+                _issue(
+                    LEVEL_ERROR,
+                    "分类节点的出线不能带是/否分支",
+                    node_id=node_id,
+                    edge_id=edge.get("id"),
+                )
+            )
 
 
 def _check_start(
@@ -583,6 +616,7 @@ def _label(node: dict) -> str:
 def _kind_label(kind: str) -> str:
     return {
         "start": "开始",
+        "category": "分类",
         "investigation": "排查",
         "investigationAction": "排查动作",
         "conclusion": "结论",

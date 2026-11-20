@@ -10,9 +10,13 @@ from __future__ import annotations
 # 连接矩阵：key 为来源类型，value 为允许的目标类型。
 # start 只用于入口判定。
 CONNECTION_RULES: dict[str, list[str]] = {
-    "start": ["investigation"],
-    "investigation": ["investigation", "investigationAction", "conclusion", "escalation", "jump"],
-    "investigationAction": ["investigation"],
+    "start": ["investigation", "category"],
+    # 分类节点是可读的分流说明：出线只能落到排查节点，由人挑一条
+    "category": ["investigation"],
+    "investigation": [
+        "investigation", "category", "investigationAction", "conclusion", "escalation", "jump",
+    ],
+    "investigationAction": ["investigation", "category"],
     "conclusion": ["remediation", "escalation", "jump"],
     "remediation": ["remediation", "problemSolved", "escalation", "jump"],
     "problemSolved": [],
@@ -20,6 +24,7 @@ CONNECTION_RULES: dict[str, list[str]] = {
     # 转交成功后可以接除 start 以外的任意节点类型；转交失败由人工待办回退，不另设分支
     "jump": [
         "investigation",
+        "category",
         "investigationAction",
         "conclusion",
         "remediation",
@@ -30,10 +35,13 @@ CONNECTION_RULES: dict[str, list[str]] = {
 }
 
 START_KIND = "start"
+CATEGORY_KIND = "category"
 
 # 单个类型的出线语义与能力声明，对应前端 KindMeta。
 KIND_SPECS: dict[str, dict[str, bool | str]] = {
     START_KIND: {"branch": "single", "entry": True},
+    # 分类纯文本分流：出线全走 default（branch=single 即不分组），多条由 allows_multiple_targets 放行
+    "category": {"branch": "single", "human_only": True},
     "investigation": {"branch": "yesno", "code_capable": True},
     "investigationAction": {"branch": "single", "human_only": True},
     "conclusion": {"branch": "single", "single_successor": True},
@@ -46,6 +54,7 @@ KIND_SPECS: dict[str, dict[str, bool | str]] = {
 
 V1_KINDS = (
     START_KIND,
+    "category",
     "investigation",
     "investigationAction",
     "conclusion",
@@ -100,8 +109,12 @@ def needs_branch(kind: str) -> bool:
 
 
 def allows_multiple_targets(kind: str) -> bool:
-    """开始节点把出边一次性全部投递，不算隐式分叉。"""
-    return kind == START_KIND
+    """开始节点把出边一次性全部投递，不算隐式分叉；分类节点同理，出线是给人的选项。"""
+    return kind in (START_KIND, CATEGORY_KIND)
+
+
+def is_category_kind(kind: str) -> bool:
+    return kind == CATEGORY_KIND
 
 
 def is_single_successor(kind: str) -> bool:

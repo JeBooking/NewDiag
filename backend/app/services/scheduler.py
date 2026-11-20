@@ -275,6 +275,7 @@ class Scheduler:
         node_id: str | None = None,
         attempt: int = 1,
         generation: int | None = None,
+        source: str | None = None,
     ):
         stamp = started or now_iso()
         run = models.Run(
@@ -292,9 +293,13 @@ class Scheduler:
             started_at=stamp,
             ended_at=now_iso(),
         )
+        if source is not None and hasattr(models.Run, "source"):
+            # runs.source 由 api 域补列，落地后手动模式的到访自动带上 manual
+            run.source = source
         db.add(run)
         db.flush()
         return run
+
 
 def _loads(text):
     if not text:
