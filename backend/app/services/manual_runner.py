@@ -152,6 +152,7 @@ class ManualFlow:
                       "successors": targets, "generation": generation},
             node_id=selected.node_id,
             generation=generation,
+            source="manual",
         )
         self._children(db, instance, plan, selected, targets, branch, generation=generation)
         instance.status, instance.ended_at = "running", None
