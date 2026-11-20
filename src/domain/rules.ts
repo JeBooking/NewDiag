@@ -3,12 +3,14 @@ import { KIND_META } from './kinds'
 
 /**
  * 与后端 app/services/rules.py 保持一致的连接矩阵。
- * 开始节点是唯一入口，只出不进；出边只到排查节点。
+ * 开始节点是唯一入口，只出不进；出边到排查节点或分类节点。
  */
 export const CONNECTION_RULES: Record<NodeKind, NodeKind[]> = {
-  start: ['investigation'],
-  investigation: ['investigation', 'investigationAction', 'conclusion', 'escalation', 'jump'],
-  investigationAction: ['investigation'],
+  start: ['investigation', 'category'],
+  // 分类节点只做分流：后继必须是排查节点，几条出线就是几个选项。
+  category: ['investigation'],
+  investigation: ['investigation', 'category', 'investigationAction', 'conclusion', 'escalation', 'jump'],
+  investigationAction: ['investigation', 'category'],
   conclusion: ['remediation', 'escalation', 'jump'],
   remediation: ['remediation', 'problemSolved', 'escalation', 'jump'],
   problemSolved: [],
@@ -17,6 +19,7 @@ export const CONNECTION_RULES: Record<NodeKind, NodeKind[]> = {
   // 仍只允许一条出线，放开的是「能连什么类型」，不是「能连几条」。
   jump: [
     'investigation',
+    'category',
     'investigationAction',
     'conclusion',
     'remediation',

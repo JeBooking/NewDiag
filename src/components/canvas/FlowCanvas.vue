@@ -585,6 +585,25 @@ function nextOrder(sourceId: string, branch: Branch | undefined): number | undef
   return max + 1
 }
 
+/**
+ * 分类节点的出线全是 default，order 表示选项顺序（不是执行顺序）。
+ * 逐个递增，人选择时按这个次序列出下游排查节点。
+ */
+function nextOptionOrder(sourceId: string): number {
+  let max = 0
+  for (const edge of edgeMeta.values()) {
+    if (edge.from !== sourceId) continue
+    max = Math.max(max, edge.order ?? 0)
+  }
+  return max + 1
+}
+
+/** 分类节点只做分流，连错目标时给专项提示，别让用户去猜矩阵 */
+function connectWarning(source: DocNode, target: NodeKind): string {
+  if (source.kind === 'category') return '分类节点的出线只能连到排查节点'
+  return `「${KIND_META[source.kind].label}」不能连到「${KIND_META[target].label}」`
+}
+
 function onConnect(connection: Connection) {
   if (props.readonly) return
   // 开始节点是唯一入口，任何连线都不能指回来
@@ -597,9 +616,7 @@ function onConnect(connection: Connection) {
   if (!source || !target) return
 
   if (!canConnect(source.kind, target.kind)) {
-    ElMessage.warning(
-      `「${KIND_META[source.kind].label}」不能连到「${KIND_META[target.kind].label}」`,
-    )
+    ElMessage.warning(connectWarning(source, target.kind))
     return
   }
   if (KIND_META[source.kind].branch === 'none') {
@@ -607,7 +624,7 @@ function onConnect(connection: Connection) {
     return
   }
 
-  // start 只有一条 default 出边，不写 branch；排查按拖拽的出口分组
+  // start 只有一条 default 出边，不写 branch；排查按拖拽的出口分组；分类按选项顺序记 order
   const branch = needsBranch(source.kind) ? resolveBranch(connection, source) : undefined
   const duplicated = [...edgeMeta.values()].some(
     (e) => e.from === connection.source && e.to === connection.target && (e.branch ?? null) === (branch ?? null),
@@ -617,7 +634,11 @@ function onConnect(connection: Connection) {
     return
   }
 
-  const order = nextOrder(connection.source, branch)
+  const order = needsBranch(source.kind)
+    ? nextOrder(connection.source, branch)
+    : source.kind === 'category'
+      ? nextOptionOrder(connection.source)
+      : undefined
   const edge: DocEdge = {
     id: nextId('e'),
     from: connection.source,
@@ -729,9 +750,7 @@ function tipCreate(kind: NodeKind) {
   const source = nodeMeta.get(state.sourceId)
   if (!source) return
   if (!canConnect(source.kind, kind)) {
-    ElMessage.warning(
-      `「${KIND_META[source.kind].label}」不能连到「${KIND_META[kind].label}」`,
-    )
+    ElMessage.warning(connectWarning(source, kind))
     return
   }
 
@@ -753,7 +772,11 @@ function tipCreate(kind: NodeKind) {
   nodeMeta.set(node.id, node)
 
   const branch = needsBranch(source.kind) ? (state.branch ?? 'yes') : undefined
-  const order = nextOrder(source.id, branch)
+  const order = needsBranch(source.kind)
+    ? nextOrder(source.id, branch)
+    : source.kind === 'category'
+      ? nextOptionOrder(source.id)
+      : undefined
   const edge: DocEdge = {
     id: nextId('e'),
     from: source.id,

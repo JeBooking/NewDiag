@@ -29,6 +29,14 @@ const META: Record<NodeKind, KindMeta> = {
     codeCapable: true,
     branch: 'yesno',
   },
+  // 纯文本分流：不接代码、不产生 run，执行到这里把下游排查节点列成选项交人选择。
+  // branch 写 single（只有一个出口），但不设 singleSuccessor，出线可以有多条。
+  category: {
+    label: '分类',
+    color: '#c026d3',
+    humanOnly: true,
+    branch: 'single',
+  },
   investigationAction: {
     label: '排查动作',
     color: '#0891b2',
@@ -83,6 +91,7 @@ export const isKnownKind = (kind: string): boolean => kind in META
 
 export const V1_KINDS: NodeKind[] = [
   'investigation',
+  'category',
   'investigationAction',
   'conclusion',
   'remediation',

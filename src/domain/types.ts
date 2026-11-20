@@ -3,6 +3,7 @@ export type FlowMode = 'parallel' | 'serial'
 export type NodeKind =
   | 'start'
   | 'investigation'
+  | 'category'
   | 'investigationAction'
   | 'conclusion'
   | 'remediation'

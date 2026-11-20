@@ -12,6 +12,7 @@ const emit = defineEmits<{
 
 const descriptions: Partial<Record<NodeKind, string>> = {
   investigation: '判断一个排查条件。可绑定函数自动判断，也可由执行人判断；结果沿“是”或“否”分支继续。',
+  category: '把下游排查节点列成选项交人选择，选一条继续。出线至少两条，只能连排查节点。',
   investigationAction: '要求执行人先完成一项检查或采集操作，再进入后续排查节点判断结果。',
   conclusion: '记录这条排查路径得出的结论。显示预先填写的结论文本，再沿唯一后继进入处置或上升。',
   remediation: '向执行人说明具体处置步骤。完成后可继续处置、确认问题解决，或转交处理。',

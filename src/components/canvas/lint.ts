@@ -231,7 +231,8 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
       })
       continue
     }
-    if (!canConnect(from.kind, to.kind)) {
+    // 分类节点的出线由下面的专项规则报，避免同一根边报两条
+    if (from.kind !== 'category' && !canConnect(from.kind, to.kind)) {
       issues.push({
         id: `edge:${edge.id}:rule`,
         level: 'error',
@@ -258,8 +259,39 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
       }
     }
 
-    // 4. 出线数量：终止节点无出线，结论恰好一条，其余至少一条
-    if (isTerminalKind(node.kind)) {
+    // 4. 出线数量：终止节点无出线，结论恰好一条，其余至少一条；分类至少两条且只连排查
+    if (node.kind === 'category') {
+      if (outs.length < 2) {
+        issues.push({
+          id: `node:${node.id}:category-out`,
+          level: 'error',
+          nodeId: node.id,
+          message: '分类节点至少需要两条出线',
+        })
+      }
+      for (const edge of outs) {
+        const target = byId.get(edge.to)
+        // 目标缺失已由悬空连线报过，这里只管类型
+        if (target && target.kind !== 'investigation') {
+          issues.push({
+            id: `edge:${edge.id}:category-target`,
+            level: 'error',
+            nodeId: node.id,
+            edgeId: edge.id,
+            message: '分类节点的出线只能连到排查节点',
+          })
+        }
+        if (edge.branch) {
+          issues.push({
+            id: `edge:${edge.id}:category-branch`,
+            level: 'error',
+            nodeId: node.id,
+            edgeId: edge.id,
+            message: '分类节点的出线不能带是/否分支',
+          })
+        }
+      }
+    } else if (isTerminalKind(node.kind)) {
       if (outs.length > 0) {
         issues.push({
           id: `node:${node.id}:terminal-out`,
