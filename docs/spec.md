@@ -1,6 +1,6 @@
-# 诊断流程平台 · 设计说明（v1.18）
+# 诊断流程平台 · 设计说明（v1.19）
 
-本文件是项目的唯一设计依据。v1.18 把槽位传值收敛到节点内。v1.17 把接入方式收敛为**节点槽位模板**：每种节点固定几个槽位，用户在每个槽位填一个外接工程的公开方法，平台按槽位链调用，并生成 Python 代码在后端执行。v1.16 及以前的对象／固定资源／排查操作三层配置、11 种参数来源、展示映射与判定字段映射全部移除，不再保留兼容路径。
+本文件是项目的唯一设计依据。v1.19 增加**分类节点**与**手动模式**：分类节点把下游排查节点列成选项交人选择，手动模式下实例不执行任何槽位、只由平台推进流程。v1.18 把槽位传值收敛到节点内。v1.17 把接入方式收敛为**节点槽位模板**：每种节点固定几个槽位，用户在每个槽位填一个外接工程的公开方法，平台按槽位链调用，并生成 Python 代码在后端执行。v1.16 及以前的对象／固定资源／排查操作三层配置、11 种参数来源、展示映射与判定字段映射全部移除，不再保留兼容路径。
 
 变更记录见第 12 节。
 
@@ -48,6 +48,8 @@
 | 展示槽 present | 排查节点必填，产出图片／曲线／指标／表格／文字 |
 | 判定槽 decide | 排查节点必填，自动判定或交人工判断 |
 | 现场参数 runtimeInputs | 执行到节点时才填写的参数 |
+| 分类节点 category | 纯文本分流节点；出线 ≥2 且只连排查节点，执行到它时把下游排查节点标题列成选项由人选择 |
+| 手动模式 manual | 与串行／并行并列的第三种实例模式：一个槽位都不跑，分类与排查全部由平台生成待办、人工决定 |
 
 ---
 
@@ -111,7 +113,7 @@ SQLite（WAL）。时间统一 ISO8601 UTC。除 `files` 用内容哈希作主�
 | id, flow_id, release_id | |
 | status | `running` / `waiting` / `paused` / `success` / `failed` / `escalated` / `terminated` |
 | snapshot_id | 指向启动上下文 |
-| runtime_json | `{engine:"python/v1", mode:"serial"|"parallel", maxParallel:1..128}`；缺省串行、上限 4 |
+| runtime_json | `{engine:"python/v1"\|"manual/v1", mode:"serial"\|"parallel"\|"manual", maxParallel:1..128}`；缺省串行、上限 4。手动模式固定 `engine:"manual/v1"`、`mode:"manual"`，`maxParallel` 忽略 |
 | plan_json | 启动时按当前模块副本重新编译的计划 |
 | started_by, started_at, ended_at | |
 
@@ -145,6 +147,7 @@ SQLite（WAL）。时间统一 ISO8601 UTC。除 `files` 用内容哈希作主�
 | id, instance_id, token_id, node_id | |
 | generation, attempt | |
 | status | `ok` / `failed` / `abandoned` |
+| source | `engine` / `manual`；`manual` 表示这条 run 由手动模式下的人工选择产生，没有业务调用 |
 | input_json | 实际传入参数 |
 | output_json | 返回值投影 |
 | evidence_json | 依据、展示块、调用摘要 |
@@ -253,9 +256,22 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 |---|---|
 | start | `constructs`（可选；槽位引用了对象就必须有）+ `fetch`（可选）+ `process`（可选） |
 | investigation | `fetch`（可选）+ `process`（可选）+ `present`（必填）+ `decide`（必填） |
-| conclusion / investigationAction / remediation / jump / problemSolved / escalation | 无槽位 |
+| conclusion / investigationAction / remediation / jump / problemSolved / escalation / category | 无槽位 |
 
-槽位字段：
+### 分类节点（category）
+
+分类节点是可读的分流说明，不含槽位、不执行代码：
+
+```json
+{"id": "c1", "kind": "category", "title": "先查电压还是先查波形", "detail": "按现场条件选择一条"}
+```
+
+- 只有 `title` / `detail` / `position`；不写 `fields`、不写 `slots`，`bindings.nodes` 里也不出现该节点
+- 出线 ≥2 条，分支键固定 `default`，`order` 即选项顺序；每条出线的目标必须是 `investigation`
+- 选项文案就是目标排查节点的 `title`，不另设分类名；标题为空的排查节点在选择面板里显示为「未命名排查」
+- 自动模式下不产生 token／run；plan 里保留该 step（手动模式要用），生成 `flow.py` 时穿透，见第 6 节
+
+### 槽位字段
 
 | 字段 | 说明 |
 |---|---|
@@ -306,6 +322,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 | kind | 名称 | 是否执行代码 | 后继 |
 |---|---|---|---|
 | start | 开始 | 有槽位则执行 | 多条，全 default |
+| category | 分类 | 否，纯文本分流 | ≥2 条，全 default，目标只能是排查 |
 | investigation | 排查 | 有槽位则执行，否则人工判断 | 是 / 否两组 |
 | investigationAction | 排查动作 | 否，人工 | 完成后接排查 |
 | conclusion | 结论 | 否，展示设计时文本后继续 | 恰好一条，接处置或上升 |
@@ -318,18 +335,19 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 
 ```json
 {
-  "start": ["investigation"],
-  "investigation": ["investigation", "investigationAction", "conclusion", "escalation", "jump"],
-  "investigationAction": ["investigation"],
+  "start": ["investigation", "category"],
+  "category": ["investigation"],
+  "investigation": ["investigation", "category", "investigationAction", "conclusion", "escalation", "jump"],
+  "investigationAction": ["investigation", "category"],
   "conclusion": ["remediation", "escalation", "jump"],
   "remediation": ["remediation", "problemSolved", "escalation", "jump"],
-  "jump": ["investigation", "investigationAction", "conclusion", "remediation", "problemSolved", "escalation", "jump"],
+  "jump": ["investigation", "category", "investigationAction", "conclusion", "remediation", "problemSolved", "escalation", "jump"],
   "problemSolved": [],
   "escalation": []
 }
 ```
 
-开始节点的出边不区分是/否，一律 `default`，可以同时连多个排查节点。
+开始节点的出边不区分是/否，一律 `default`，可以同时连多个排查节点。分类节点同理，出线全部是 `default`，`order` 决定选项顺序，目标只能是排查节点。
 
 ### 校验规则（发布必过）
 
@@ -348,6 +366,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 11. 排查节点必须有 `present` 且指定 `view`；必须有 `decide`，要么给方法，要么 `human: true`
 12. 启动参数名称不重复，类型受支持
 13. 旧接入字段（`composition`、`operation`、`binding`、`method`、`pipeline`、`outputs`、`dataPreparation`）不再接受：导入返回 422，发布也会拦下
+14. 分类节点：`title` 非空；出线 ≥2 且全部为 `default`，目标只能是排查节点；没有槽位，`bindings.nodes` 里不出现它
 
 ---
 
@@ -358,6 +377,19 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 ### 探测
 
 发布前按槽位逐工程探测公开接口：模块导入、类与方法签名、docstring、实现指纹。探测失败或接口不存在直接拦发布。同一工程同模块的目录在一次发布内复用。
+
+### 分类节点校验
+
+发布前对每个 `category` 节点逐条校验，任一不满足即拦发布（error 级，带 nodeId）：
+
+| 规则 | 报错文案 |
+|---|---|
+| 出线 ≥2 条 | `分类节点至少需要两条出线` |
+| 每条出线的目标存在且 `kind == investigation` | `分类节点的出线只能连到排查节点` |
+| 出线分支键必须是 `default` | `分类节点的出线不能带是/否分支` |
+| 分类节点自身不能是 `start` / 终止节点，也不能无入线以外的孤立形态 | 由通用连线与可达性校验覆盖 |
+
+自动模式与手动模式共用同一份校验；穿透发生在代码生成与运行期，不影响发布期规则。
 
 ### 步骤表
 
@@ -391,6 +423,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 - `slots`：发布时冻结的槽位，指纹写进每个调用
 - `runtimeInputs`：执行到该节点时要现场填写的参数
 - 没有槽位的排查节点编译成 `{"human": true}`
+- 分类节点编译成 `{"kind":"category","next":{"default":["n1","n2"]}}`，没有 `slots` 与 `runtimeInputs`；自动模式生成代码时按它穿透，手动模式直接用它出选项
 
 ### 启动表单冻结
 
@@ -447,6 +480,24 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 - 并行使用真实独立分支进程。遇到分叉，原进程继续第一个子分支，其余子分支排队
 - `maxParallel` 限制活跃排查分支数，人工等待仍占名额；分支进程退出后释放名额
 - 分叉继承分叉时已有的对象状态与缓存；之后各分支内存、对象、缓存独立
+
+### 分类节点与手动模式
+
+**自动模式的穿透**：分类节点等于不存在。生成 `flow.py` 时把进入它的每一条边改接到它的每个后继上，保留原分支键与 `order` 位置；分类节点不进 `NODES` 表，不产生 token、不产生 run。若它直接接在开始节点后面，它的后继就顶上来成为开始节点的后继，串行／并行与 `maxParallel` 规则一律照旧。
+
+**手动模式（`mode="manual"`）**：与串行／并行并列，但**一个槽位都不跑**——开始节点的构造槽与拉取槽也不跑。不复制工程源码、不生成 `flow.py` / `runtime/` / `modules/`、不探测签名、不起业务子进程；plan 只用于拓扑、文案与分支。推进完全由平台完成：
+
+| 节点 | 平台行为 |
+|---|---|
+| category | 列出各后继排查节点的 `title`，人选择一条，按该后继的 token 继续 |
+| investigation | 展示编排内容（`title`、`detail`、`fields.observation` / `acquisition` / `assessment`），人选择 yes 或 no |
+| conclusion / investigationAction / remediation / jump | 展示标题与说明，点「继续」后走 `default` |
+| problemSolved / escalation | 到达即收敛，不生成待办 |
+
+每次推进都生成一条 token（`queued` → `running` → `done`）和一条 run，`runs.source = "manual"`，`output_json` 记录这次选择（`{"choice": "<nodeId>"}` 或 `{"result": "yes"|"no"}`），`evidence_json` 记录展示的文案快照。执行轨迹、回退、终止与自动模式完全一致：人工到访可以作回退目标，回退同样作废旧代、开新代。
+
+**切换到自动（单向）**：`POST /api/instances/{id}/switch-to-auto`，请求体 `{mode?: "serial"|"parallel", maxParallel?: number}`，缺省沿用串行与上限 4。平台从开始节点补跑构造槽与拉取槽（此时才复制源码、生成代码、起子进程），拿到带数据的对象后跳回当前停住的节点继续；此前人工走过的节点保留已有选择结果，不重跑、不重复提问。切换后 `runtime_json` 写回 `{engine:"python/v1", mode:<请求值>}`。反向（自动 → 手动）本期不支持，接口返回 409。
+
 
 ### 回退
 
@@ -543,6 +594,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 | POST | `/api/instances/{id}/reviews/{reviewId}` | 提交判断、参数、完成、回退或继续 |
 | POST | `/api/instances/{id}/terminate` | 终止 |
 | POST | `/api/instances/{id}/rollback` | `{targetTokenId?, targetNodeId?, branch?, reason?}` |
+| POST | `/api/instances/{id}/switch-to-auto` | 手动模式转自动：`{mode?: "serial"\|"parallel", maxParallel?}`，返回 `InstanceDetail`；非手动模式返回 409 |
 | GET | `/api/instances/{id}/code` | 导出实例生成的代码 ZIP |
 | GET/POST/PATCH/DELETE | `/api/folders...` | 目录 |
 | GET/POST/PATCH/DELETE | `/api/projects...` | 工程登记与接口发现 |
@@ -552,6 +604,8 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 
 - `GET /api/files/{hash}` 的 `disposition` 只有 `inline` 生效；白名单判断用存储文件名扩展名，不用上传时的 `media_type`；内联响应带 `X-Content-Type-Options: nosniff`
 - 启动实例时缺必填参数返回 400
+- `runtime.mode` 三值：`serial` / `parallel` / `manual`；`manual` 时 `engine` 写 `manual/v1`，不生成代码、不起业务进程
+- 手动模式实例的人工推进复用 `POST /api/instances/{id}/reviews/{reviewId}`：分类待办提交 `{result:"continue", target:"<后继节点id>"}`，排查待办提交 `{result:"yes"|"no", reason}`，其余人工节点提交 `{result:"done"}`
 - 回退的 `branch` 缺省 default；按目标节点类型校验（排查 yes/no，其余 default）
 - `/events` 推的是摘要，客户端按整体替换处理
 - 删除工程不检查引用：已引用它的流程不会立即报错，但重新探测或发布会失败
@@ -598,6 +652,9 @@ src/
 - 开始节点不可删除；新建流程与老文档在设计页打开时自动补齐
 - 工具栏「自动布局」整图重排并自动取景
 - 选中节点时，与它直连的边播虚线流动动画
+- 节点面板可拖出「分类」节点；它的属性面板只有标题与说明，没有槽位，出线校验见第 4 节
+- 启动页的模式选择是「串行 / 并行 / 手动」；选手动时不复制源码、不生成代码
+- 实例详情在 `waiting` / `paused` 且 `runtime.mode == "manual"` 时显示「转为自动」，二次确认里说明会补跑开始节点的构造与拉取
 
 ### 附件展示
 
@@ -708,3 +765,4 @@ backend/
 | v1.16（2026-11-15） | 收敛为组合 + 生成执行单一方案：删除旧函数绑定、四阶段函数与适配器、诊断业务类、数据准备节点、解释执行引擎与 `flows.mode`；`diagnosis_sdk` 仅留 import 兼容 |
 | v1.17（2026-11-16） | 接入改为节点槽位模板：开始节点构造对象并可选取数，排查节点固定「拉取／处理／展示／判定」四槽；删除 composition 三层、11 种参数来源、展示与判定字段映射；参数来源收敛为 lit／input／parameter／previous |
 | v1.18（2026-11-16） | 槽位传值收敛到节点内：`previous` 只指本节点上一步，跨节点不再保留；开始节点的拉取与处理用于把数据写进对象，返回值不后传 |
+| v1.19（2026-11-16） | 新增分类节点与手动模式：`category` 出线 ≥2 只连排查，执行时按后继标题选项分流；`mode="manual"` 不跑任何槽位、由平台生成待办推进，`runs.source` 标记 `manual`；自动模式下分类节点穿透；支持手动转自动（单向），自动转手动不做 |

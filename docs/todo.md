@@ -52,6 +52,19 @@ run 层用前缀区分得很清楚，实例层和 UI 没有暴露，界面统一
 
 当前序列化失败明确报错，不静默丢弃成员，也不以重新采集代替恢复。
 
+## 分类节点与手动模式（v1.19 契约已定，待实现）
+
+契约见 [spec.md](spec.md) 第 4 节（节点与连接）、第 5 节（校验）、第 6 节（穿透与手动推进）、第 7 节（接口）。按角色拆：
+
+- **canvas**：`src/domain/kinds.ts` 的 `META` 加 `category`（label「分类」、`branch:"multi"`、`humanOnly: true`），`KindMeta.branch` 联合类型补 `'multi'`；节点面板可拖出；属性面板只留标题与说明，不渲染槽位；出线只允许连排查、至少两条，违反时节点角标报错。验收：拖出后能连两个排查节点，连结论/终止节点被拒并给出提示。
+- **rules（前后端共用）**：`backend/app/services/rules.py` 的 `KIND_SPECS` 加 `"category": {"branch": "multi", "human_only": True}`，`V1_KINDS` 补 `category`；`src/domain/rules.ts` 的连接矩阵同步允许 `start/investigation/investigationAction/jump → category`。验收：连接矩阵与后端 `_check_edges` 一致，越界连接两边都报错。
+- **api**：新增 `POST /api/instances/{id}/switch-to-auto`，入参 `{mode?: "serial"|"parallel", maxParallel?: number}`，返回 `InstanceDetail`，非手动模式 409；启动接口的 `runtime.mode` 接受 `manual`，落库 `runtime_json={engine:"manual/v1", mode:"manual"}`；实例详情原样带出 `runtime`。验收：手动实例切换后 `engine=python/v1`、`mode=serial`，tokens 与待办不丢。
+- **engine**：新增手动执行器（不走 `generated_runner`，不起子进程）：按 plan 拓扑逐节点开 token、写 run（`runs.source="manual"`）；分类节点生成「选一条后继」待办，排查节点生成 yes/no 待办并附 `title/detail/fields` 文案，其余人工节点生成「继续」待办。切换时补跑开始节点构造与拉取，再回到当前停住的 token 继续。验收：含分类的流程能走完，轨迹每个到访都有 run 且 `source=manual`；切换后对象与缓存可用，已走过节点不重跑。
+- **shell**：启动页模式选择改三档（串行／并行／手动）；实例详情在 `manual` 且 `waiting`/`paused` 时显示「转为自动」并二次确认；待办面板按 `request.type` 渲染分类选项（直接用后继节点标题）。
+- **tests**：① 分类节点三条校验各一例；② 自动穿透（`A→C→{B1,B2}` 展开成 `A→B1`、`A→B2`，且不产生 category token）；③ 手动模式全流程含分类与回退；④ 手动转自动后已到访节点不重跑、对象数据可用。
+
+**状态**：未开工。模式字段、接口路径与校验文案已定，实现时按第 7 节契约，不要另开字段。
+
 ## 待复核（本轮改动后的静态观察，未逐条复验）
 
 - 流程启动表单的请求失败时，页面仍可能显示「没有声明启动参数」并允许提交；从版本 A 快速切到 B 时，迟到的 A 响应可能替换 B 的表单
