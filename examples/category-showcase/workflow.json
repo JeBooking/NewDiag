@@ -1,0 +1,542 @@
+{
+  "format": 1,
+  "name": "分类节点与手动模式示例",
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始",
+      "detail": "构造四个对象，并预热一段振动数据",
+      "position": {
+        "x": 0,
+        "y": 300
+      },
+      "inputs": [
+        {
+          "name": "dataset",
+          "type": "text",
+          "default": "cat-2026-11"
+        },
+        {
+          "name": "device",
+          "type": "text",
+          "default": "M-1"
+        },
+        {
+          "name": "points",
+          "type": "number",
+          "default": 24
+        },
+        {
+          "name": "threshold",
+          "type": "number",
+          "default": 5
+        },
+        {
+          "name": "tempLimit",
+          "type": "number",
+          "default": 80
+        }
+      ],
+      "slots": {
+        "constructs": [
+          {
+            "object": "center",
+            "project": "示例数据源",
+            "module": "feeder",
+            "interface": "DataCenter",
+            "function": "DataCenter",
+            "arguments": {
+              "dataset": {
+                "source": "input",
+                "name": "dataset"
+              },
+              "device": {
+                "source": "input",
+                "name": "device"
+              }
+            }
+          },
+          {
+            "object": "processor",
+            "project": "示例处理展示",
+            "module": "render",
+            "interface": "Processor",
+            "function": "Processor",
+            "arguments": {}
+          },
+          {
+            "object": "renderer",
+            "project": "示例处理展示",
+            "module": "render",
+            "interface": "Renderer",
+            "function": "Renderer",
+            "arguments": {}
+          },
+          {
+            "object": "judge",
+            "project": "示例判断",
+            "module": "rules",
+            "interface": "Judge",
+            "function": "Judge",
+            "arguments": {
+              "limit": {
+                "source": "input",
+                "name": "threshold"
+              }
+            }
+          },
+          {
+            "object": "temp_judge",
+            "project": "示例判断",
+            "module": "rules",
+            "interface": "Judge",
+            "function": "Judge",
+            "arguments": {
+              "limit": {
+                "source": "input",
+                "name": "tempLimit"
+              }
+            }
+          },
+          {
+            "object": "margin_judge",
+            "project": "示例判断",
+            "module": "rules",
+            "interface": "Judge",
+            "function": "Judge",
+            "arguments": {
+              "limit": {
+                "lit": 92
+              }
+            }
+          }
+        ],
+        "fetch": {
+          "object": "center",
+          "project": "示例数据源",
+          "module": "feeder",
+          "interface": "DataCenter.fetch",
+          "function": "fetch",
+          "arguments": {
+            "channel": {
+              "lit": "vibration"
+            },
+            "points": {
+              "source": "input",
+              "name": "points"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "route",
+      "kind": "category",
+      "title": "按现象缩小范围",
+      "detail": "现场先看到哪一路现象就先查哪一路；判断不成立可以回退换一条",
+      "position": {
+        "x": 240,
+        "y": 300
+      }
+    },
+    {
+      "id": "vibration",
+      "kind": "investigation",
+      "title": "振动排查",
+      "detail": "取振动通道，平滑后出指标卡，由判断模块按启动阈值判定",
+      "position": {
+        "x": 480,
+        "y": 100
+      },
+      "fields": {
+        "observation": "振动加速度指标",
+        "acquisition": "DataCenter.fetch(channel=vibration) → Processor.smooth",
+        "assessment": "峰值超过启动阈值判为异常"
+      },
+      "slots": {
+        "fetch": {
+          "object": "center",
+          "project": "示例数据源",
+          "module": "feeder",
+          "interface": "DataCenter.fetch",
+          "function": "fetch",
+          "arguments": {
+            "channel": {
+              "lit": "vibration"
+            },
+            "points": {
+              "source": "input",
+              "name": "points"
+            }
+          }
+        },
+        "process": {
+          "object": "processor",
+          "project": "示例处理展示",
+          "module": "render",
+          "interface": "Processor.smooth",
+          "function": "smooth",
+          "arguments": {
+            "raw": {
+              "source": "previous"
+            },
+            "window": {
+              "lit": 3
+            }
+          }
+        },
+        "present": {
+          "object": "renderer",
+          "project": "示例处理展示",
+          "module": "render",
+          "interface": "Renderer.metrics",
+          "function": "metrics",
+          "view": "metrics",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        },
+        "decide": {
+          "object": "judge",
+          "project": "示例判断",
+          "module": "rules",
+          "interface": "Judge.check",
+          "function": "check",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "temperature",
+      "kind": "investigation",
+      "title": "温度排查",
+      "detail": "取温度通道，平滑后出指标卡，按温度报警阈值判定",
+      "position": {
+        "x": 480,
+        "y": 300
+      },
+      "fields": {
+        "observation": "轴承温度指标",
+        "acquisition": "DataCenter.fetch(channel=temperature) → Processor.smooth",
+        "assessment": "峰值超过温度报警阈值判为异常"
+      },
+      "slots": {
+        "fetch": {
+          "object": "center",
+          "project": "示例数据源",
+          "module": "feeder",
+          "interface": "DataCenter.fetch",
+          "function": "fetch",
+          "arguments": {
+            "channel": {
+              "lit": "temperature"
+            },
+            "points": {
+              "source": "input",
+              "name": "points"
+            }
+          }
+        },
+        "process": {
+          "object": "processor",
+          "project": "示例处理展示",
+          "module": "render",
+          "interface": "Processor.smooth",
+          "function": "smooth",
+          "arguments": {
+            "raw": {
+              "source": "previous"
+            },
+            "window": {
+              "lit": 3
+            }
+          }
+        },
+        "present": {
+          "object": "renderer",
+          "project": "示例处理展示",
+          "module": "render",
+          "interface": "Renderer.metrics",
+          "function": "metrics",
+          "view": "metrics",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        },
+        "decide": {
+          "object": "temp_judge",
+          "project": "示例判断",
+          "module": "rules",
+          "interface": "Judge.check",
+          "function": "check",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "margin",
+      "kind": "investigation",
+      "title": "温升趋势排查",
+      "detail": "同一温度通道取更长的样本，用更宽的裕度阈值复核，避免误报",
+      "position": {
+        "x": 480,
+        "y": 500
+      },
+      "fields": {
+        "observation": "长样本温度指标",
+        "acquisition": "DataCenter.fetch(channel=temperature, points=48) → Processor.smooth",
+        "assessment": "峰值超过裕度阈值 92℃ 才判为异常"
+      },
+      "slots": {
+        "fetch": {
+          "object": "center",
+          "project": "示例数据源",
+          "module": "feeder",
+          "interface": "DataCenter.fetch",
+          "function": "fetch",
+          "arguments": {
+            "channel": {
+              "lit": "temperature"
+            },
+            "points": {
+              "lit": 48
+            }
+          }
+        },
+        "process": {
+          "object": "processor",
+          "project": "示例处理展示",
+          "module": "render",
+          "interface": "Processor.smooth",
+          "function": "smooth",
+          "arguments": {
+            "raw": {
+              "source": "previous"
+            },
+            "window": {
+              "lit": 3
+            }
+          }
+        },
+        "present": {
+          "object": "renderer",
+          "project": "示例处理展示",
+          "module": "render",
+          "interface": "Renderer.metrics",
+          "function": "metrics",
+          "view": "metrics",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        },
+        "decide": {
+          "object": "margin_judge",
+          "project": "示例判断",
+          "module": "rules",
+          "interface": "Judge.check",
+          "function": "check",
+          "arguments": {
+            "data": {
+              "source": "previous"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "c_vibration",
+      "kind": "conclusion",
+      "title": "振动超限",
+      "detail": "振动峰值超过阈值，按轴承磨损处理",
+      "position": {
+        "x": 760,
+        "y": 100
+      }
+    },
+    {
+      "id": "c_temperature",
+      "kind": "conclusion",
+      "title": "温度偏高",
+      "detail": "轴承温度超过报警阈值，优先处理散热",
+      "position": {
+        "x": 760,
+        "y": 300
+      }
+    },
+    {
+      "id": "c_margin",
+      "kind": "conclusion",
+      "title": "温升裕度不足",
+      "detail": "长样本峰值逼近裕度上限，需要提前干预",
+      "position": {
+        "x": 760,
+        "y": 500
+      }
+    },
+    {
+      "id": "r_vibration",
+      "kind": "remediation",
+      "title": "更换轴承并复测",
+      "detail": "更换后按同样参数复测振动",
+      "position": {
+        "x": 1000,
+        "y": 100
+      }
+    },
+    {
+      "id": "r_temperature",
+      "kind": "remediation",
+      "title": "清理散热并复测",
+      "detail": "清理风扇与散热片后复测温度",
+      "position": {
+        "x": 1000,
+        "y": 300
+      }
+    },
+    {
+      "id": "r_margin",
+      "kind": "remediation",
+      "title": "加装散热并复测",
+      "detail": "加装散热片后用长样本复测温度",
+      "position": {
+        "x": 1000,
+        "y": 500
+      }
+    },
+    {
+      "id": "solved",
+      "kind": "problemSolved",
+      "title": "问题解决",
+      "detail": "复测通过",
+      "position": {
+        "x": 1240,
+        "y": 300
+      }
+    },
+    {
+      "id": "escalation",
+      "kind": "escalation",
+      "title": "上升",
+      "detail": "该路现象不成立，现场无法处理，转交厂家工程师",
+      "position": {
+        "x": 760,
+        "y": 700
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_start_route",
+      "from": "start",
+      "to": "route"
+    },
+    {
+      "id": "e_route_vibration",
+      "from": "route",
+      "to": "vibration",
+      "branch": "default",
+      "order": 1
+    },
+    {
+      "id": "e_route_temperature",
+      "from": "route",
+      "to": "temperature",
+      "branch": "default",
+      "order": 2
+    },
+    {
+      "id": "e_route_margin",
+      "from": "route",
+      "to": "margin",
+      "branch": "default",
+      "order": 3
+    },
+    {
+      "id": "e_vibration_yes",
+      "from": "vibration",
+      "to": "c_vibration",
+      "branch": "yes",
+      "order": 1
+    },
+    {
+      "id": "e_vibration_no",
+      "from": "vibration",
+      "to": "escalation",
+      "branch": "no",
+      "order": 2
+    },
+    {
+      "id": "e_temperature_yes",
+      "from": "temperature",
+      "to": "c_temperature",
+      "branch": "yes",
+      "order": 1
+    },
+    {
+      "id": "e_temperature_no",
+      "from": "temperature",
+      "to": "escalation",
+      "branch": "no",
+      "order": 2
+    },
+    {
+      "id": "e_margin_yes",
+      "from": "margin",
+      "to": "c_margin",
+      "branch": "yes",
+      "order": 1
+    },
+    {
+      "id": "e_margin_no",
+      "from": "margin",
+      "to": "escalation",
+      "branch": "no",
+      "order": 2
+    },
+    {
+      "id": "e_c_vibration_r",
+      "from": "c_vibration",
+      "to": "r_vibration"
+    },
+    {
+      "id": "e_c_temperature_r",
+      "from": "c_temperature",
+      "to": "r_temperature"
+    },
+    {
+      "id": "e_c_margin_r",
+      "from": "c_margin",
+      "to": "r_margin"
+    },
+    {
+      "id": "e_r_vibration_solved",
+      "from": "r_vibration",
+      "to": "solved"
+    },
+    {
+      "id": "e_r_temperature_solved",
+      "from": "r_temperature",
+      "to": "solved"
+    },
+    {
+      "id": "e_r_margin_solved",
+      "from": "r_margin",
+      "to": "solved"
+    }
+  ]
+}
