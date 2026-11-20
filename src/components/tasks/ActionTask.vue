@@ -2,7 +2,7 @@
 import type { ReviewTask } from '@/domain/types'
 import AttachmentList from '@/components/panels/AttachmentList.vue'
 
-defineProps<{ review: ReviewTask; busy?: boolean }>()
+defineProps<{ review: ReviewTask; busy?: boolean; manual?: boolean }>()
 const emit = defineEmits<{
   (e: 'complete'): void
   (e: 'rollback'): void
@@ -37,11 +37,18 @@ function pretty(value: unknown): string {
     />
 
     <div class="actions">
-      <el-button type="success" :loading="busy" @click="emit('complete')">完成</el-button>
+      <el-button type="success" :loading="busy" @click="emit('complete')">
+        {{ manual ? '继续' : '完成' }}
+      </el-button>
       <el-button type="warning" plain :loading="busy" @click="emit('rollback')">回退</el-button>
     </div>
     <div class="hint">
-      对着设备完成处置后点「完成」；没有做成选择「回退」，回到已执行的祖先节点重新排查
+      <template v-if="manual">
+        按现场完成这一步后点「继续」，流程按默认出线推进；做不下去选「回退」
+      </template>
+      <template v-else>
+        对着设备完成处置后点「完成」；没有做成选择「回退」，回到已执行的祖先节点重新排查
+      </template>
     </div>
   </div>
 </template>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { FlowDoc, ReviewTask, RunRecord, Token } from '@/domain/types'
+import { runOutput, runSource } from '@/services/instances'
 
 const props = defineProps<{
   tokens: Token[]
@@ -49,6 +50,28 @@ function runEntry(run: RunRecord): Entry {
   const meta = `第 ${run.generation} 代 · 尝试 ${run.attempt}`
   const error = String(run.error ?? '')
 
+  // 手动模式下的人工选择：没有业务调用，只记录当时选了什么
+  if (runSource(run) === 'manual') {
+    const manualMeta = `第 ${run.generation} 代 · 人工`
+    if (run.status !== 'ok') {
+      return {
+        id: run.id, at: run.startedAt, title: node, tag: '人工·未走通', type: 'danger',
+        meta: manualMeta, note: error || '所选分支没有后继', noteType: 'warning',
+      }
+    }
+    const output = runOutput(run)
+    let note: string | undefined
+    if (output.choice) {
+      note = `选择「${title(output.choice)}」`
+    } else if (output.result === 'yes' || output.result === 'no') {
+      note = `判定：${output.result === 'yes' ? '是' : '否'}${
+        output.reason ? ` · 理由：${output.reason}` : ''}`
+    }
+    const evidence = (run.evidence ?? {}) as { detail?: unknown }
+    if (!note && typeof evidence.detail === 'string' && evidence.detail) note = evidence.detail
+    return { id: run.id, at: run.startedAt, title: node, tag: '人工', type: 'info', meta: manualMeta, note }
+  }
+
   if (run.status === 'rollback') {
     const input = (run.input ?? {}) as { reason?: unknown; branch?: unknown }
     const branch = typeof input.branch === 'string' ? BRANCH_TEXT[input.branch] ?? input.branch : ''
@@ -94,8 +117,18 @@ const RESULT_TEXT: Record<string, string> = {
   yes: '是', no: '否', done: '完成', continue: '继续', stop: '结束', rollback: '回退',
 }
 
+/** 手动模式下每次人工选择都同时写了 run 和待办，轨迹只留 run，避免同一动作出现两条 */
+const manualRunKeys = computed(() => {
+  const keys = new Set<string>()
+  for (const run of props.runs) {
+    if (runSource(run) === 'manual') keys.add(`${run.tokenId}:${run.nodeId}`)
+  }
+  return keys
+})
+
 function reviewEntry(review: ReviewTask): Entry | null {
   if (review.status !== 'done' || !review.decision) return null
+  if (manualRunKeys.value.has(`${review.tokenId ?? ''}:${review.nodeId}`)) return null
   const failure = review.request.type === 'failure'
   const meta = `第 ${tokenById.value.get(review.tokenId ?? '')?.generation ?? 1} 代`
   const label = REVIEW_TAG[review.request.type ?? review.kind] ?? { tag: '人工操作', type: 'info' as TagType }
@@ -118,7 +151,12 @@ const items = computed<Entry[]>(() => {
     const entry = reviewEntry(review)
     if (entry) entries.push(entry)
   }
-  return entries.sort((a, b) => stamp(a.at) - stamp(b.at) || a.id.localeCompare(b.id))
+  // 手动模式一次点击可能在同一秒内推进多个节点，秒级时间戳相同，
+  // 这时保持接口返回的先后顺序，别用 id 打散成随机次序
+  return entries
+    .map((entry, index) => ({ entry, index }))
+    .sort((a, b) => stamp(a.entry.at) - stamp(b.entry.at) || a.index - b.index)
+    .map((item) => item.entry)
 })
 </script>
 

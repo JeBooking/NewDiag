@@ -25,6 +25,11 @@ const activeTab = ref<'paths' | 'trace'>('trace')
 const refreshing = ref(false)
 const terminating = ref(false)
 const exportingCode = ref(false)
+/** 手动转自动：不可逆，先弹窗确认并选串行／并行 */
+const switchVisible = ref(false)
+const switchMode = ref<'serial' | 'parallel'>('serial')
+const switchMax = ref(4)
+const switching = ref(false)
 /** 卡片里正在看执行详情的节点；同一时刻只允许一个 */
 const inspectNodeId = ref<string | null>(null)
 /** 只用于把待办卡片的点击传导到画布，画布自身上报的选中不需要回打 */
@@ -54,6 +59,8 @@ const formatTime = (value?: string | null): string =>
   value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
 
 const detail = computed(() => store.detail)
+const runtime = computed(() => store.runtime)
+const isManual = computed(() => runtime.value.mode === 'manual')
 const canExportCode = computed(() => detail.value?.runtime?.engine === 'python/v1')
 
 async function exportCode(): Promise<void> {
@@ -68,6 +75,29 @@ async function exportCode(): Promise<void> {
     exportingCode.value = false
   }
 }
+
+/** 打开转自动弹窗：默认串行，沿用实例当前的分支上限 */
+function openSwitch(): void {
+  switchMode.value = 'serial'
+  switchMax.value = runtime.value.maxParallel ?? 4
+  switchVisible.value = true
+}
+
+async function confirmSwitch(): Promise<void> {
+  if (switching.value) return
+  switching.value = true
+  try {
+    await store.switchToAuto({ mode: switchMode.value, maxParallel: switchMax.value })
+    switchVisible.value = false
+    ElMessage.success('已转为自动排查')
+  } catch (error) {
+    ElMessage.error(errorText(error, '切换失败'))
+    await store.refresh(instanceId.value)
+  } finally {
+    switching.value = false
+  }
+}
+
 const canTerminate = computed(() =>
   detail.value ? ['running', 'waiting', 'paused'].includes(detail.value.status) : false,
 )
@@ -235,8 +265,11 @@ function onInspect(nodeId: string): void {
         </div>
       </div>
       <div class="head-right">
-        <span v-if="detail.runtime?.engine === 'python/v1'" class="meta">
-          {{ detail.runtime.mode === 'serial' ? '串行' : `并行 · 上限 ${detail.runtime.maxParallel}` }}
+        <el-tag v-if="isManual" size="small" type="warning" effect="dark">
+          {{ canTerminate ? '手动排查中' : '手动排查·已结束' }}
+        </el-tag>
+        <span v-else-if="detail.runtime?.engine === 'python/v1'" class="meta">
+          {{ runtime.mode === 'serial' ? '串行' : `并行 · 上限 ${runtime.maxParallel}` }}
         </span>
         <span class="meta">开始 {{ formatTime(detail.startedAt) }}</span>
         <span v-if="detail.endedAt" class="meta">结束 {{ formatTime(detail.endedAt) }}</span>
@@ -244,6 +277,12 @@ function onInspect(nodeId: string): void {
           快照 {{ formatTime(detail.snapshot.capturedAt) }}
         </span>
         <el-button size="small" :loading="refreshing" @click="reload">刷新</el-button>
+        <el-button
+          v-if="isManual && canTerminate"
+          type="primary"
+          size="small"
+          @click="openSwitch"
+        >转自动</el-button>
         <el-button v-if="canExportCode" size="small" :loading="exportingCode" @click="exportCode">
           导出代码
         </el-button>
@@ -331,7 +370,7 @@ function onInspect(nodeId: string): void {
         <el-tab-pane label="诊断路径" name="paths">
           <div class="tab-body">
             <PathList :tokens="detail?.tokens ?? []" :runs="detail?.runs ?? []" :doc="store.doc"
-              :mode="detail?.runtime?.mode ?? 'serial'" />
+              :mode="runtime.mode" />
           </div>
         </el-tab-pane>
       </el-tabs>
@@ -344,6 +383,27 @@ function onInspect(nodeId: string): void {
     >
       <el-button @click="router.push({ name: 'instances' })">返回执行记录</el-button>
     </el-empty>
+
+    <el-dialog v-model="switchVisible" title="转为自动排查" width="440px">
+      <p class="switch-text">
+        转换后平台会补跑开始节点的构造与拉取槽，再从当前停住的节点继续自动推进。此前人工做过的选择保留，不会重复提问；此操作不可回退。
+      </p>
+      <div class="switch-row">
+        <span class="switch-label">执行模式</span>
+        <el-radio-group v-model="switchMode" :disabled="switching">
+          <el-radio-button value="serial">串行</el-radio-button>
+          <el-radio-button value="parallel">并行</el-radio-button>
+        </el-radio-group>
+      </div>
+      <div v-if="switchMode === 'parallel'" class="switch-row">
+        <span class="switch-label">分支上限</span>
+        <el-input-number v-model="switchMax" :min="1" :max="128" :precision="0" :disabled="switching" />
+      </div>
+      <template #footer>
+        <el-button :disabled="switching" @click="switchVisible = false">取消</el-button>
+        <el-button type="primary" :loading="switching" @click="confirmSwitch">确认转自动</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -471,5 +531,24 @@ function onInspect(nodeId: string): void {
 
 .missing {
   flex: 1;
+}
+
+.switch-text {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+  line-height: 1.8;
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.switch-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 </style>

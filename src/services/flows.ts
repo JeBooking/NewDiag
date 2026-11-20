@@ -54,7 +54,8 @@ export interface PublishResponse {
 export interface StartInstancePayload {
   releaseId: string
   input?: Record<string, unknown>
-  runtime?: { mode: 'serial' | 'parallel'; maxParallel: number }
+  /** manual 为 v1.19 的手动排查：平台不跑槽位，全部由人推进 */
+  runtime?: { mode: 'serial' | 'parallel' | 'manual'; maxParallel: number }
 }
 
 export function listFlows(filter: ListFlowsFilter = {}): Promise<FlowSummary[]> {

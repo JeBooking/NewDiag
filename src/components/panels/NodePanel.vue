@@ -38,6 +38,8 @@ const fields = computed<InvestigationFields>(
   () => props.node.fields ?? { observation: '', acquisition: '', assessment: '' },
 )
 const isStart = computed(() => props.node.kind === 'start')
+/** 分类节点是纯文本分流：只有标题和说明，选项顺序由出边 order 决定 */
+const isCategory = computed(() => props.node.kind === 'category')
 
 /** 开始节点声明的对象名与启动参数，是其余槽位的可选值来源 */
 const startNode = computed(() => props.doc?.nodes?.find((item) => item.kind === 'start'))
@@ -208,16 +210,22 @@ function patchRuntimeInputs(value: ManualField[]): void {
           />
 
           <template v-if="!isStart">
-            <label class="label">详细内容</label>
+            <label class="label">{{ isCategory ? '说明' : '详细内容' }}</label>
             <el-input
               :model-value="node.detail"
               :disabled="readonly"
               type="textarea"
               :rows="3"
-              placeholder="这一节点要做什么、看什么"
+              :placeholder="isCategory
+                ? '按什么条件分流、什么时候走哪一条'
+                : '这一节点要做什么、看什么'"
               @update:model-value="patchText('detail', $event)"
             />
           </template>
+
+          <div v-if="isCategory" class="section-hint">
+            分类节点只做分流：执行到这里把下游排查节点按「选项顺序」列给人工选择，选哪条就走哪条；不接代码、不执行槽位。
+          </div>
 
           <template v-if="node.kind === 'investigation'">
             <label class="label">观察对象</label>
@@ -295,7 +303,7 @@ function patchRuntimeInputs(value: ManualField[]): void {
         </div>
       </el-collapse-item>
 
-      <el-collapse-item name="slots" :title="isStart ? '接入口径与取数' : '接入口径与数据'">
+      <el-collapse-item v-if="!isCategory" name="slots" :title="isStart ? '接入口径与取数' : '接入口径与数据'">
         <div class="section-body">
           <div class="section-hint">
             {{ isStart
@@ -345,11 +353,15 @@ function patchRuntimeInputs(value: ManualField[]): void {
         </div>
       </el-collapse-item>
 
-      <el-collapse-item v-if="!isStart && orderGroups.length" name="order" title="执行顺序">
+      <el-collapse-item
+        v-if="!isStart && orderGroups.length"
+        name="order"
+        :title="isCategory ? '选项顺序' : '执行顺序'"
+      >
         <div class="section-body">
           <div class="order-groups">
             <div v-for="group in orderGroups" :key="group.branch" class="order-group">
-              <div class="order-group-head">{{ group.label }}</div>
+              <div class="order-group-head">{{ isCategory ? '选项' : group.label }}</div>
               <div class="order-list">
                 <div v-for="(item, index) in group.items" :key="item.edgeId" class="order-row">
                   <span class="order-index">{{ index + 1 }}</span>
@@ -372,11 +384,15 @@ function patchRuntimeInputs(value: ManualField[]): void {
               </div>
             </div>
           </div>
-          <div class="section-hint">同组内按顺序执行；运行模式与并行上限在启动时选择</div>
+          <div class="section-hint">
+            {{ isCategory
+              ? '人工选择时按这里的顺序列出后继排查节点；目标标题为空时显示「未命名排查」'
+              : '同组内按顺序执行；运行模式与并行上限在启动时选择' }}
+          </div>
         </div>
       </el-collapse-item>
 
-      <el-collapse-item name="attachments" title="附件">
+      <el-collapse-item v-if="!isCategory" name="attachments" title="附件">
         <div class="section-body">
           <AttachmentField
             :attachments="node.attachments"

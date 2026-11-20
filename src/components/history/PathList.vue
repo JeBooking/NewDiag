@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { FlowDoc, FlowMode, RunRecord, Token } from '@/domain/types'
+import type { FlowDoc, RunRecord, Token } from '@/domain/types'
+import { runOutput, type InstanceMode } from '@/services/instances'
 
 const props = defineProps<{
   tokens: Token[]
   runs: RunRecord[]
   doc?: FlowDoc | null
-  mode?: FlowMode
+  mode?: InstanceMode
 }>()
 
 type StateType = 'primary' | 'success' | 'warning' | 'danger' | 'info'
@@ -66,7 +67,27 @@ const generation = computed(() => {
   return values.length ? Math.max(...values) : 0
 })
 
-const isSerial = computed(() => (props.mode ?? 'serial') === 'serial')
+const isManual = computed(() => props.mode === 'manual')
+const isSerial = computed(() => (props.mode ?? 'serial') !== 'parallel')
+
+/**
+ * 手动模式下分类节点的选择记在 run.output.choice 里。
+ * 选择发生在分类节点上、作用在它到下一条的边上，所以记到子 token 上，标在进入子节点的箭头上。
+ */
+const choiceByToken = computed(() => {
+  const chosenByParent = new Map<string, string>()
+  for (const run of props.runs) {
+    const choice = runOutput(run).choice
+    if (choice) chosenByParent.set(run.tokenId, choice)
+  }
+  const map = new Map<string, string>()
+  if (!chosenByParent.size) return map
+  for (const token of props.tokens) {
+    const parent = token.parentTokenId
+    if (parent && chosenByParent.has(parent)) map.set(token.id, chosenByParent.get(parent) as string)
+  }
+  return map
+})
 
 const visitedChildren = computed(() => {
   const map = new Map<string, Token[]>()
@@ -136,7 +157,9 @@ const built = computed<Built[]>(() =>
       nodes: chain.map((token) => ({
         token,
         title: title(token.nodeId),
-        branch: token.branch ? BRANCH_TEXT[token.branch] ?? token.branch : '',
+        branch: choiceByToken.value.has(token.id)
+          ? `选「${title(choiceByToken.value.get(token.id) as string)}」`
+          : token.branch ? BRANCH_TEXT[token.branch] ?? token.branch : '',
       })),
       state: stateOf(chain, leaf),
     }
@@ -170,7 +193,7 @@ const rows = computed<Row[]>(() => {
       <div v-for="row in rows" :key="row.id" class="path-row">
         <div class="path-head">
           <el-tag size="small" :type="row.state.type" effect="plain">{{ row.state.text }}</el-tag>
-          <span class="meta">{{ isSerial ? '串行排查' : '并行思路' }}</span>
+          <span class="meta">{{ isManual ? '手动排查' : isSerial ? '串行排查' : '并行思路' }}</span>
         </div>
 
         <div class="chain">

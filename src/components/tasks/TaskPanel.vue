@@ -3,8 +3,10 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { FlowDoc, InstanceDetail, ReviewTask } from '@/domain/types'
 import { errorText } from '@/services/api'
+import { investigationSnapshot, isManualInstance, reviewType } from '@/services/instances'
 import { useInstancesStore } from '@/stores/instances'
 import ActionTask from './ActionTask.vue'
+import CategoryTask from './CategoryTask.vue'
 import DecisionTask from './DecisionTask.vue'
 import DataTask from './DataTask.vue'
 import FailureTask from './FailureTask.vue'
@@ -25,6 +27,7 @@ const emit = defineEmits<{
 }>()
 
 const store = useInstancesStore()
+const manual = computed(() => isManualInstance(props.detail))
 
 const selectedId = ref<string | null>(null)
 const busy = ref(false)
@@ -83,9 +86,12 @@ const formatTime = (value?: string | null): string =>
   value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
 
 function kindLabel(review: ReviewTask): string {
+  if (reviewType(review) === 'category') return '分类分流'
   if (review.kind === 'failure') return '执行报错'
   if (review.request.type === 'parameters') return '填写参数'
   if (review.request.type === 'after_success') return '串行决策'
+  // 手动模式的排查待办：人看三项字段后选是/否，不是普通判定槽
+  if (investigationSnapshot(review)) return '排查判断'
   if (review.kind === 'decision') return '判断'
   // 转交节点的「完成」语义是把问题交给别的链路，不是处置动作，标签要区分
   return review.request.nodeKind === 'jump' ? '转交' : '处置'
@@ -93,6 +99,7 @@ function kindLabel(review: ReviewTask): string {
 
 function tagType(review: ReviewTask): 'primary' | 'success' | 'danger' {
   if (review.kind === 'failure') return 'danger'
+  if (reviewType(review) === 'category') return 'primary'
   return review.kind === 'decision' ? 'primary' : 'success'
 }
 
@@ -103,6 +110,23 @@ async function decide(result: 'yes' | 'no' | 'done' | 'continue' | 'stop', reaso
   try {
     await store.decide(selected.value.id, { result, reason })
     ElMessage.success(result === 'continue' ? '已继续推进' : '已提交')
+    emit('changed')
+  } catch (error) {
+    submitError.value = errorText(error, '提交失败')
+    ElMessage.error(errorText(error, '提交失败'))
+  } finally {
+    busy.value = false
+  }
+}
+
+/** 分类待办：必须选一个后继排查节点，提交时把 nodeId 放进 target */
+async function chooseCategory(target: string): Promise<void> {
+  if (!selected.value || !target) return
+  busy.value = true
+  submitError.value = ''
+  try {
+    await store.decide(selected.value.id, { result: 'continue', target })
+    ElMessage.success('已选择排查方向')
     emit('changed')
   } catch (error) {
     submitError.value = errorText(error, '提交失败')
@@ -185,8 +209,12 @@ function onRolledBack(): void {
 
       <div v-if="selected" class="detail">
         <div class="detail-node">{{ selectedTitle }}</div>
+        <CategoryTask
+          v-if="reviewType(selected) === 'category'"
+          :review="selected" :busy="busy" :error="submitError" @choose="chooseCategory"
+        />
         <DataTask
-          v-if="selected.request.type === 'parameters'"
+          v-else-if="selected.request.type === 'parameters'"
           :review="selected" :busy="busy" :error="submitError" @submit="submitData"
         />
         <DecisionTask
@@ -207,6 +235,7 @@ function onRolledBack(): void {
           v-else
           :review="selected"
           :busy="busy"
+          :manual="manual"
           @complete="complete"
           @rollback="rollbackVisible = true"
         />

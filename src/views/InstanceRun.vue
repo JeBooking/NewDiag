@@ -21,7 +21,7 @@ const releaseError = ref<string | null>(null)
 const starting = ref(false)
 
 const formRef = ref<InstanceType<typeof ReleaseInputForm> | null>(null)
-const runtimeMode = ref<'serial' | 'parallel'>('serial')
+const runtimeMode = ref<'serial' | 'parallel' | 'manual'>('serial')
 const maxParallel = ref(4)
 const missingLabels = ref<string[]>([])
 
@@ -155,13 +155,18 @@ async function start(): Promise<void> {
             <el-radio-group v-model="runtimeMode" :disabled="starting">
               <el-radio-button value="serial">串行排查</el-radio-button>
               <el-radio-button value="parallel">并行排查</el-radio-button>
+              <el-radio-button value="manual">手动排查</el-radio-button>
             </el-radio-group>
             <template v-if="runtimeMode === 'parallel'">
               <span class="runtime-label">分支上限</span>
               <el-input-number v-model="maxParallel" :min="1" :max="128" :precision="0"
                 :disabled="starting" />
             </template>
-            <span class="runtime-hint">人工等待中的分支占名额，超出排队</span>
+            <span class="runtime-hint">
+              {{ runtimeMode === 'manual'
+                ? '不执行任何代码，平台只按流程拓扑生成待办，由人逐步推进'
+                : '人工等待中的分支占名额，超出排队' }}
+            </span>
           </div>
 
           <div class="actions">

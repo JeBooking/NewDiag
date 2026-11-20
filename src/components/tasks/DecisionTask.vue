@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import type { ReviewTask } from '@/domain/types'
 import AttachmentList from '@/components/panels/AttachmentList.vue'
 import DataPresentation from '@/components/panels/DataPresentation.vue'
+import { investigationSnapshot } from '@/services/instances'
 
 const props = defineProps<{ review: ReviewTask; busy?: boolean; error?: string }>()
 const emit = defineEmits<{ (e: 'decide', result: 'yes' | 'no' | 'done' | 'continue', reason?: string): void }>()
@@ -12,6 +13,14 @@ const missingReason = computed(() => !gate.value && !reason.value.trim())
 
 /** 串行模式跑到问题解决节点后的收敛待办：结束还是继续剩下的队列 */
 const gate = computed(() => props.review.request.type === 'after_success')
+
+/** 手动模式的排查待办：后端把三项字段放在 request.fields 对象里 */
+const snapshot = computed(() => investigationSnapshot(props.review))
+const FIELD_ROWS = [
+  { key: 'observation', label: '观测对象' },
+  { key: 'acquisition', label: '取数方式' },
+  { key: 'assessment', label: '判定依据' },
+] as const
 
 function pretty(value: unknown): string {
   if (value === undefined || value === null) return ''
@@ -31,6 +40,15 @@ function pretty(value: unknown): string {
     <p v-if="review.request.instructions" class="task-tip">{{ review.request.instructions }}</p>
     <DataPresentation :value="review.request.presentation" />
 
+    <div v-if="snapshot" class="fields">
+      <div v-for="row in FIELD_ROWS" :key="row.key" class="field-row">
+        <span class="field-label">{{ row.label }}</span>
+        <span class="field-value" :class="{ empty: !snapshot[row.key] }">
+          {{ snapshot[row.key] || '—' }}
+        </span>
+      </div>
+    </div>
+
     <div v-if="review.request.evidence" class="evidence">
       <div class="evidence-label">依据</div>
       <pre>{{ pretty(review.request.evidence) }}</pre>
@@ -42,9 +60,10 @@ function pretty(value: unknown): string {
       dense
     />
     <template v-if="!gate">
-      <label for="judgment-reason">判断依据（必填）</label>
+      <label for="judgment-reason">{{ snapshot ? '理由（必填）' : '判断依据（必填）' }}</label>
       <el-input
         id="judgment-reason" v-model="reason" type="textarea" :rows="3" :disabled="busy"
+        :placeholder="snapshot ? '记下现场实际情况与这样判断的原因' : ''"
       />
     </template>
     <p v-if="error" role="alert" class="task-tip">{{ error }}</p>
@@ -95,6 +114,38 @@ function pretty(value: unknown): string {
   font-size: 12px;
   color: var(--el-color-warning-dark-2);
   line-height: 1.7;
+}
+
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+}
+
+.field-row {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.field-label {
+  flex: none;
+  width: 60px;
+  color: var(--el-text-color-secondary);
+}
+
+.field-value {
+  flex: 1;
+  color: var(--el-text-color-regular);
+  white-space: pre-wrap;
+}
+
+.field-value.empty {
+  color: var(--el-text-color-placeholder);
 }
 
 .evidence-label {

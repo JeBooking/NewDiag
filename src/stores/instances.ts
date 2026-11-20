@@ -16,12 +16,15 @@ import { errorText } from '@/services/api'
 import { getRelease, getFlow } from '@/services/flows'
 import {
   getInstance,
+  instanceRuntime,
   listInstances,
   rollbackInstance,
   submitReview,
+  switchToAuto as requestSwitchToAuto,
   terminateInstance,
   type InstanceFilter,
   type RollbackPayload,
+  type SwitchToAutoPayload,
 } from '@/services/instances'
 import { subscribeInstance } from '@/services/sse'
 
@@ -83,6 +86,9 @@ export const useInstancesStore = defineStore('instances', () => {
       .slice()
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
   )
+
+  /** 归一化后的运行方式：serial / parallel / manual */
+  const runtime = computed(() => instanceRuntime(detail.value))
 
   const nodeStatus = computed<Record<string, NodeVisualStatus>>(() => {
     const best: Record<string, { priority: number; generation: number; status: TokenStatus }> = {}
@@ -291,6 +297,13 @@ export const useInstancesStore = defineStore('instances', () => {
     error.value = null
   }
 
+  /** 手动转自动：成功后后端把 runtime 写回 python/v1，按钮随之消失 */
+  async function switchToAuto(payload: SwitchToAutoPayload = {}): Promise<void> {
+    if (!detail.value) return
+    applyDetail(await requestSwitchToAuto(detail.value.id, payload))
+    error.value = null
+  }
+
   function close(): void {
     unsubscribe?.()
     unsubscribe = null
@@ -311,6 +324,7 @@ export const useInstancesStore = defineStore('instances', () => {
     loading,
     error,
     pendingReviews,
+    runtime,
     nodeStatus,
     nodeTrails,
     walkedEdges,
@@ -321,6 +335,7 @@ export const useInstancesStore = defineStore('instances', () => {
     decide,
     rollback,
     terminate,
+    switchToAuto,
     close,
   }
 })
