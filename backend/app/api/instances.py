@@ -25,6 +25,7 @@ from app.schemas import (
     InstanceSummary,
     ReviewDecisionIn,
     RollbackIn,
+    SwitchToAutoIn,
     make_instance_detail,
     make_instance_summary,
 )
@@ -55,6 +56,7 @@ router = APIRouter(tags=["instances"])
 
 SSE_POLL_SECONDS = 1.0
 SSE_PING_SECONDS = 15.0
+TERMINAL_INSTANCE_STATUS = ("success", "failed", "escalated", "terminated")
 
 
 def get_instance_or_404(db: Session, instance_id: str) -> Instance:
@@ -198,12 +200,17 @@ def start_instance(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     stamp = now_iso()
+    if payload.runtime.mode == "manual":
+        # 手动模式固定 manual/v1，不跑任何槽位；maxParallel 不参与调度，统一落默认值
+        runtime = {"engine": "manual/v1", "mode": "manual", "maxParallel": 4}
+    else:
+        runtime = {**payload.runtime.model_dump(by_alias=True), "engine": "python/v1"}
     instance = Instance(
         id=new_id(),
         flow_id=flow_id,
         release_id=release.id,
         status="running",
-        runtime_json=json.dumps({**payload.runtime.model_dump(by_alias=True), "engine": "python/v1"}),
+        runtime_json=json.dumps(runtime),
         started_by="local",
         started_at=stamp,
     )
@@ -287,6 +294,38 @@ def terminate_instance(instance_id: str, db: Session = Depends(get_db)) -> Insta
         scheduler.terminate(instance_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    db.expire_all()
+    return instance_payload(db, get_instance_or_404(db, instance_id))
+
+
+@router.post("/instances/{instance_id}/switch-to-auto", response_model=InstanceDetail)
+def switch_to_auto(
+    instance_id: str, payload: SwitchToAutoIn, db: Session = Depends(get_db)
+) -> InstanceDetail:
+    """手动 → 自动，单向。补跑构造／拉取槽与 runtime 写回由引擎负责，这里只管校验。"""
+    instance = get_instance_or_404(db, instance_id)
+    try:
+        runtime = json.loads(instance.runtime_json or "{}")
+    except (TypeError, ValueError):
+        runtime = {}
+    if not isinstance(runtime, dict) or runtime.get("mode") != "manual":
+        raise HTTPException(status_code=409, detail="只有手动模式的实例可以切换到自动")
+    if instance.status in TERMINAL_INSTANCE_STATUS:
+        raise HTTPException(status_code=409, detail="实例已结束，无法切换到自动模式")
+
+    mode = payload.mode or "serial"
+    handler = getattr(scheduler, "switch_to_auto", None)
+    if handler is None:
+        # TODO(cat-engine): Scheduler 需暴露 switch_to_auto(instance_id, mode, max_parallel)。
+        raise HTTPException(status_code=501, detail="引擎尚未支持手动转自动")
+
+    logger.info("实例 %s 手动转自动：mode=%s maxParallel=%s", instance_id, mode, payload.max_parallel)
+    try:
+        handler(instance_id, mode=mode, max_parallel=payload.max_parallel)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # 引擎已把 runtime_json 写回 {engine:"python/v1", mode, maxParallel} 并重编译 plan
     db.expire_all()
     return instance_payload(db, get_instance_or_404(db, instance_id))
 

@@ -14,8 +14,13 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from app.models import Flow, Folder, Instance, Project, Release, Review, Run, Snapshot, Token
 
 FlowMode = Literal["parallel", "serial"]
+# 实例模式：manual 一个槽位都不跑，由平台生成待办推进
+InstanceMode = Literal["serial", "parallel", "manual"]
+EngineKind = Literal["python/v1", "manual/v1"]
+RunSource = Literal["engine", "manual"]
 NodeKind = Literal[
     "start",
+    "category",
     "investigation",
     "investigationAction",
     "conclusion",
@@ -198,6 +203,8 @@ class RunOut(ApiModel):
     generation: int = 1
     attempt: int = 1
     status: RunStatus = "ok"
+    # manual 表示手动模式下的人工选择，没有业务调用
+    source: RunSource = "engine"
     input: Any = None
     output: Any = None
     evidence: Any = None
@@ -228,9 +235,16 @@ class SnapshotOut(ApiModel):
 
 
 class RuntimeOptions(ApiModel):
-    mode: FlowMode = "serial"
+    mode: InstanceMode = "serial"
     max_parallel: int = Field(default=4, ge=1, le=128)
-    engine: str | None = None
+    engine: EngineKind | None = None
+
+
+class SwitchToAutoIn(ApiModel):
+    """手动转自动：缺省串行、上限 4；反向（自动转手动）不支持。"""
+
+    mode: FlowMode | None = None
+    max_parallel: int = Field(default=4, ge=1, le=128)
 
 
 class InstanceSummary(ApiModel):
@@ -447,6 +461,7 @@ def make_run(run: Run) -> RunOut:
         generation=run.generation,
         attempt=run.attempt,
         status=run.status,  # type: ignore[arg-type]
+        source=run.source or "engine",  # type: ignore[arg-type]
         input=_loads(run.input_json, None),
         output=_loads(run.output_json, None),
         evidence=_loads(run.evidence_json, None),

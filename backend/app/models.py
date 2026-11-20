@@ -135,6 +135,8 @@ class Run(Base):
     generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="ok")
+    # manual 表示手动模式下的人工选择记录，没有业务调用；老库由 db._migrate 补列并回填 engine
+    source: Mapped[str] = mapped_column(String(8), nullable=False, default="engine")
     input_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     output_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)

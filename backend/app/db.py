@@ -97,6 +97,8 @@ def _migrate() -> None:
             "purged_at": "VARCHAR(32)",
         },
         "releases": {"inputs_json": "TEXT NOT NULL DEFAULT '[]'"},
+        # 老库的 run 都是引擎产生的，回填 engine 即可
+        "runs": {"source": "VARCHAR(8) NOT NULL DEFAULT 'engine'"},
     }
     # 已从模型里删掉的结构：列不删，旧库的 NOT NULL 约束会挡住新写入
     removed_columns = {"flows": ("mode",), "releases": ("code_json",)}
