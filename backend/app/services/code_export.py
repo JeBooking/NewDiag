@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import tempfile
 import zipfile
@@ -53,12 +52,22 @@ def build_code_export(instance_id: str, inputs: list[dict]):
         raise ValueError('生成代码的配置缺失或损坏，无法导出') from exc
 
     sources = [(flow, 'flow.py')]
+    base = directory.resolve()
     roots = [(directory / 'runtime', 'runtime')]
     normalized = {}
     for name, spec in projects.items():
-        key = hashlib.sha256(name.encode()).hexdigest()[:16]
-        roots.append((directory / 'modules' / key, f'modules/{key}'))
-        normalized[name] = {**spec, 'path': f'modules/{key}', 'python': None}
+        # 源码目录取自生成时的记录，不按工程名重算哈希：改名或换哈希口径都不该让存量实例导不出
+        if not isinstance(spec, dict) or not isinstance(spec.get('path'), str) or not spec['path']:
+            raise ValueError(f'工程配置缺少源码目录：{name}')
+        source = Path(spec['path'])
+        source = (base / source if not source.is_absolute() else source).resolve()
+        if not source.is_relative_to(base):
+            raise ValueError(f'工程源码目录不在实例生成目录内：{name}')
+        relative = source.relative_to(base).as_posix()
+        if relative in {'', '.'}:
+            raise ValueError(f'工程源码目录不合法：{name}')
+        roots.append((source, relative))
+        normalized[name] = {**spec, 'path': relative, 'python': None}
     for root, prefix in roots:
         if not root.is_dir() or root.is_symlink():
             raise ValueError(f'代码目录缺失：{prefix}')

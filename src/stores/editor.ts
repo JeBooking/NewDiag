@@ -23,15 +23,20 @@ function cloneDoc(doc: FlowDoc): FlowDoc {
   return JSON.parse(JSON.stringify(doc)) as FlowDoc
 }
 
-/** 后端在没有 revision 时可能返回 {}，补齐成画布能消费的空文档 */
+/**
+ * 后端在没有 revision 时可能返回 {}，补齐成画布能消费的空文档。
+ * 未知顶层键原样带过：以后给 doc 加新块时，打开设计页再保存不能把它丢掉。
+ * format 仍强制为 1：持久格式误传进来时画布只会拿到空 nodes，不如就地兜住。
+ */
 function coerceDoc(raw: unknown, name: string): FlowDoc {
-  const record = raw && typeof raw === 'object' ? (raw as Partial<FlowDoc>) : {}
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
   return {
+    ...record,
     format: 1,
     name: typeof record.name === 'string' && record.name ? record.name : name,
-    nodes: Array.isArray(record.nodes) ? record.nodes : [],
-    edges: Array.isArray(record.edges) ? record.edges : [],
-  }
+    nodes: Array.isArray(record.nodes) ? (record.nodes as DocNode[]) : [],
+    edges: Array.isArray(record.edges) ? (record.edges as DocEdge[]) : [],
+  } as FlowDoc
 }
 
 /**
