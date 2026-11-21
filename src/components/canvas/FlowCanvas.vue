@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, provide, ref, watch } from 'vue'
 import {
   MarkerType,
   Panel,
@@ -28,7 +28,14 @@ import type {
   NodeTrailState,
   NodeVisualStatus,
 } from '@/domain/types'
-import { NODE_DRAG_TYPE, nodeTypes, type NodeCardData, type NodeIssue } from '@/components/nodes'
+import {
+  FOCUS_NODE_KEY,
+  NODE_DRAG_TYPE,
+  nodeTypes,
+  type NavLink,
+  type NodeCardData,
+  type NodeIssue,
+} from '@/components/nodes'
 import { edgeTypes, type EdgeBranchData } from '@/components/edges'
 import { ICON_ERROR, ICON_WARNING } from './issue-icons'
 import NodePalette from './NodePalette.vue'
@@ -242,6 +249,34 @@ function projectAll(preservePositions: boolean) {
   }
 
   const nextNodes: Node[] = []
+  // 一跳邻居：节点卡片的导航浮层直接用，免得它自己再遍历一遍边
+  const linkMap = new Map<string, { upstream: NavLink[]; downstream: NavLink[] }>()
+  const ensureLink = (id: string) => {
+    let item = linkMap.get(id)
+    if (!item) {
+      item = { upstream: [], downstream: [] }
+      linkMap.set(id, item)
+    }
+    return item
+  }
+  for (const edge of props.doc.edges ?? []) {
+    const from = nodeMeta.get(edge.from)
+    const to = nodeMeta.get(edge.to)
+    if (!from || !to) continue
+    const branch = edge.branch ?? null
+    ensureLink(to.id).upstream.push({
+      id: from.id,
+      title: from.title || from.id,
+      color: KIND_META[from.kind].color,
+      branch,
+    })
+    ensureLink(from.id).downstream.push({
+      id: to.id,
+      title: to.title || to.id,
+      color: KIND_META[to.kind].color,
+      branch,
+    })
+  }
   // 只有执行页会传 status；编辑页没数据时不能压暗，否则整张图都是灰的
   const hasRun = Object.keys(props.status).length > 0
   const pushNode = (
@@ -274,6 +309,7 @@ function projectAll(preservePositions: boolean) {
       trailState: props.nodeTrails[meta.id] ?? 'current',
       runCount: props.runCounts[meta.id] ?? 0,
       reviewCount: props.reviewCounts[meta.id] ?? 0,
+      links: linkMap.get(meta.id),
     }
     nextNodes.push({
       id: meta.id,
@@ -457,6 +493,14 @@ function focusActive() {
 function focusNode(nodeId: string) {
   centerOn(nodeId, true)
 }
+
+/** 节点上的导航浮层：居中过去，同时把选中切过去，面板与画布保持一致 */
+function focusAndSelect(nodeId: string): void {
+  centerOn(nodeId, true)
+  emit('select-node', nodeId)
+}
+
+provide(FOCUS_NODE_KEY, focusAndSelect)
 
 function commit() {
   const docNodes: DocNode[] = []

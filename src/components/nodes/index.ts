@@ -6,10 +6,23 @@ import NodeCard from './NodeCard.vue'
 export const NODE_DRAG_TYPE = 'application/x-newdiag-node-kind'
 
 /** 单个校验问题，画布上只保留展示所需的字段 */
+import type { InjectionKey } from 'vue'
+
 export interface NodeIssue {
   level: 'error' | 'warning'
   message: string
 }
+
+/** 节点上可点的一跳邻居：色点取节点类型色，branch 只在排查节点出来的边上有 */
+export interface NavLink {
+  id: string
+  title: string
+  color: string
+  branch: string | null
+}
+
+/** 画布把「居中到某节点并选中」下沉给节点卡片，避免卡片自己算坐标 */
+export const FOCUS_NODE_KEY: InjectionKey<(nodeId: string) => void> = Symbol('newdiag:focus-node')
 
 /** NodeCard 只消费渲染投影，业务字段始终留在 FlowDoc 里 */
 export interface NodeCardData {
@@ -34,6 +47,8 @@ export interface NodeCardData {
   runCount?: number
   /** 该节点名下的人工待办数；人工节点不产生 run，执行详情只能靠待办记录 */
   reviewCount?: number
+  /** 一跳邻居，供节点左上角的导航浮层使用；不传则不出导航入口 */
+  links?: { upstream: NavLink[]; downstream: NavLink[] }
 }
 
 /** 单一卡片渲染器承担 6 种类型；将来换成几何形状只需替换此注册项 */

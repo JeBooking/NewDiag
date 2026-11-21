@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, inject } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { KIND_META } from '@/domain/kinds'
 import type { NodeVisualStatus } from '@/domain/types'
 import { ICON_ERROR, ICON_WARNING } from '@/components/canvas/issue-icons'
 import type { NodeCardData } from './index'
+import { FOCUS_NODE_KEY } from './index'
 
 // 画布会把 position/dimensions 等内部字段一并透传，避免它们落到 DOM 属性上
 defineOptions({ inheritAttrs: false })
@@ -28,6 +29,14 @@ const STATUS_META: Record<NodeVisualStatus, { text: string; color: string; bg: s
 }
 
 const meta = computed(() => KIND_META[props.data.kind])
+
+/** 画布没提供跳转能力时（比如其它地方单独用这个卡片）就不显示导航入口 */
+const focusNode = inject(FOCUS_NODE_KEY, null)
+const hasLinks = computed(() => {
+  const links = props.data.links
+  if (!links) return false
+  return links.upstream.length + links.downstream.length > 0
+})
 const isSelected = computed(() => props.selected || props.data.selected)
 const isStart = computed(() => props.data.kind === 'start')
 const badge = computed(() => (props.data.hasBinding ? '自动' : '人工'))
@@ -139,6 +148,70 @@ const worst = computed(() => {
         </div>
       </div>
     </div>
+
+    <el-popover
+      v-if="focusNode && hasLinks"
+      trigger="click"
+      placement="right-start"
+      :width="220"
+      popper-class="node-nav-pop"
+    >
+      <template #reference>
+        <!-- 要 .stop：否则点开导航会同时冒泡成选中，把浮层顶掉 -->
+        <button type="button" class="nav-btn" aria-label="上下游导航" @click.stop>
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M2.5 4.5h3.2l2.1 3.5h5.7M2.5 11.5h3.2l2.1-3.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+      </template>
+
+      <div class="nav-group">
+        <div class="nav-head">
+          上游<span class="nav-count">{{ data.links?.upstream.length ?? 0 }}</span>
+        </div>
+        <div v-if="!data.links?.upstream.length" class="nav-empty">没有上游节点</div>
+        <button
+          v-for="(item, index) in data.links?.upstream"
+          :key="`up-${index}`"
+          type="button"
+          class="nav-row"
+          @click="focusNode?.(item.id)"
+        >
+          <span class="nav-dot" :style="{ background: item.color }" />
+          <span class="nav-name">{{ item.title }}</span>
+          <span v-if="item.branch" class="nav-branch" :class="item.branch">
+            {{ item.branch === 'yes' ? '是' : '否' }}
+          </span>
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-head">
+          下游<span class="nav-count">{{ data.links?.downstream.length ?? 0 }}</span>
+        </div>
+        <div v-if="!data.links?.downstream.length" class="nav-empty">没有下游节点</div>
+        <button
+          v-for="(item, index) in data.links?.downstream"
+          :key="`down-${index}`"
+          type="button"
+          class="nav-row"
+          @click="focusNode?.(item.id)"
+        >
+          <span class="nav-dot" :style="{ background: item.color }" />
+          <span class="nav-name">{{ item.title }}</span>
+          <span v-if="item.branch" class="nav-branch" :class="item.branch">
+            {{ item.branch === 'yes' ? '是' : '否' }}
+          </span>
+        </button>
+      </div>
+    </el-popover>
 
     <template v-if="meta.branch === 'yesno'">
       <Handle id="yes" type="source" :position="Position.Right" class="h-out h-yes" />
@@ -630,6 +703,45 @@ const worst = computed(() => {
   }
 }
 
+/* 导航入口：左上角外侧，躲开左侧 target 和右上角的问题角标；平时隐藏，悬停才出 */
+.nav-btn {
+  position: absolute;
+  top: -9px;
+  left: -9px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 3px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 50%;
+  background: var(--el-bg-color-overlay);
+  color: var(--el-text-color-secondary);
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.node-card:hover .nav-btn,
+.nav-btn:focus-visible {
+  opacity: 1;
+}
+
+.nav-btn:hover {
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+}
+
+.nav-btn svg {
+  width: 100%;
+  height: 100%;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .bar-running::after,
   .is-running .status-dot,
@@ -644,5 +756,88 @@ const worst = computed(() => {
   .accent-waiting::after {
     display: none;
   }
+}
+</style>
+
+<style>
+/* 浮层内容由 popover 挂到 body 上，scoped 够不着，只能写全局 */
+.node-nav-pop {
+  padding: 8px 10px;
+}
+
+.node-nav-pop .nav-group + .nav-group {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.node-nav-pop .nav-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.node-nav-pop .nav-count {
+  color: var(--el-text-color-placeholder);
+}
+
+.node-nav-pop .nav-empty {
+  padding: 2px 6px;
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+}
+
+.node-nav-pop .nav-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 13px;
+  color: var(--el-text-color-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.node-nav-pop .nav-row:hover {
+  background: var(--el-fill-color-light);
+}
+
+.node-nav-pop .nav-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.node-nav-pop .nav-name {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.node-nav-pop .nav-branch {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.node-nav-pop .nav-branch.yes {
+  color: #16a34a;
+  background: #16a34a1a;
+}
+
+.node-nav-pop .nav-branch.no {
+  color: #dc2626;
+  background: #dc26261a;
 }
 </style>
