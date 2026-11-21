@@ -53,7 +53,20 @@ function openMenu(event: MouseEvent): void {
 
 function closeMenu(): void {
   menu.value = null
+  sub.value = null
 }
+
+/** 二级菜单：导航先拆到子菜单里，以后加删除、复制这类命令直接往同一张表里添 */
+const sub = ref<'upstream' | 'downstream' | null>(null)
+const menuGroups = computed(() => [
+  { key: 'upstream' as const, label: '上游节点', items: props.data.links?.upstream ?? [] },
+  { key: 'downstream' as const, label: '下游节点', items: props.data.links?.downstream ?? [] },
+])
+/** 菜单靠右时子菜单向左展开，否则会顶出视口 */
+const subLeft = computed(() => {
+  const x = menu.value?.x ?? 0
+  return x + MENU_WIDTH + 200 > window.innerWidth - 8
+})
 
 function pickLink(nodeId: string): void {
   focusNode?.(nodeId)
@@ -195,48 +208,41 @@ const worst = computed(() => {
           :style="{ left: `${menu.x}px`, top: `${menu.y}px` }"
           @click.stop
         >
-          <div class="nav-group">
-            <div class="nav-head">
-              上游<span class="nav-count">{{ data.links?.upstream.length ?? 0 }}</span>
-            </div>
-            <div v-if="!data.links?.upstream.length" class="nav-empty">没有上游节点</div>
-            <button
-              v-for="(item, index) in data.links?.upstream"
-              :key="`up-${index}`"
-              type="button"
-              class="nav-row"
-              role="menuitem"
-              @click="pickLink(item.id)"
-            >
-              <span class="nav-dot" :style="{ background: item.color }" />
-              <span class="nav-name">{{ item.title }}</span>
-              <span v-if="item.branch" class="nav-branch" :class="item.branch">
-                {{ item.branch === 'yes' ? '是' : '否' }}
-              </span>
-            </button>
-          </div>
+          <div
+            v-for="group in menuGroups"
+            :key="group.key"
+            class="menu-row"
+            :class="{ 'is-disabled': !group.items.length }"
+            role="menuitem"
+            aria-haspopup="menu"
+            :aria-expanded="sub === group.key"
+            @mouseenter="group.items.length && (sub = group.key)"
+          >
+            <span class="menu-label">{{ group.label }}</span>
+            <span class="menu-count">{{ group.items.length }}</span>
+            <span class="menu-caret" aria-hidden="true">›</span>
 
-          <div class="nav-divider" />
-
-          <div class="nav-group">
-            <div class="nav-head">
-              下游<span class="nav-count">{{ data.links?.downstream.length ?? 0 }}</span>
-            </div>
-            <div v-if="!data.links?.downstream.length" class="nav-empty">没有下游节点</div>
-            <button
-              v-for="(item, index) in data.links?.downstream"
-              :key="`down-${index}`"
-              type="button"
-              class="nav-row"
-              role="menuitem"
-              @click="pickLink(item.id)"
+            <div
+              v-if="sub === group.key && group.items.length"
+              class="sub-menu"
+              :class="{ 'to-left': subLeft }"
+              role="menu"
             >
-              <span class="nav-dot" :style="{ background: item.color }" />
-              <span class="nav-name">{{ item.title }}</span>
-              <span v-if="item.branch" class="nav-branch" :class="item.branch">
-                {{ item.branch === 'yes' ? '是' : '否' }}
-              </span>
-            </button>
+              <button
+                v-for="(item, index) in group.items"
+                :key="index"
+                type="button"
+                class="sub-row"
+                role="menuitem"
+                @click="pickLink(item.id)"
+              >
+                <span class="nav-dot" :style="{ background: item.color }" />
+                <span class="sub-name">{{ item.title }}</span>
+                <span v-if="item.branch" class="nav-branch" :class="item.branch">
+                  {{ item.branch === 'yes' ? '是' : '否' }}
+                </span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -739,19 +745,18 @@ const worst = computed(() => {
 </style>
 
 <style>
-/* 浮层内容由 popover 挂到 body 上，scoped 够不着，只能写全局 */
+/* 右键菜单挂到 body 上，scoped 够不着，只能写全局 */
 .nav-mask {
   position: fixed;
   inset: 0;
   z-index: 3000;
 }
 
-/* 右键菜单：贴鼠标位置固定定位，不跟画布 transform 走 */
+/* 一级菜单只放命令，具体的上游下游在二级里展开，后续加删除、复制直接续在这里 */
 .nav-menu {
   position: fixed;
-  min-width: 200px;
-  max-width: 260px;
-  padding: 6px;
+  min-width: 180px;
+  padding: 4px;
   border: 1px solid var(--el-border-color-light);
   border-radius: 8px;
   background: var(--el-bg-color-overlay);
@@ -759,33 +764,63 @@ const worst = computed(() => {
   font-size: 13px;
 }
 
-.nav-divider {
-  height: 1px;
-  margin: 4px 0;
-  background: var(--el-border-color-lighter);
-}
-
-.nav-menu .nav-head {
+.menu-row {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 6px;
-  margin-bottom: 2px;
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 4px;
+  color: var(--el-text-color-primary);
+  user-select: none;
 }
 
-.nav-menu .nav-count {
-  color: var(--el-text-color-placeholder);
+.menu-row:hover,
+.menu-row:focus-visible {
+  background: var(--el-fill-color-light);
 }
 
-.nav-menu .nav-empty {
-  padding: 2px 6px;
+.menu-row.is-disabled {
+  color: var(--el-text-color-disabled);
+  background: transparent;
+}
+
+.menu-label {
+  flex: 1;
+}
+
+.menu-count {
   font-size: 12px;
   color: var(--el-text-color-placeholder);
 }
 
-.nav-menu .nav-row {
+.menu-caret {
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+}
+
+.sub-menu {
+  position: absolute;
+  top: -5px;
+  left: 100%;
+  min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  background: var(--el-bg-color-overlay);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+}
+
+/* 菜单本身靠右时子菜单向左展开，否则会顶出视口 */
+.sub-menu.to-left {
+  right: 100%;
+  left: auto;
+}
+
+.sub-row {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -801,25 +836,25 @@ const worst = computed(() => {
   cursor: pointer;
 }
 
-.nav-menu .nav-row:hover {
+.sub-row:hover {
   background: var(--el-fill-color-light);
 }
 
-.nav-menu .nav-dot {
+.nav-dot {
   flex: none;
   width: 6px;
   height: 6px;
   border-radius: 50%;
 }
 
-.nav-menu .nav-name {
+.sub-name {
   flex: 1;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.nav-menu .nav-branch {
+.nav-branch {
   flex: none;
   padding: 0 4px;
   border-radius: 3px;
@@ -827,12 +862,12 @@ const worst = computed(() => {
   line-height: 16px;
 }
 
-.nav-menu .nav-branch.yes {
+.nav-branch.yes {
   color: #16a34a;
   background: #16a34a1a;
 }
 
-.nav-menu .nav-branch.no {
+.nav-branch.no {
   color: #dc2626;
   background: #dc26261a;
 }
