@@ -126,6 +126,7 @@ const {
   dimensions,
   viewport,
   setCenter,
+  setViewport,
   connectionStartHandle,
   fitView,
   zoomIn,
@@ -158,6 +159,38 @@ onMounted(() => {
   window.addEventListener('keyup', onCtrlKey)
   window.addEventListener('blur', releaseCtrl)
 })
+
+/**
+ * Ctrl 拖拽平移：画布里的节点层和 pane 是兄弟，节点的 mousedown 不会冒泡到 pane，
+ * 关掉节点拖拽也不会变成平移，只能自己接住。
+ */
+let panStart: { x: number; y: number; vx: number; vy: number } | null = null
+
+function onCanvasMouseDown(event: MouseEvent): void {
+  if (!ctrlHeld.value || event.button !== 0) return
+  event.preventDefault()
+  event.stopPropagation()
+  panStart = { x: event.clientX, y: event.clientY, vx: viewport.value.x, vy: viewport.value.y }
+  panning.value = true
+  window.addEventListener('mousemove', onPanMove)
+  window.addEventListener('mouseup', onPanEnd)
+}
+
+function onPanMove(event: MouseEvent): void {
+  if (!panStart) return
+  void setViewport({
+    x: panStart.vx + event.clientX - panStart.x,
+    y: panStart.vy + event.clientY - panStart.y,
+    zoom: viewport.value.zoom,
+  })
+}
+
+function onPanEnd(): void {
+  panStart = null
+  panning.value = false
+  window.removeEventListener('mousemove', onPanMove)
+  window.removeEventListener('mouseup', onPanEnd)
+}
 
 /** doc 里没有开始节点时的占位投影；只存在渲染层，不参与 commit */
 const ghostStart = ref<DocNode | null>(null)
@@ -904,6 +937,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onCtrlKey)
   window.removeEventListener('keyup', onCtrlKey)
   window.removeEventListener('blur', releaseCtrl)
+  onPanEnd()
 })
 
 /** 缩放百分比给父组件的操作栏读数用，取整避免 99.999% 这种抖动 */
@@ -928,6 +962,7 @@ defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom, focusNode })
     }"
     @dragover="onDragOver"
     @drop="onDrop"
+    @mousedown.capture="onCanvasMouseDown"
     @mouseover="onCanvasMouseOver"
     @mouseout="onCanvasMouseOut"
     @wheel.passive="hideTip"
