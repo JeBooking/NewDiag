@@ -31,6 +31,8 @@ const emit = defineEmits<{
   (e: 'update', patch: Partial<DocNode>): void
   (e: 'delete'): void
   (e: 'reorder', edgeId: string, delta: number): void
+  /** 点关联节点时交给画布居中，面板只负责报出目标 id */
+  (e: 'focus-node', nodeId: string): void
 }>()
 
 const meta = computed(() => KIND_META[props.node.kind])
@@ -47,7 +49,39 @@ const objectNames = computed(() =>
   (startNode.value?.slots?.constructs ?? []).map((item) => item.object).filter((name): name is string => Boolean(name)))
 const startInputs = computed(() => (startNode.value?.inputs ?? []).map((item) => item.name))
 const parameters = computed(() => (props.node.runtimeInputs ?? []).map((item) => item.name))
-const opened = ref(['basic', 'inputs', 'slots', 'order', 'attachments'])
+const opened = ref(['basic', 'links', 'inputs', 'slots', 'order', 'attachments'])
+
+/**
+ * 上下游导航：只列一跳邻居。图连线密时靠拖动找前驱后继比数箭头慢，
+ * 分区里直接给出可点的名字，点一下就把画布挪过去。
+ */
+const links = computed(() => {
+  const byId = new Map((props.doc?.nodes ?? []).map((item) => [item.id, item]))
+  type Link = { id: string; title: string; color: string; branch: string | null }
+  const upstream: Link[] = []
+  const downstream: Link[] = []
+  const pick = (id: string | undefined, branch: string | null): Link | null => {
+    const target = id ? byId.get(id) : undefined
+    if (!target) return null
+    return {
+      id: target.id,
+      title: target.title || target.id,
+      color: KIND_META[target.kind].color,
+      branch,
+    }
+  }
+  for (const edge of props.doc?.edges ?? []) {
+    if (edge.to === props.node.id) {
+      const item = pick(edge.from, edge.branch ?? null)
+      if (item) upstream.push(item)
+    }
+    if (edge.from === props.node.id) {
+      const item = pick(edge.to, edge.branch ?? null)
+      if (item) downstream.push(item)
+    }
+  }
+  return { upstream, downstream }
+})
 const slots = computed<NodeSlots>(() => props.node.slots ?? {})
 const hasFetch = computed(() => Boolean(slots.value.fetch))
 const hasProcess = computed(() => Boolean(slots.value.process))
@@ -253,6 +287,52 @@ function patchRuntimeInputs(value: ManualField[]): void {
         </div>
       </el-collapse-item>
 
+      <el-collapse-item name="links" title="关联节点">
+        <div class="section-body">
+          <div class="link-block">
+            <div class="link-head">
+              上游<span class="link-count">{{ links.upstream.length }}</span>
+            </div>
+            <div v-if="!links.upstream.length" class="section-hint muted">没有上游节点</div>
+            <button
+              v-for="(item, index) in links.upstream"
+              :key="`up-${index}`"
+              type="button"
+              class="link-row"
+              :title="item.title"
+              @click="emit('focus-node', item.id)"
+            >
+              <span class="link-dot" :style="{ background: item.color }" />
+              <span class="link-name">{{ item.title }}</span>
+              <span v-if="item.branch" class="link-branch" :class="item.branch">
+                {{ item.branch === 'yes' ? '是' : '否' }}
+              </span>
+            </button>
+          </div>
+
+          <div class="link-block">
+            <div class="link-head">
+              下游<span class="link-count">{{ links.downstream.length }}</span>
+            </div>
+            <div v-if="!links.downstream.length" class="section-hint muted">没有下游节点</div>
+            <button
+              v-for="(item, index) in links.downstream"
+              :key="`down-${index}`"
+              type="button"
+              class="link-row"
+              :title="item.title"
+              @click="emit('focus-node', item.id)"
+            >
+              <span class="link-dot" :style="{ background: item.color }" />
+              <span class="link-name">{{ item.title }}</span>
+              <span v-if="item.branch" class="link-branch" :class="item.branch">
+                {{ item.branch === 'yes' ? '是' : '否' }}
+              </span>
+            </button>
+          </div>
+        </div>
+      </el-collapse-item>
+
       <el-collapse-item v-if="isStart" name="inputs" title="启动参数">
         <div class="section-body">
           <div class="section-hint">发布时冻结成执行页表单；槽位里的参数来源选「启动输入」即可引用</div>
@@ -416,6 +496,75 @@ function patchRuntimeInputs(value: ManualField[]): void {
 </template>
 
 <style scoped>
+/* 上下游列表：行高紧凑、悬停浅底，名字过长省略，不跟正文抢视线 */
+.link-block + .link-block {
+  margin-top: 10px;
+}
+
+.link-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.link-count {
+  color: var(--el-text-color-placeholder);
+}
+
+.link-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 13px;
+  color: var(--el-text-color-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.link-row:hover {
+  background: var(--el-fill-color-light);
+}
+
+.link-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.link-name {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.link-branch {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.link-branch.yes {
+  color: #16a34a;
+  background: #16a34a1a;
+}
+
+.link-branch.no {
+  color: #dc2626;
+  background: #dc26261a;
+}
+
 .sections {
   border-top: 0;
   border-bottom: 0;
