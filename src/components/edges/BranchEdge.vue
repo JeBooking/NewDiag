@@ -92,17 +92,26 @@ const edgeStyle = computed(() => {
     </div>
     <div
       v-if="issueLevel"
-      class="edge-issue"
-      :class="issueLevel"
+      class="edge-issue-wrap"
       :style="issueStyle"
-      :title="issueText"
     >
-      <svg v-if="issueLevel === 'error'" viewBox="0 0 512 512" aria-hidden="true">
-        <path :d="ICON_ERROR" fill="currentColor" />
-      </svg>
-      <svg v-else viewBox="0 0 512 512" aria-hidden="true">
-        <path :d="ICON_WARNING" fill="currentColor" />
-      </svg>
+      <div class="edge-issue" :class="issueLevel">
+        <svg v-if="issueLevel === 'error'" viewBox="0 0 512 512" aria-hidden="true">
+          <path :d="ICON_ERROR" fill="currentColor" />
+        </svg>
+        <svg v-else viewBox="0 0 512 512" aria-hidden="true">
+          <path :d="ICON_WARNING" fill="currentColor" />
+        </svg>
+      </div>
+      <div class="edge-issue-pop">
+        <div class="edge-issue-head">
+          {{ issueLevel === 'error' ? '校验错误' : '提示' }}
+        </div>
+        <div class="edge-issue-row">
+          <span class="edge-issue-dot" :class="issueLevel" />
+          <span>{{ issueText }}</span>
+        </div>
+      </div>
     </div>
   </EdgeLabelRenderer>
 </template>
@@ -120,9 +129,14 @@ const edgeStyle = computed(() => {
   user-select: none;
 }
 
-/* 与节点上的角标同一套形状：20px 圆形、内边距 5px、白图标，错误红底、提示黄底 */
-.edge-issue {
+/* 角标本身不吃事件，由外层容器接收，否则悬停不到、气泡出不来 */
+.edge-issue-wrap {
   position: absolute;
+  pointer-events: auto;
+}
+
+.edge-issue {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -133,6 +147,53 @@ const edgeStyle = computed(() => {
   color: #fff;
   pointer-events: none;
   user-select: none;
+}
+
+/* 与节点的 issue-pop 同一套观感：白底、细边、轻阴影，悬停才展开 */
+.edge-issue-pop {
+  position: absolute;
+  top: 22px;
+  left: 50%;
+  display: none;
+  width: 220px;
+  padding: 8px 10px;
+  transform: translateX(-50%);
+  border: 1px solid var(--el-border-color);
+  border-radius: 8px;
+  background: var(--el-bg-color-overlay);
+  box-shadow: 0 6px 16px rgb(0 0 0 / 8%);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.edge-issue-wrap:hover .edge-issue-pop {
+  display: block;
+}
+
+.edge-issue-head {
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.edge-issue-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  color: var(--el-text-color-primary);
+}
+
+.edge-issue-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--el-color-warning);
+}
+
+.edge-issue-dot.error {
+  background: var(--el-color-danger);
 }
 
 .edge-issue.error {
