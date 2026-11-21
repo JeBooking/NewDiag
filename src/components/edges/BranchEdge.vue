@@ -25,9 +25,10 @@ const branch = computed(() => props.data?.branch ?? null)
 const color = computed(() => (branch.value ? BRANCH_COLOR[branch.value] : '#94a3b8'))
 const label = computed(() => (branch.value === 'yes' ? '是' : branch.value === 'no' ? '否' : ''))
 
-/** 连线自身的问题：矩阵不允许、缺分支、悬空，就地标叉，不要求用户先去列表里找 */
-const issueLevel = computed(() => props.data?.issueLevel ?? null)
-const issueText = computed(() => props.data?.issueMessage ?? '')
+/** 连线自身的全部问题：矩阵不允许、缺分支、悬空，就地标叉，悬停看具体原因 */
+const issues = computed(() => props.data?.issues ?? [])
+/** 角标取最严重的一条；列表已按错误优先排序 */
+const issueLevel = computed(() => issues.value[0]?.level ?? null)
 
 const bezier = computed(() =>
   getBezierPath({
@@ -105,11 +106,11 @@ const edgeStyle = computed(() => {
       </div>
       <div class="edge-issue-pop">
         <div class="edge-issue-head">
-          {{ issueLevel === 'error' ? '校验错误' : '提示' }}
+          校验{{ issueLevel === 'error' ? '错误' : '提示' }} · {{ issues.length }} 条
         </div>
-        <div class="edge-issue-row">
-          <span class="edge-issue-dot" :class="issueLevel" />
-          <span>{{ issueText }}</span>
+        <div v-for="(item, index) in issues" :key="index" class="edge-issue-row">
+          <span class="edge-issue-dot" :class="item.level" />
+          <span>{{ item.message }}</span>
         </div>
       </div>
     </div>

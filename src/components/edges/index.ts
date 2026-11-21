@@ -1,12 +1,13 @@
 import type { EdgeComponent, EdgeTypesObject } from '@vue-flow/core'
 import type { Branch, EdgeTrail } from '@/domain/types'
+import type { NodeIssue } from '@/components/nodes'
 import BranchEdge from './BranchEdge.vue'
 
 /** 边的渲染投影；branch 为 null 表示普通单出口连线 */
 export interface EdgeBranchData {
   branch: Branch | null
-  issueLevel: 'error' | 'warning' | null
-  issueMessage: string
+  /** 这条连线上的全部校验问题，已按错误优先排序；空数组表示无问题 */
+  issues: NodeIssue[]
   /** 选中节点直连的边：走虚线流动动画，方向始终是 from → to */
   flowing?: boolean
   /** 本次执行是否走过这条边 */

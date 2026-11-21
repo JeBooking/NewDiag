@@ -157,22 +157,23 @@ function canonical(value: unknown): string {
 
 function issueIndex(issues: LintIssue[]) {
   const byNode = new Map<string, NodeIssue[]>()
-  const byEdge = new Map<string, LintIssue>()
+  // 边可能与节点一样同时命中多条：悬空、分支缺失、连接矩阵各算一条
+  const byEdge = new Map<string, NodeIssue[]>()
   for (const issue of issues) {
     if (issue.nodeId) {
       const list = byNode.get(issue.nodeId) ?? []
       list.push({ level: issue.level, message: issue.message })
       byNode.set(issue.nodeId, list)
     } else if (issue.edgeId) {
-      const prev = byEdge.get(issue.edgeId)
-      if (!prev || (prev.level === 'warning' && issue.level === 'error')) {
-        byEdge.set(issue.edgeId, issue)
-      }
+      const list = byEdge.get(issue.edgeId) ?? []
+      list.push({ level: issue.level, message: issue.message })
+      byEdge.set(issue.edgeId, list)
     }
   }
-  for (const list of byNode.values()) {
-    list.sort((a, b) => (a.level === b.level ? 0 : a.level === 'error' ? -1 : 1))
-  }
+  const worstFirst = (a: NodeIssue, b: NodeIssue) =>
+    a.level === b.level ? 0 : a.level === 'error' ? -1 : 1
+  for (const list of byNode.values()) list.sort(worstFirst)
+  for (const list of byEdge.values()) list.sort(worstFirst)
   return { byNode, byEdge }
 }
 
@@ -300,8 +301,7 @@ function projectAll(preservePositions: boolean) {
     const flowing = flowingEdges.has(meta.id)
     const data: EdgeBranchData = {
       branch,
-      issueLevel: issue?.level ?? null,
-      issueMessage: issue?.message ?? '',
+      issues: issue ?? [],
       flowing,
       trail,
       faded,
