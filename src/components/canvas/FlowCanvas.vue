@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, provide, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import {
   MarkerType,
   Panel,
@@ -136,6 +136,28 @@ const {
 const wrapper = ref<HTMLElement | null>(null)
 const nodes = ref<Node[]>([])
 const edges = ref<Edge[]>([])
+
+/** 按住 Ctrl／Meta 时节点不可拖，按下会落到画布上变成平移 */
+const ctrlHeld = ref(false)
+/** 正在拖画布或缩放，用来把光标切成抓手 */
+const panning = ref(false)
+
+function onCtrlKey(event: KeyboardEvent): void {
+  if (event.key !== 'Control' && event.key !== 'Meta') return
+  ctrlHeld.value = event.type === 'keydown'
+}
+
+/** 切走窗口时收不到 keyup，回来会卡在按下的状态 */
+function releaseCtrl(): void {
+  ctrlHeld.value = false
+  panning.value = false
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onCtrlKey)
+  window.addEventListener('keyup', onCtrlKey)
+  window.addEventListener('blur', releaseCtrl)
+})
 
 /** doc 里没有开始节点时的占位投影；只存在渲染层，不参与 commit */
 const ghostStart = ref<DocNode | null>(null)
@@ -879,6 +901,9 @@ function onDrop(event: DragEvent) {
 onBeforeUnmount(() => {
   clearHoverTimer()
   clearCloseTimer()
+  window.removeEventListener('keydown', onCtrlKey)
+  window.removeEventListener('keyup', onCtrlKey)
+  window.removeEventListener('blur', releaseCtrl)
 })
 
 /** 缩放百分比给父组件的操作栏读数用，取整避免 99.999% 这种抖动 */
@@ -896,7 +921,11 @@ defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom, focusNode })
   <div
     ref="wrapper"
     class="flow-canvas"
-    :class="{ 'is-readonly': readonly }"
+    :class="{
+      'is-readonly': readonly,
+      'is-ctrl': ctrlHeld,
+      'is-panning': panning,
+    }"
     @dragover="onDragOver"
     @drop="onDrop"
     @mouseover="onCanvasMouseOver"
@@ -909,7 +938,7 @@ defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom, focusNode })
       v-model:edges="edges"
       :node-types="nodeTypes"
       :edge-types="edgeTypes"
-      :nodes-draggable="!readonly"
+      :nodes-draggable="!readonly && !ctrlHeld"
       :nodes-connectable="!readonly"
       :edges-updatable="false"
       :delete-key-code="readonly ? null : 'Delete'"
@@ -918,6 +947,7 @@ defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom, focusNode })
       :fit-view-on-init="true"
       :pan-on-scroll="true"
       :pan-on-scroll-mode="PanOnScrollMode.Free"
+      :pan-on-drag="true"
       :zoom-on-scroll="false"
       zoom-activation-key-code="Control"
       @connect="onConnect"
@@ -925,6 +955,8 @@ defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom, focusNode })
       @node-click="onNodeClick"
       @pane-click="onPaneClick"
       @node-drag-stop="commit"
+      @move-start="panning = true"
+      @move-end="panning = false"
     >
       <Background :gap="16" :size="1" color="#d8dee9" />
       <Controls :show-interactive="!readonly" />
@@ -1003,6 +1035,27 @@ defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom, focusNode })
   height: 100%;
   min-height: 320px;
   background: var(--el-bg-color);
+}
+
+/* 光标语义：空白处箭头，拖动画布时抓手，节点上是四向箭头，按住 Ctrl 一律抓手 */
+.flow-canvas :deep(.vue-flow__pane) {
+  cursor: default;
+}
+
+.flow-canvas :deep(.node-card) {
+  cursor: move;
+}
+
+.flow-canvas.is-ctrl,
+.flow-canvas.is-ctrl :deep(.vue-flow__pane),
+.flow-canvas.is-ctrl :deep(.node-card) {
+  cursor: grab;
+}
+
+.flow-canvas.is-panning,
+.flow-canvas.is-panning :deep(.vue-flow__pane),
+.flow-canvas.is-panning :deep(.node-card) {
+  cursor: grabbing;
 }
 
 .palette-panel {
