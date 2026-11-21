@@ -449,12 +449,12 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 
 发布固定流程编排、槽位和输入表单，不固定模块实现代码。实例启动时：
 
-1. 读取槽位引用的工程，复制源码到该实例目录（排除 `.git`、`.venv`、`node_modules`、`__pycache__`）
+1. 读取槽位引用的工程，按**发布版本**复制一份源码到 `data/modules/<releaseId>`，同版本的所有实例共用（排除 `.git`、`.venv`、`node_modules`、`__pycache__` 等；项目根可放 `.newdiagignore` 逐行排除大目录）
 2. 按副本重新探测接口并编译 plan
 3. 生成 `flow.py`、`runtime/`、`configuration.json`、`modules/`
 4. 起常驻子进程执行
 
-已经运行的实例始终使用启动时复制的源码；后续修改原工程只影响新实例。依赖包和解释器环境由部署方管理。
+已经运行的实例始终使用所在发布版本的源码快照；后续修改原工程只影响新发布的版本。依赖包和解释器环境由部署方管理。
 
 `flow.py` 的每个节点是一个函数，函数体只调用运行库并返回后继分支；运行库 `runtime/generated_runtime.py` 负责与平台交换 enter/complete/ask/error 事件。命令行入口为 `python flow.py --mode serial` 或 `--mode parallel --max-parallel 4`，终端代替平台接收人工输入。
 
@@ -724,7 +724,7 @@ backend/
 
 **执行到人工**
 
-1. `POST instances`：校验启动参数 → 固化启动上下文 → 复制源码并生成代码 → 建 entry token
+1. `POST instances`：校验启动参数 → 固化启动上下文 → 准备该发布版本的源码快照（已存在则复用）→ 生成代码 → 建 entry token
 2. 生成进程推进，`enter/complete` 事件写 run
 3. 遇到人工节点 → 建 review、token 置 waiting、实例 waiting
 4. SSE 推摘要 → 待办面板展示 → 用户提交

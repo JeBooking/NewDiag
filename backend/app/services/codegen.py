@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import shutil
+import time
 from pathlib import Path
 
 from sqlalchemy import select
@@ -97,30 +99,18 @@ def prepare(db, instance, release, runtime, resume=None):
     doc = expand(json.loads(revision.json))
     projects = {}
     storage = data_dir().resolve()
-    ignored = shutil.ignore_patterns(
-        ".git", ".venv", "venv", "node_modules", "__pycache__", ".codex", ".pytest_cache",
-    )
+    snapshot = _release_modules(db, release, doc, storage)
     for name in sorted(projects_in(doc)):
         project = db.scalar(select(models.Project).where(models.Project.name == name))
         if project is None:
             raise ValueError(f"接入工程不存在：{name}")
         key = hashlib.sha256(name.encode()).hexdigest()[:16]
-        source = Path(project.path).resolve()
-        target = directory / "modules" / key
-        if source == storage or source.is_relative_to(storage):
-            raise ValueError("接入工程不能位于平台运行数据目录中")
-
-        def ignore(path, names):
-            return set(ignored(path, names)) | {
-                name for name in names if (Path(path) / name).resolve() == storage
-            }
-
-        shutil.copytree(source, target, ignore=ignore)
+        target = snapshot / key
         # 组合模式在流程里配置构造器或工厂，登记行的 factory 不参与生成
         projects[name] = {"name": name, "path": str(target), "module": project.module,
                           "factory": "", "python": project.python}
-        logger.info("实例 %s 固定工程源码：工程=%s 源=%s 副本=%s module=%s python=%s",
-                    instance.id, name, source, target, project.module, project.python or "后端默认")
+        logger.info("实例 %s 引用发布快照：工程=%s 副本=%s module=%s python=%s",
+                    instance.id, name, target, project.module, project.python or "后端默认")
     from types import SimpleNamespace
     from .slots import probe_slots
     signatures = probe_slots(doc, {
@@ -147,3 +137,69 @@ def prepare(db, instance, release, runtime, resume=None):
     }
     (directory / "configuration.json").write_text(json.dumps(configuration, ensure_ascii=False), encoding="utf-8")
     return plan, directory
+
+
+_IGNORED = shutil.ignore_patterns(
+    ".git", ".venv", "venv", "node_modules", "__pycache__", ".codex", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", ".idea", ".vscode",
+)
+
+
+def _extra_ignores(source: Path) -> list[str]:
+    """项目根放 .newdiagignore 可以排除大目录（数据集、缓存），每行一个通配符。"""
+    spec = source / ".newdiagignore"
+    if not spec.is_file():
+        return []
+    try:
+        lines = spec.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    return [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
+
+
+def _release_modules(db, release, doc, storage: Path) -> Path:
+    """一个发布版本只留一份工程快照，所有实例共用，避免每次执行都整目录复制。"""
+    root = data_dir() / "modules" / release.id
+    root.mkdir(parents=True, exist_ok=True)
+    for name in sorted(projects_in(doc)):
+        project = db.scalar(select(models.Project).where(models.Project.name == name))
+        if project is None:
+            raise ValueError(f"接入工程不存在：{name}")
+        key = hashlib.sha256(name.encode()).hexdigest()[:16]
+        target = root / key
+        if target.is_dir():
+            continue
+        source = Path(project.path).resolve()
+        if source == storage or source.is_relative_to(storage):
+            raise ValueError("接入工程不能位于平台运行数据目录中")
+
+        patterns = _IGNORED
+        extra = _extra_ignores(source)
+        if extra:
+            patterns = lambda path, names, extra=extra: set(_IGNORED(path, names)) | set(
+                shutil.ignore_patterns(*extra)(path, names))
+
+        def ignore(path, names, source=source, patterns=patterns):
+            return set(patterns(path, names)) | {
+                item for item in names if (Path(path) / item).resolve() == storage
+            }
+
+        # 两个实例同时启动时只让一个复制，另一个等它复制完再复用
+        lock = root / f".{key}.lock"
+        deadline = time.monotonic() + 120
+        while True:
+            try:
+                os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+                break
+            except FileExistsError:
+                if target.is_dir():
+                    break
+                if time.monotonic() > deadline:
+                    raise RuntimeError(f"等待工程快照超时：{name}")
+                time.sleep(0.1)
+        try:
+            if not target.is_dir():
+                shutil.copytree(source, target, ignore=ignore)
+        finally:
+            lock.unlink(missing_ok=True)
+    return root

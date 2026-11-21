@@ -118,7 +118,7 @@ def test_snapshot_probe_failure_does_not_stop_backend(tmp_path):
     with source.open("a", encoding="utf-8") as output:
         output.write(
             '\nfrom pathlib import Path as _Path\n'
-            'if "executions" in _Path(__file__).parts:\n'
+            'if {"executions", "modules"} & set(_Path(__file__).parts):\n'
             '    raise RuntimeError("snapshot-probe-failure")\n'
         )
     with live_backend(tmp_path) as (client, log):
