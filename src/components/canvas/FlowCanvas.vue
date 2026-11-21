@@ -309,7 +309,8 @@ function projectAll(preservePositions: boolean) {
       trailState: props.nodeTrails[meta.id] ?? 'current',
       runCount: props.runCounts[meta.id] ?? 0,
       reviewCount: props.reviewCounts[meta.id] ?? 0,
-      links: linkMap.get(meta.id),
+      // 执行页只看结果，右键导航会给只读画布带来意外的选中变化
+      links: props.readonly ? undefined : linkMap.get(meta.id),
     }
     nextNodes.push({
       id: meta.id,

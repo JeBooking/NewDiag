@@ -120,12 +120,6 @@ function onSelect(nodeId: string | null): void {
   editor.selectedNodeId = nodeId
 }
 
-/** 面板里的关联节点导航：先居中过去，再把选中切到目标，两边保持一致 */
-function focusLinkedNode(nodeId: string): void {
-  void canvas.value?.focusNode(nodeId)
-  editor.selectedNodeId = nodeId
-}
-
 /* ---------- 画布基础操作 ---------- */
 
 /** 缩放读数与按钮都落在画布组件里，这里只做转发 */
@@ -511,7 +505,6 @@ onBeforeRouteLeave(async () => {
             @update="patchNode"
             @delete="deleteNode"
             @reorder="reorderEdge"
-            @focus-node="focusLinkedNode"
           />
           <FlowPanel
             v-else-if="editor.flow"

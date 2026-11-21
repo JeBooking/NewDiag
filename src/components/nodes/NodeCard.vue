@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject } from 'vue'
+import { computed, inject, ref } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { KIND_META } from '@/domain/kinds'
 import type { NodeVisualStatus } from '@/domain/types'
@@ -37,6 +37,28 @@ const hasLinks = computed(() => {
   if (!links) return false
   return links.upstream.length + links.downstream.length > 0
 })
+
+/** 右键菜单坐标：贴鼠标，靠右侧或底部时往里收，避免菜单跑出视口 */
+const menu = ref<{ x: number; y: number } | null>(null)
+const MENU_WIDTH = 220
+const MENU_MAX_HEIGHT = 320
+
+function openMenu(event: MouseEvent): void {
+  if (!focusNode || !hasLinks.value) return
+  menu.value = {
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - MENU_WIDTH - 8)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - MENU_MAX_HEIGHT)),
+  }
+}
+
+function closeMenu(): void {
+  menu.value = null
+}
+
+function pickLink(nodeId: string): void {
+  focusNode?.(nodeId)
+  closeMenu()
+}
 const isSelected = computed(() => props.selected || props.data.selected)
 const isStart = computed(() => props.data.kind === 'start')
 const badge = computed(() => (props.data.hasBinding ? '自动' : '人工'))
@@ -76,6 +98,7 @@ const worst = computed(() => {
 <template>
   <div
     class="node-card"
+    @contextmenu.prevent="openMenu"
     :class="[
       flowClass,
       accent ? `accent-${accent}` : '',
@@ -149,69 +172,6 @@ const worst = computed(() => {
       </div>
     </div>
 
-    <el-popover
-      v-if="focusNode && hasLinks"
-      trigger="click"
-      placement="right-start"
-      :width="220"
-      popper-class="node-nav-pop"
-    >
-      <template #reference>
-        <!-- 要 .stop：否则点开导航会同时冒泡成选中，把浮层顶掉 -->
-        <button type="button" class="nav-btn" aria-label="上下游导航" @click.stop>
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path
-              d="M2.5 4.5h3.2l2.1 3.5h5.7M2.5 11.5h3.2l2.1-3.5"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.3"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-        </button>
-      </template>
-
-      <div class="nav-group">
-        <div class="nav-head">
-          上游<span class="nav-count">{{ data.links?.upstream.length ?? 0 }}</span>
-        </div>
-        <div v-if="!data.links?.upstream.length" class="nav-empty">没有上游节点</div>
-        <button
-          v-for="(item, index) in data.links?.upstream"
-          :key="`up-${index}`"
-          type="button"
-          class="nav-row"
-          @click="focusNode?.(item.id)"
-        >
-          <span class="nav-dot" :style="{ background: item.color }" />
-          <span class="nav-name">{{ item.title }}</span>
-          <span v-if="item.branch" class="nav-branch" :class="item.branch">
-            {{ item.branch === 'yes' ? '是' : '否' }}
-          </span>
-        </button>
-      </div>
-
-      <div class="nav-group">
-        <div class="nav-head">
-          下游<span class="nav-count">{{ data.links?.downstream.length ?? 0 }}</span>
-        </div>
-        <div v-if="!data.links?.downstream.length" class="nav-empty">没有下游节点</div>
-        <button
-          v-for="(item, index) in data.links?.downstream"
-          :key="`down-${index}`"
-          type="button"
-          class="nav-row"
-          @click="focusNode?.(item.id)"
-        >
-          <span class="nav-dot" :style="{ background: item.color }" />
-          <span class="nav-name">{{ item.title }}</span>
-          <span v-if="item.branch" class="nav-branch" :class="item.branch">
-            {{ item.branch === 'yes' ? '是' : '否' }}
-          </span>
-        </button>
-      </div>
-    </el-popover>
 
     <template v-if="meta.branch === 'yesno'">
       <Handle id="yes" type="source" :position="Position.Right" class="h-out h-yes" />
@@ -225,6 +185,62 @@ const worst = computed(() => {
       :position="Position.Right"
       class="h-out"
     />
+
+    <!-- 菜单挂到 body：跟着画布的 transform 走会错位，固定定位才跟得住鼠标 -->
+    <Teleport to="body">
+      <div v-if="menu" class="nav-mask" @click="closeMenu" @contextmenu.prevent>
+        <div
+          class="nav-menu"
+          role="menu"
+          :style="{ left: `${menu.x}px`, top: `${menu.y}px` }"
+          @click.stop
+        >
+          <div class="nav-group">
+            <div class="nav-head">
+              上游<span class="nav-count">{{ data.links?.upstream.length ?? 0 }}</span>
+            </div>
+            <div v-if="!data.links?.upstream.length" class="nav-empty">没有上游节点</div>
+            <button
+              v-for="(item, index) in data.links?.upstream"
+              :key="`up-${index}`"
+              type="button"
+              class="nav-row"
+              role="menuitem"
+              @click="pickLink(item.id)"
+            >
+              <span class="nav-dot" :style="{ background: item.color }" />
+              <span class="nav-name">{{ item.title }}</span>
+              <span v-if="item.branch" class="nav-branch" :class="item.branch">
+                {{ item.branch === 'yes' ? '是' : '否' }}
+              </span>
+            </button>
+          </div>
+
+          <div class="nav-divider" />
+
+          <div class="nav-group">
+            <div class="nav-head">
+              下游<span class="nav-count">{{ data.links?.downstream.length ?? 0 }}</span>
+            </div>
+            <div v-if="!data.links?.downstream.length" class="nav-empty">没有下游节点</div>
+            <button
+              v-for="(item, index) in data.links?.downstream"
+              :key="`down-${index}`"
+              type="button"
+              class="nav-row"
+              role="menuitem"
+              @click="pickLink(item.id)"
+            >
+              <span class="nav-dot" :style="{ background: item.color }" />
+              <span class="nav-name">{{ item.title }}</span>
+              <span v-if="item.branch" class="nav-branch" :class="item.branch">
+                {{ item.branch === 'yes' ? '是' : '否' }}
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -704,43 +720,6 @@ const worst = computed(() => {
 }
 
 /* 导航入口：左上角外侧，躲开左侧 target 和右上角的问题角标；平时隐藏，悬停才出 */
-.nav-btn {
-  position: absolute;
-  top: -9px;
-  left: -9px;
-  z-index: 4;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 3px;
-  border: 1px solid var(--el-border-color);
-  border-radius: 50%;
-  background: var(--el-bg-color-overlay);
-  color: var(--el-text-color-secondary);
-  opacity: 0;
-  cursor: pointer;
-  transition:
-    opacity 0.15s,
-    color 0.15s,
-    border-color 0.15s;
-}
-
-.node-card:hover .nav-btn,
-.nav-btn:focus-visible {
-  opacity: 1;
-}
-
-.nav-btn:hover {
-  border-color: var(--el-color-primary);
-  color: var(--el-color-primary);
-}
-
-.nav-btn svg {
-  width: 100%;
-  height: 100%;
-}
 
 @media (prefers-reduced-motion: reduce) {
   .bar-running::after,
@@ -761,41 +740,58 @@ const worst = computed(() => {
 
 <style>
 /* 浮层内容由 popover 挂到 body 上，scoped 够不着，只能写全局 */
-.node-nav-pop {
-  padding: 8px 10px;
+.nav-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
 }
 
-.node-nav-pop .nav-group + .nav-group {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--el-border-color-lighter);
+/* 右键菜单：贴鼠标位置固定定位，不跟画布 transform 走 */
+.nav-menu {
+  position: fixed;
+  min-width: 200px;
+  max-width: 260px;
+  padding: 6px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  background: var(--el-bg-color-overlay);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+  font-size: 13px;
 }
 
-.node-nav-pop .nav-head {
+.nav-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--el-border-color-lighter);
+}
+
+.nav-menu .nav-head {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 2px 6px;
   margin-bottom: 2px;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--el-text-color-secondary);
 }
 
-.node-nav-pop .nav-count {
+.nav-menu .nav-count {
   color: var(--el-text-color-placeholder);
 }
 
-.node-nav-pop .nav-empty {
+.nav-menu .nav-empty {
   padding: 2px 6px;
   font-size: 12px;
   color: var(--el-text-color-placeholder);
 }
 
-.node-nav-pop .nav-row {
+.nav-menu .nav-row {
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 4px 6px;
+  min-height: 28px;
+  padding: 0 6px;
   border: 0;
   border-radius: 4px;
   background: transparent;
@@ -805,25 +801,25 @@ const worst = computed(() => {
   cursor: pointer;
 }
 
-.node-nav-pop .nav-row:hover {
+.nav-menu .nav-row:hover {
   background: var(--el-fill-color-light);
 }
 
-.node-nav-pop .nav-dot {
+.nav-menu .nav-dot {
   flex: none;
   width: 6px;
   height: 6px;
   border-radius: 50%;
 }
 
-.node-nav-pop .nav-name {
+.nav-menu .nav-name {
   flex: 1;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.node-nav-pop .nav-branch {
+.nav-menu .nav-branch {
   flex: none;
   padding: 0 4px;
   border-radius: 3px;
@@ -831,12 +827,12 @@ const worst = computed(() => {
   line-height: 16px;
 }
 
-.node-nav-pop .nav-branch.yes {
+.nav-menu .nav-branch.yes {
   color: #16a34a;
   background: #16a34a1a;
 }
 
-.node-nav-pop .nav-branch.no {
+.nav-menu .nav-branch.no {
   color: #dc2626;
   background: #dc26261a;
 }
