@@ -53,6 +53,7 @@ const detailLabel = computed(() => {
       return '说明'
     case 'investigationAction':
     case 'remediation':
+    case 'problemSolved':
       return '操作步骤'
     case 'jump':
       return '链接'
@@ -67,6 +68,7 @@ const detailPlaceholder = computed(() => {
       return '按什么条件分流、什么时候走哪一条'
     case 'investigationAction':
     case 'remediation':
+    case 'problemSolved':
       return '按顺序写清怎么做，一行一步'
     case 'jump':
       return '例如：https://example.com/flow/xxx'
@@ -75,10 +77,8 @@ const detailPlaceholder = computed(() => {
   }
 })
 
-/** 排查节点的参考数据与判定标准放在一起，附件分区就不再重复出现 */
-const hasOwnAttachments = computed(
-  () => !isCategory.value && props.node.kind !== 'investigation' && !titleOnly.value,
-)
+/** 只有开始节点还需要独立的附件分区：排查节点把参考数据并进判定，其余节点只要标题与正文 */
+const hasOwnAttachments = computed(() => isStart.value)
 
 /** 开始节点声明的对象名与启动参数，是其余槽位的可选值来源 */
 const startNode = computed(() => props.doc?.nodes?.find((item) => item.kind === 'start'))
