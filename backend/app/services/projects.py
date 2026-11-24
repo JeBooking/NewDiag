@@ -116,7 +116,7 @@ def probe(project: Any) -> dict[str, Any]:
     }
 
     handle = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", prefix="newdiag-probe-", delete=False, encoding="utf-8"
+        mode="w", suffix=".json", prefix="olive-probe-", delete=False, encoding="utf-8"
     )
     try:
         json.dump(payload, handle, ensure_ascii=False)

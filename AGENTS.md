@@ -2,7 +2,9 @@
 
 本文件约束所有参与本仓库开发的 agent。`docs/spec.md` 是唯一设计依据，冲突时以 spec 为准，并在此处登记偏差。
 
-2026-11-21：新增接入 skill `.workbuddy/skills/newdiag-project-integration`。把外部工程接入平台时先读它的 `SKILL.md`；探针、发布级校验、生成代码冒烟三个脚本直接调用 `backend` 实现，不另写一套规则。
+2026-11-24：项目改名 **OcapLive**（简称 OLive），原 NewDiag 全部替换。运行期标识一并换：环境变量 `OLIVE_*`、默认库 `olive.db`、`.oliveignore`、包类型 `olive-flow-package`、槽位协议 `__olive_slot__`、接入 skill 目录 `olive-project-integration`。**不留旧名兼容**，已部署实例按 `docs/deploy.md` 附录 D 迁移。仓库所在目录 `D:/FILE/Projects/NewDiag` 暂未重命名，路径类文档保持原样。
+
+2026-11-21：新增接入 skill `.workbuddy/skills/olive-project-integration`。把外部工程接入平台时先读它的 `SKILL.md`；探针、发布级校验、生成代码冒烟三个脚本直接调用 `backend` 实现，不另写一套规则。
 
 2026-11-16：v1.18 把槽位传值收敛到节点内：`previous` 只指本节点上一步，跨节点不再保留；开始节点的拉取与处理用于把数据写进对象，返回值不后传。
 

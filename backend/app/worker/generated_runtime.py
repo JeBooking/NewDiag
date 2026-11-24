@@ -189,7 +189,7 @@ class Context:
     def slots(self, step):
         """按固定链执行节点槽位；人工输入由平台或终端接管。"""
         def invoke(project, request):
-            return self.invoke(project, "__newdiag_slot__", {**request, "fileRoot": self.config["fileRoot"]})
+            return self.invoke(project, "__olive_slot__", {**request, "fileRoot": self.config["fileRoot"]})
 
         runtime = SlotRuntime(self.root, invoke, self.config.get("fileRoot"), self.states.get("$slots"))
         runtime.inputs = self.config["input"].get("global", self.config["input"])

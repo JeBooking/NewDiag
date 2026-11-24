@@ -3,21 +3,21 @@ import type { LintIssue } from '@/domain/types'
 /** v1 固定本地用户，权限模型落地后由登录态替换 */
 export const CURRENT_USER = 'local'
 
-/** 浏览器控制台调试开关：开发态默认开，生产在控制台执行 localStorage.setItem('newdiag:debug','1') 后刷新 */
+/** 浏览器控制台调试开关：开发态默认开，生产在控制台执行 localStorage.setItem('olive:debug','1') 后刷新 */
 export const debugEnabled = (() => {
   try {
-    return import.meta.env.DEV || localStorage.getItem('newdiag:debug') === '1'
+    return import.meta.env.DEV || localStorage.getItem('olive:debug') === '1'
   } catch {
     return import.meta.env.DEV
   }
 })()
 
 export function debugLog(...args: unknown[]) {
-  if (debugEnabled) console.debug('[newdiag]', ...args)
+  if (debugEnabled) console.debug('[olive]', ...args)
 }
 
 function warnLog(...args: unknown[]) {
-  console.warn('[newdiag]', ...args)
+  console.warn('[olive]', ...args)
 }
 
 const errorMessageKeys = ['message', 'msg', 'detail'] as const

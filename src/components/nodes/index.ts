@@ -3,7 +3,7 @@ import type { NodeKind, NodeTrailState, NodeVisualStatus } from '@/domain/types'
 import NodeCard from './NodeCard.vue'
 
 /** 面板拖拽到画布时使用的 dataTransfer 类型，palette 与画布共用 */
-export const NODE_DRAG_TYPE = 'application/x-newdiag-node-kind'
+export const NODE_DRAG_TYPE = 'application/x-olive-node-kind'
 
 /** 单个校验问题，画布上只保留展示所需的字段 */
 import type { InjectionKey } from 'vue'
@@ -22,7 +22,7 @@ export interface NavLink {
 }
 
 /** 画布把「居中到某节点并选中」下沉给节点卡片，避免卡片自己算坐标 */
-export const FOCUS_NODE_KEY: InjectionKey<(nodeId: string) => void> = Symbol('newdiag:focus-node')
+export const FOCUS_NODE_KEY: InjectionKey<(nodeId: string) => void> = Symbol('olive:focus-node')
 
 /** NodeCard 只消费渲染投影，业务字段始终留在 FlowDoc 里 */
 export interface NodeCardData {

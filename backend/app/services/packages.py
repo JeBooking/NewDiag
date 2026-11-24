@@ -13,7 +13,7 @@ import zipfile
 
 DOC_NAME = "workflow.json"
 MANIFEST_NAME = "manifest.json"
-PACKAGE_KIND = "newdiag-flow-package"
+PACKAGE_KIND = "olive-flow-package"
 MAX_PACKAGE_BYTES = 200 * 1024 * 1024
 MAX_FILE_BYTES = 50 * 1024 * 1024
 

@@ -449,7 +449,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 
 发布固定流程编排、槽位和输入表单，不固定模块实现代码。实例启动时：
 
-1. 读取槽位引用的工程，按**发布版本**复制一份源码到 `data/modules/<releaseId>`，同版本的所有实例共用（排除 `.git`、`.venv`、`node_modules`、`__pycache__` 等；项目根可放 `.newdiagignore` 逐行排除大目录）
+1. 读取槽位引用的工程，按**发布版本**复制一份源码到 `data/modules/<releaseId>`，同版本的所有实例共用（排除 `.git`、`.venv`、`node_modules`、`__pycache__` 等；项目根可放 `.oliveignore` 逐行排除大目录）
 2. 按副本重新探测接口并编译 plan
 3. 生成 `flow.py`、`runtime/`、`configuration.json`、`modules/`
 4. 起常驻子进程执行
@@ -551,7 +551,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 ### 业务子进程协议
 
 - 每个实例的每个工程一个常驻子进程，`cwd` 为副本工程目录，解释器为登记解释器（缺省用平台自身）
-- 协议：stdin/stdout 上的 JSON 行；请求 `{id, function, args}` 或 `{id, function:"__newdiag_slot__", args:{op,...}}`；响应 `{id, ok, value|error}`，可选 `files` 列本次新落盘的图片
+- 协议：stdin/stdout 上的 JSON 行；请求 `{id, function, args}` 或 `{id, function:"__olive_slot__", args:{op,...}}`；响应 `{id, ok, value|error}`，可选 `files` 列本次新落盘的图片
 - `op`：`construct` 构造对象、`call` 调用方法、`restore` 取状态引用
 - stdio 一律 UTF-8：父进程以 `PYTHONIOENCODING=utf-8` 启动，子进程重设三路流编码；不设置 `PYTHONUTF8`，避免打挂读 GBK 文件的业务脚本
 - 业务异常不重试，记 `execution/exception` 并转为 `failure` 待办；缺分支走 `route/*`，按排查失败直接收尾
@@ -766,3 +766,4 @@ backend/
 | v1.17（2026-11-16） | 接入改为节点槽位模板：开始节点构造对象并可选取数，排查节点固定「拉取／处理／展示／判定」四槽；删除 composition 三层、11 种参数来源、展示与判定字段映射；参数来源收敛为 lit／input／parameter／previous |
 | v1.18（2026-11-16） | 槽位传值收敛到节点内：`previous` 只指本节点上一步，跨节点不再保留；开始节点的拉取与处理用于把数据写进对象，返回值不后传 |
 | v1.19（2026-11-16） | 新增分类节点与手动模式：`category` 出线 ≥2 只连排查，执行时按后继标题选项分流；`mode="manual"` 不跑任何槽位、由平台生成待办推进，`runs.source` 标记 `manual`；自动模式下分类节点穿透；支持手动转自动（单向），自动转手动不做 |
+| 命名（2026-11-24） | 项目改名 OcapLive，简称 OLive。运行期标识一并更换，不做旧名兼容：环境变量 `NEWDIAG_*`→`OLIVE_*`、默认库 `newdiag.db`→`olive.db`、`.newdiagignore`→`.oliveignore`、包类型 `newdiag-flow-package`→`olive-flow-package`、槽位协议 `__newdiag_slot__`→`__olive_slot__`。已部署实例的迁移步骤见 `docs/deploy.md` 附录 D |

@@ -8,7 +8,7 @@ if errorlevel 1 goto node_missing
 where pnpm >nul 2>nul
 if errorlevel 1 goto pnpm_missing
 
-echo Starting NewDiag. The browser will open automatically.
+echo Starting OcapLive. The browser will open automatically.
 echo Keep this window open. Press Ctrl+C to stop the services.
 call pnpm dev --open
 set "DEV_EXIT_CODE=%ERRORLEVEL%"

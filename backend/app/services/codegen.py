@@ -146,8 +146,8 @@ _IGNORED = shutil.ignore_patterns(
 
 
 def _extra_ignores(source: Path) -> list[str]:
-    """项目根放 .newdiagignore 可以排除大目录（数据集、缓存），每行一个通配符。"""
-    spec = source / ".newdiagignore"
+    """项目根放 .oliveignore 可以排除大目录（数据集、缓存），每行一个通配符。"""
+    spec = source / ".oliveignore"
     if not spec.is_file():
         return []
     try:

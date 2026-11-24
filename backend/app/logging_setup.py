@@ -1,9 +1,9 @@
 """日志装配：控制台 + 按大小轮转的文件。
 
 环境变量：
-- NEWDIAG_LOG_LEVEL：DEBUG / INFO / WARNING，默认 INFO
-- NEWDIAG_LOG_DIR：日志目录，默认 backend/logs
-- NEWDIAG_LOG_PAYLOAD：设为 1 时把调用参数与返回值写进 DEBUG 日志（默认只记字段名与长度）
+- OLIVE_LOG_LEVEL：DEBUG / INFO / WARNING，默认 INFO
+- OLIVE_LOG_DIR：日志目录，默认 backend/logs
+- OLIVE_LOG_PAYLOAD：设为 1 时把调用参数与返回值写进 DEBUG 日志（默认只记字段名与长度）
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ _FORMAT = '%(asctime)s %(levelname)-5s [%(name)s] %(message)s'
 
 
 def log_payloads() -> bool:
-    return os.environ.get('NEWDIAG_LOG_PAYLOAD', '').strip() in {'1', 'true', 'yes'}
+    return os.environ.get('OLIVE_LOG_PAYLOAD', '').strip() in {'1', 'true', 'yes'}
 
 
 def brief(value: object, limit: int = 300) -> str:
@@ -40,9 +40,9 @@ def brief(value: object, limit: int = 300) -> str:
 
 
 def setup_logging() -> None:
-    level_name = os.environ.get('NEWDIAG_LOG_LEVEL', 'INFO').upper()
+    level_name = os.environ.get('OLIVE_LOG_LEVEL', 'INFO').upper()
     level = getattr(logging, level_name, logging.INFO)
-    log_dir = Path(os.environ.get('NEWDIAG_LOG_DIR') or DEFAULT_LOG_DIR)
+    log_dir = Path(os.environ.get('OLIVE_LOG_DIR') or DEFAULT_LOG_DIR)
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -52,7 +52,7 @@ def setup_logging() -> None:
     root.setLevel(level)
 
     # 重复 import / reload 时只调级别，不叠加 handler
-    if getattr(root, '_newdiag_configured', False):
+    if getattr(root, '_olive_configured', False):
         for handler in root.handlers:
             handler.setLevel(level)
         return
@@ -71,7 +71,7 @@ def setup_logging() -> None:
 
     root.addHandler(console)
     root.addHandler(file_handler)
-    root._newdiag_configured = True  # type: ignore[attr-defined]
+    root._olive_configured = True  # type: ignore[attr-defined]
 
     # uvicorn 自己的 logger 不向上冒泡，单独接一份到同一文件
     for name in ('uvicorn', 'uvicorn.error', 'uvicorn.access'):

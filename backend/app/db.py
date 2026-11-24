@@ -27,17 +27,17 @@ class Base(DeclarativeBase):
 
 
 def data_dir() -> Path:
-    raw = os.environ.get("NEWDIAG_DATA_DIR")
+    raw = os.environ.get("OLIVE_DATA_DIR")
     path = Path(raw).expanduser().resolve() if raw else BACKEND_DIR / "data"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def database_url() -> str:
-    raw = os.environ.get("NEWDIAG_DB")
+    raw = os.environ.get("OLIVE_DB")
     if raw and "://" in raw:
         return raw
-    target = Path(raw).expanduser() if raw else data_dir() / "newdiag.db"
+    target = Path(raw).expanduser() if raw else data_dir() / "olive.db"
     if not target.is_absolute():
         target = (Path.cwd() / target).resolve()
     target.parent.mkdir(parents=True, exist_ok=True)

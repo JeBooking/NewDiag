@@ -3,7 +3,7 @@
 用法：backend/.venv/Scripts/python scripts/build_bundle.py [--skip-build]
 
 目标机器需自带 Python 3.9+（推荐 3.11 / 64 位）。首次解压后先跑 setup.cmd 建虚拟环境并离线装依赖，
-之后双击 start.cmd 即可。产物：deploy/newdiag-win64-<日期>.zip
+之后双击 start.cmd 即可。产物：deploy/olive-win64-<日期>.zip
 """
 
 from __future__ import annotations
@@ -113,10 +113,10 @@ if not exist "%PY%" (
 )
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
-set "NEWDIAG_DB=%HERE%data\newdiag.db"
-set "NEWDIAG_WEB_DIR=%HERE%web"
-set "NEWDIAG_LOG_DIR=%HERE%logs"
-if "%NEWDIAG_LOG_LEVEL%"=="" set "NEWDIAG_LOG_LEVEL=INFO"
+set "OLIVE_DB=%HERE%data\olive.db"
+set "OLIVE_WEB_DIR=%HERE%web"
+set "OLIVE_LOG_DIR=%HERE%logs"
+if "%OLIVE_LOG_LEVEL%"=="" set "OLIVE_LOG_LEVEL=INFO"
 echo 诊断流程平台启动中：http://127.0.0.1:8765/
 echo 日志：%HERE%logs\app.log    停止：Ctrl+C
 "%PY%" -m uvicorn app.main:app --host 127.0.0.1 --port 8765 --app-dir "%HERE%"
@@ -135,10 +135,10 @@ if not exist "%PY%" (
 )
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
-set "NEWDIAG_DB=%HERE%data\newdiag.db"
-set "NEWDIAG_WEB_DIR=%HERE%web"
-set "NEWDIAG_LOG_DIR=%HERE%logs"
-if "%NEWDIAG_LOG_LEVEL%"=="" set "NEWDIAG_LOG_LEVEL=INFO"
+set "OLIVE_DB=%HERE%data\olive.db"
+set "OLIVE_WEB_DIR=%HERE%web"
+set "OLIVE_LOG_DIR=%HERE%logs"
+if "%OLIVE_LOG_LEVEL%"=="" set "OLIVE_LOG_LEVEL=INFO"
 echo 诊断流程平台启动中（监听所有网卡）：http://<本机IP>:8765/
 echo 注意：这套没有登录，仅限内网自用。
 "%PY%" -m uvicorn app.main:app --host 0.0.0.0 --port 8765 --app-dir "%HERE%"
@@ -170,8 +170,8 @@ README = '''# 诊断流程平台（离线包）
 
 - 平台依赖在 `runtime\\venv`，由 `setup.cmd` 离线安装，`wheels/` 默认按 Python 3.11 / 64 位打包；
   如果目标机器版本不同，`setup.cmd` 会报错，需要重新打包。
-- 数据库：`data\\newdiag.db`；附件：`data\\files\\`；日志：`logs\\app.log`
-- 调试：先 `set NEWDIAG_LOG_LEVEL=DEBUG` 再运行 start.cmd
+- 数据库：`data\\olive.db`；附件：`data\\files\\`；日志：`logs\\app.log`
+- 调试：先 `set OLIVE_LOG_LEVEL=DEBUG` 再运行 start.cmd
 - 平台只通过子进程调用业务函数，业务依赖（numpy、串口 SDK 等）装在业务解释器里
 - 改了函数签名要重新发布，执行前会被签名指纹拦下
 '''
@@ -186,20 +186,20 @@ def write_launchers(bundle: Path) -> None:
 
 def zip_bundle(bundle: Path) -> Path:
     stamp = date.today().strftime('%Y%m%d')
-    archive = DEPLOY / f'newdiag-win64-{stamp}.zip'
+    archive = DEPLOY / f'olive-win64-{stamp}.zip'
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for path in sorted(bundle.rglob('*')):
             if path.is_file():
-                zf.write(path, arcname=str(Path('newdiag') / path.relative_to(bundle)))
+                zf.write(path, arcname=str(Path('olive') / path.relative_to(bundle)))
     return archive
 
 
 def pick_bundle_dir() -> Path:
-    base = DEPLOY / 'newdiag'
+    base = DEPLOY / 'olive'
     if not base.exists():
         return base
     for index in range(2, 100):
-        candidate = DEPLOY / f'newdiag-{index}'
+        candidate = DEPLOY / f'olive-{index}'
         if not candidate.exists():
             return candidate
     raise SystemExit('deploy 下没有可用目录名')

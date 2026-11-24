@@ -86,8 +86,8 @@ def node_of(doc: dict, node_id: str) -> dict:
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("NEWDIAG_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.delenv("NEWDIAG_DB", raising=False)
+    monkeypatch.setenv("OLIVE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("OLIVE_DB", raising=False)
 
     from fastapi.testclient import TestClient
 
@@ -1193,8 +1193,8 @@ def test_init_db_migrates_old_database(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     db_path = tmp_path / "old.db"
-    monkeypatch.delenv("NEWDIAG_DATA_DIR", raising=False)
-    monkeypatch.setenv("NEWDIAG_DB", str(db_path))
+    monkeypatch.delenv("OLIVE_DATA_DIR", raising=False)
+    monkeypatch.setenv("OLIVE_DB", str(db_path))
 
     conn = sqlite3.connect(db_path)
     conn.executescript(

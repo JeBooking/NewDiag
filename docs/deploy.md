@@ -55,7 +55,7 @@ backend/.venv/Scripts/python scripts/build_bundle.py
 
 脚本做三件事：`pnpm build` 出前端产物、从 PyPI 下载 cp311/win_amd64 轮子、把 `backend/app` 与 `dist` 拷进包并生成三个启动脚本。
 
-产物：`deploy/newdiag-win64-<日期>.zip`（约 7 MB）。每次构建都会新建 `deploy/newdiag-N` 目录，不会覆盖上一次。
+产物：`deploy/olive-win64-<日期>.zip`（约 7 MB）。每次构建都会新建 `deploy/olive-N` 目录，不会覆盖上一次。
 
 ### 1.3 产物校验（必做）
 
@@ -94,7 +94,7 @@ py -3.11 -c "import sys,platform;print(sys.version);print(platform.architecture(
 ### 2.3 目录规划
 
 ```text
-D:\NewDiag\              <- 程序（解压目录，纯 ASCII、无空格）
+D:\OcapLive\              <- 程序（解压目录，纯 ASCII、无空格）
   app\  web\  wheels\
   runtime\venv\          <- setup.cmd 创建
   data\                  <- 数据库 + 附件（要备份）
@@ -108,7 +108,7 @@ D:\NewDiag\              <- 程序（解压目录，纯 ASCII、无空格）
 ### 2.4 防火墙
 
 ```cmd
-netsh advfirewall firewall add rule name="NewDiag 8765" dir=in action=allow protocol=TCP localport=8765
+netsh advfirewall firewall add rule name="OcapLive 8765" dir=in action=allow protocol=TCP localport=8765
 ```
 
 只在内网开放。服务器如果同时有公网网卡，见 9.2。
@@ -119,14 +119,14 @@ netsh advfirewall firewall add rule name="NewDiag 8765" dir=in action=allow prot
 
 ### 3.1 解压
 
-把 zip 拷到服务器，解压到 `D:\NewDiag`。zip 内部顶层目录名为 `newdiag`，解压后确认层级是 `D:\NewDiag\setup.cmd`，而不是 `D:\NewDiag\newdiag\setup.cmd`。
+把 zip 拷到服务器，解压到 `D:\OcapLive`。zip 内部顶层目录名为 `olive`，解压后确认层级是 `D:\OcapLive\setup.cmd`，而不是 `D:\OcapLive\olive\setup.cmd`。
 
 ### 3.2 建虚拟环境
 
-在 `D:\NewDiag` 下双击 `setup.cmd`，或命令行执行：
+在 `D:\OcapLive` 下双击 `setup.cmd`，或命令行执行：
 
 ```cmd
-cd /d D:\NewDiag
+cd /d D:\OcapLive
 setup.cmd
 ```
 
@@ -149,8 +149,8 @@ setup.cmd
 先手工起一次，确认能跑再注册服务：
 
 ```cmd
-cd /d D:\NewDiag
-runtime\venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8765 --app-dir D:\NewDiag
+cd /d D:\OcapLive
+runtime\venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8765 --app-dir D:\OcapLive
 ```
 
 另开一个窗口：
@@ -161,7 +161,7 @@ curl http://127.0.0.1:8765/api/health
 
 返回 `{"ok":true}` 即正常。浏览器打开 `http://127.0.0.1:8765/` 应看到页面。`Ctrl+C` 停掉这个临时进程，进入下一步。
 
-> 注意：必须带 `--app-dir`，或先 `cd` 到解压目录。前端静态目录由环境变量 `NEWDIAG_WEB_DIR` 指定（服务方式务必显式设置），否则可能找不到 `web/`。
+> 注意：必须带 `--app-dir`，或先 `cd` 到解压目录。前端静态目录由环境变量 `OLIVE_WEB_DIR` 指定（服务方式务必显式设置），否则可能找不到 `web/`。
 
 ---
 
@@ -169,50 +169,50 @@ curl http://127.0.0.1:8765/api/health
 
 ### 4.1 准备 NSSM
 
-下载 NSSM（nssm.cc）后把 `win64\nssm.exe` 放到 `D:\NewDiag\tools\nssm.exe`，或以管理员身份打开 cmd 并把它所在目录加入 PATH。
+下载 NSSM（nssm.cc）后把 `win64\nssm.exe` 放到 `D:\OcapLive\tools\nssm.exe`，或以管理员身份打开 cmd 并把它所在目录加入 PATH。
 
 以下命令**全部在管理员 cmd** 中执行。
 
 ### 4.2 安装并配置
 
 ```cmd
-nssm install NewDiag "D:\NewDiag\runtime\venv\Scripts\python.exe"
-nssm set NewDiag AppParameters "-m uvicorn app.main:app --host 0.0.0.0 --port 8765 --app-dir D:\NewDiag"
-nssm set NewDiag AppDirectory "D:\NewDiag"
-nssm set NewDiag DisplayName "NewDiag 诊断流程平台"
-nssm set NewDiag Description "设备诊断流程平台（内网，无鉴权）"
-nssm set NewDiag Start SERVICE_AUTO_START
+nssm install OcapLive "D:\OcapLive\runtime\venv\Scripts\python.exe"
+nssm set OcapLive AppParameters "-m uvicorn app.main:app --host 0.0.0.0 --port 8765 --app-dir D:\OcapLive"
+nssm set OcapLive AppDirectory "D:\OcapLive"
+nssm set OcapLive DisplayName "OcapLive 诊断流程平台"
+nssm set OcapLive Description "设备诊断流程平台（内网，无鉴权）"
+nssm set OcapLive Start SERVICE_AUTO_START
 ```
 
 **环境变量（关键）**：
 
 ```cmd
-nssm set NewDiag AppEnvironmentExtra PYTHONUTF8=1 PYTHONIOENCODING=utf-8 NEWDIAG_WEB_DIR=D:\NewDiag\web NEWDIAG_DATA_DIR=D:\NewDiag\data NEWDIAG_DB=D:\NewDiag\data\newdiag.db NEWDIAG_LOG_DIR=D:\NewDiag\logs NEWDIAG_LOG_LEVEL=INFO
+nssm set OcapLive AppEnvironmentExtra PYTHONUTF8=1 PYTHONIOENCODING=utf-8 OLIVE_WEB_DIR=D:\OcapLive\web OLIVE_DATA_DIR=D:\OcapLive\data OLIVE_DB=D:\OcapLive\data\olive.db OLIVE_LOG_DIR=D:\OcapLive\logs OLIVE_LOG_LEVEL=INFO
 ```
 
 **控制台输出另存（uvicorn 启动期报错不写进 app.log，只能从 stdout 看）**：
 
 ```cmd
-nssm set NewDiag AppStdout "D:\NewDiag\logs\service-out.log"
-nssm set NewDiag AppStderr "D:\NewDiag\logs\service-err.log"
-nssm set NewDiag AppRotateFiles 1
-nssm set NewDiag AppRotateOnline 1
-nssm set NewDiag AppRotateBytes 10485760
+nssm set OcapLive AppStdout "D:\OcapLive\logs\service-out.log"
+nssm set OcapLive AppStderr "D:\OcapLive\logs\service-err.log"
+nssm set OcapLive AppRotateFiles 1
+nssm set OcapLive AppRotateOnline 1
+nssm set OcapLive AppRotateBytes 10485760
 ```
 
 **崩溃自动重启**：
 
 ```cmd
-nssm set NewDiag AppExit Default Restart
-nssm set NewDiag AppRestartDelay 5000
-nssm set NewDiag AppStopMethodConsole 15000
+nssm set OcapLive AppExit Default Restart
+nssm set OcapLive AppRestartDelay 5000
+nssm set OcapLive AppStopMethodConsole 15000
 ```
 
 ### 4.3 启动与验证
 
 ```cmd
-nssm start NewDiag
-sc query NewDiag
+nssm start OcapLive
+sc query OcapLive
 curl http://127.0.0.1:8765/api/health
 ```
 
@@ -226,15 +226,15 @@ curl http://127.0.0.1:8765/api/health
 服务默认以 `LocalSystem` 运行，访问 `\\NAS\...` 这类 UNC 路径会失败。改成域账号：
 
 ```cmd
-nssm set NewDiag ObjectName "DOMAIN\svc-newdiag" "密码"
-nssm restart NewDiag
+nssm set OcapLive ObjectName "DOMAIN\svc-olive" "密码"
+nssm restart OcapLive
 ```
 
 该账号需要对解压目录有读写权限（`data\`、`logs\`）。
 
 ### 4.5 备选：任务计划程序（不想装 NSSM）
 
-在 `D:\NewDiag` 下新建 `start-service.cmd`：
+在 `D:\OcapLive` 下新建 `start-service.cmd`：
 
 ```cmd
 @echo off
@@ -242,19 +242,19 @@ chcp 65001 >nul
 cd /d "%~dp0"
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
-set "NEWDIAG_WEB_DIR=%~dp0web"
-set "NEWDIAG_DATA_DIR=%~dp0data"
-set "NEWDIAG_DB=%~dp0data\newdiag.db"
-set "NEWDIAG_LOG_DIR=%~dp0logs"
-if "%NEWDIAG_LOG_LEVEL%"=="" set "NEWDIAG_LOG_LEVEL=INFO"
+set "OLIVE_WEB_DIR=%~dp0web"
+set "OLIVE_DATA_DIR=%~dp0data"
+set "OLIVE_DB=%~dp0data\olive.db"
+set "OLIVE_LOG_DIR=%~dp0logs"
+if "%OLIVE_LOG_LEVEL%"=="" set "OLIVE_LOG_LEVEL=INFO"
 "%~dp0runtime\venv\Scripts\python.exe" -m uvicorn app.main:app --host 0.0.0.0 --port 8765 --app-dir "%~dp0"
 ```
 
 然后：
 
 ```cmd
-schtasks /create /tn "NewDiag" /tr "D:\NewDiag\start-service.cmd" /sc onstart /ru SYSTEM /rl HIGHEST /f
-schtasks /run /tn "NewDiag"
+schtasks /create /tn "OcapLive" /tr "D:\OcapLive\start-service.cmd" /sc onstart /ru SYSTEM /rl HIGHEST /f
+schtasks /run /tn "OcapLive"
 ```
 
 代价：**进程崩溃后不会自动拉起**，只能靠人发现页面打不开再去启动。所以能用 NSSM 就用 NSSM。
@@ -284,10 +284,10 @@ schtasks /run /tn "NewDiag"
 
 | 内容 | 路径 | 说明 |
 |---|---|---|
-| 数据库 | `D:\NewDiag\data\newdiag.db` | SQLite，WAL 模式，另有两个 `-wal` / `-shm` 文件 |
-| 附件 | `D:\NewDiag\data\files\<xx>\<hash>` | 按内容哈希分层存放 |
-| 应用日志 | `D:\NewDiag\logs\app.log` | 5 MB 轮转，保留 5 份，UTF-8 |
-| 服务控制台 | `D:\NewDiag\logs\service-out.log` / `service-err.log` | 启动期崩溃看这里 |
+| 数据库 | `D:\OcapLive\data\olive.db` | SQLite，WAL 模式，另有两个 `-wal` / `-shm` 文件 |
+| 附件 | `D:\OcapLive\data\files\<xx>\<hash>` | 按内容哈希分层存放 |
+| 应用日志 | `D:\OcapLive\logs\app.log` | 5 MB 轮转，保留 5 份，UTF-8 |
+| 服务控制台 | `D:\OcapLive\logs\service-out.log` / `service-err.log` | 启动期崩溃看这里 |
 
 ### 6.2 备份
 
@@ -295,9 +295,9 @@ WAL 模式下**不能只复制 `.db` 一个文件**，会丢最近的写入。�
 
 - **停服复制整个 `data` 目录（最稳）**
   ```cmd
-  nssm stop NewDiag
-  robocopy D:\NewDiag\data D:\Backup\NewDiag\%date:~0,4%%date:~5,2%%date:~8,2% /E /COPYALL
-  nssm start NewDiag
+  nssm stop OcapLive
+  robocopy D:\OcapLive\data D:\Backup\OcapLive\%date:~0,4%%date:~5,2%%date:~8,2% /E /COPYALL
+  nssm start OcapLive
   ```
 - **不停服**：用 SQLite 官方 `.backup` 命令导出单文件快照，再复制附件目录
 
@@ -316,11 +316,11 @@ WAL 模式下**不能只复制 `.db` 一个文件**，会丢最近的写入。�
 临时要提高日志级别：
 
 ```cmd
-nssm set NewDiag AppEnvironmentExtra ... NEWDIAG_LOG_LEVEL=DEBUG
-nssm restart NewDiag
+nssm set OcapLive AppEnvironmentExtra ... OLIVE_LOG_LEVEL=DEBUG
+nssm restart OcapLive
 ```
 
-`NEWDIAG_LOG_PAYLOAD=1` 会把调用实参与返回值也写日志，**只在排障期间开**，否则业务数据会落到磁盘上。
+`OLIVE_LOG_PAYLOAD=1` 会把调用实参与返回值也写日志，**只在排障期间开**，否则业务数据会落到磁盘上。
 
 ---
 
@@ -331,19 +331,19 @@ nssm restart NewDiag
 ### 7.1 升级
 
 ```cmd
-nssm stop NewDiag
+nssm stop OcapLive
 ```
 
-1. 新包解压到**新目录**，如 `D:\NewDiag-20261110`，不要覆盖旧目录
+1. 新包解压到**新目录**，如 `D:\OcapLive-20261110`，不要覆盖旧目录
 2. 在新目录跑一次 `setup.cmd`（幂等，已有 venv 会复用并补装依赖）
 3. 把旧目录的 `data\` **整体复制**到新目录（升级期间产生的增量写入会丢，所以选停机窗口做）
 4. 改服务指向新目录：
    ```cmd
-   nssm set NewDiag Application "D:\NewDiag-20261110\runtime\venv\Scripts\python.exe"
-   nssm set NewDiag AppParameters "-m uvicorn app.main:app --host 0.0.0.0 --port 8765 --app-dir D:\NewDiag-20261110"
-   nssm set NewDiag AppDirectory "D:\NewDiag-20261110"
-   nssm set NewDiag AppEnvironmentExtra ... NEWDIAG_WEB_DIR=D:\NewDiag-20261110\web NEWDIAG_DATA_DIR=D:\NewDiag-20261110\data NEWDIAG_DB=D:\NewDiag-20261110\data\newdiag.db NEWDIAG_LOG_DIR=D:\NewDiag-20261110\logs
-   nssm start NewDiag
+   nssm set OcapLive Application "D:\OcapLive-20261110\runtime\venv\Scripts\python.exe"
+   nssm set OcapLive AppParameters "-m uvicorn app.main:app --host 0.0.0.0 --port 8765 --app-dir D:\OcapLive-20261110"
+   nssm set OcapLive AppDirectory "D:\OcapLive-20261110"
+   nssm set OcapLive AppEnvironmentExtra ... OLIVE_WEB_DIR=D:\OcapLive-20261110\web OLIVE_DATA_DIR=D:\OcapLive-20261110\data OLIVE_DB=D:\OcapLive-20261110\data\olive.db OLIVE_LOG_DIR=D:\OcapLive-20261110\logs
+   nssm start OcapLive
    ```
 5. 验证 `/api/health` 与页面，抽查一条历史记录
 6. 观察一天，再删旧目录
@@ -377,7 +377,7 @@ curl http://127.0.0.1:8765/api/health
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | 服务起不来，`sc query` 不是 RUNNING | Python 路径或参数错 | 看 `logs\service-err.log` |
-| 页面打不开但 `/api/health` 正常 | `NEWDIAG_WEB_DIR` 没设或指错 | 指向解压目录下的 `web` |
+| 页面打不开但 `/api/health` 正常 | `OLIVE_WEB_DIR` 没设或指错 | 指向解压目录下的 `web` |
 | 他机打不开，本机正常 | 防火墙未放行 8765，或绑了 127.0.0.1 | 放行端口；`--host 0.0.0.0` |
 | `setup.cmd` 报「安装失败，检查 Python 是否为 64 位」 | 多数是 `wheels\` 为空或轮子 ABI 不符 | 回到 1.3 节校验产物 |
 | 执行报「工程未登记」「函数不存在」 | 服务器上工程路径/模块/解释器不对 | 工程页点「接口」看探测报错 |
@@ -389,7 +389,7 @@ curl http://127.0.0.1:8765/api/health
 
 1. `logs\app.log` 里对应时间段的 `[request-id]` 行
 2. `logs\service-err.log` 尾部（启动期崩溃）
-3. `sc query NewDiag` 的 STATE
+3. `sc query OcapLive` 的 STATE
 
 ---
 
@@ -410,7 +410,7 @@ curl http://127.0.0.1:8765/api/health
 服务器若有多块网卡（含公网），`--host 0.0.0.0` 会把服务暴露到所有网卡。改成绑定内网 IP：
 
 ```cmd
-nssm set NewDiag AppParameters "-m uvicorn app.main:app --host 192.168.1.10 --port 8765 --app-dir D:\NewDiag"
+nssm set OcapLive AppParameters "-m uvicorn app.main:app --host 192.168.1.10 --port 8765 --app-dir D:\OcapLive"
 ```
 
 ### 9.3 需要 HTTPS / 统一入口时
@@ -433,18 +433,18 @@ nssm set NewDiag AppParameters "-m uvicorn app.main:app --host 192.168.1.10 --po
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `NEWDIAG_WEB_DIR` | 同包 `web/` | 前端静态目录。服务方式务必显式设置 |
-| `NEWDIAG_DATA_DIR` | 同包 `data/` | 数据根目录，附件在 `files/` 下 |
-| `NEWDIAG_DB` | `data/newdiag.db` | 数据库文件路径，也可给完整连接串 |
-| `NEWDIAG_LOG_DIR` | 同包 `logs/` | 日志目录 |
-| `NEWDIAG_LOG_LEVEL` | `INFO` | 改为 `DEBUG` 输出调度细节 |
-| `NEWDIAG_LOG_PAYLOAD` | 空 | 设 `1` 时记录实参与返回值，仅排障期开 |
+| `OLIVE_WEB_DIR` | 同包 `web/` | 前端静态目录。服务方式务必显式设置 |
+| `OLIVE_DATA_DIR` | 同包 `data/` | 数据根目录，附件在 `files/` 下 |
+| `OLIVE_DB` | `data/olive.db` | 数据库文件路径，也可给完整连接串 |
+| `OLIVE_LOG_DIR` | 同包 `logs/` | 日志目录 |
+| `OLIVE_LOG_LEVEL` | `INFO` | 改为 `DEBUG` 输出调度细节 |
+| `OLIVE_LOG_PAYLOAD` | 空 | 设 `1` 时记录实参与返回值，仅排障期开 |
 | `PYTHONUTF8` / `PYTHONIOENCODING` | 空 | 服务方式设为 `1` / `utf-8`，避免中文乱码 |
 
 ## 附录 B：目录、端口、进程
 
 ```text
-D:\NewDiag\
+D:\OcapLive\
   app\                 后端代码（随包替换）
   web\                 前端产物（随包替换）
   wheels\              离线轮子（仅 setup 用）
@@ -478,3 +478,69 @@ D:\NewDiag\
 - [ ] 流程已发布，试跑一次走完全程
 - [ ] 备份任务已建，手工跑一次并确认备份目录有内容
 - [ ] 升级/回滚步骤已在纸面走通一遍（知道改哪三行配置）
+
+## 附录 D：从 NewDiag 改名到 OcapLive
+
+平台 2026-11-24 由 NewDiag 更名为 OcapLive，运行期的名字一并换了，**新代码不认旧名**。已经在跑的服务器按下面五步切换，缺一步都起不来。
+
+改名前先备份，出事能退回去：
+
+```bat
+nssm stop NewDiag
+robocopy D:\NewDiag\data D:\Backup\NewDiag-pre-rename /E /COPYALL
+```
+
+### D.1 数据库文件改名
+
+SQLite 开 WAL，三个文件必须一起改，漏掉 `-wal` 会丢掉最近的事务：
+
+```bat
+cd /d D:\NewDiag\data
+ren newdiag.db olive.db
+ren newdiag.db-wal olive.db-wal
+ren newdiag.db-shm olive.db-shm
+```
+
+`-wal` / `-shm` 不存在是正常的（上次停服干净就没有），没有就跳过那一行。
+
+### D.2 换环境变量和服务名
+
+服务名、显示名一起换，旧服务先删掉，避免两个服务抢 8765 端口：
+
+```bat
+nssm stop NewDiag
+nssm remove NewDiag confirm
+nssm install OcapLive "D:\OcapLive\runtime\venv\Scripts\python.exe"
+nssm set OcapLive AppParameters "-m uvicorn app.main:app --host 0.0.0.0 --port 8765 --app-dir D:\OcapLive"
+nssm set OcapLive AppDirectory "D:\OcapLive"
+nssm set OcapLive DisplayName "OcapLive 诊断流程平台"
+nssm set OcapLive Start SERVICE_AUTO_START
+nssm set OcapLive AppEnvironmentExtra PYTHONUTF8=1 PYTHONIOENCODING=utf-8 OLIVE_WEB_DIR=D:\OcapLive\web OLIVE_DATA_DIR=D:\OcapLive\data OLIVE_DB=D:\OcapLive\data\olive.db OLIVE_LOG_DIR=D:\OcapLive\logs OLIVE_LOG_LEVEL=INFO
+nssm start OcapLive
+```
+
+### D.3 换目录名
+
+`D:\NewDiag` 可以直接重命名成 `D:\OcapLive`，也可以在旧目录里就地升级、只改服务配置里的路径。前者更省事，但重命名前必须先 `nssm stop`，Windows 会锁住正在执行的文件。
+
+### D.4 环境变量对照表
+
+| 旧名 | 新名 |
+|---|---|
+| `NEWDIAG_WEB_DIR` | `OLIVE_WEB_DIR` |
+| `NEWDIAG_DATA_DIR` | `OLIVE_DATA_DIR` |
+| `NEWDIAG_DB` | `OLIVE_DB` |
+| `NEWDIAG_LOG_DIR` | `OLIVE_LOG_DIR` |
+| `NEWDIAG_LOG_LEVEL` | `OLIVE_LOG_LEVEL` |
+| `NEWDIAG_LOG_PAYLOAD` | `OLIVE_LOG_PAYLOAD` |
+
+自建的 `start-service.cmd`、计划任务、反向代理、监控脚本里如果写死了旧名，一并改掉。
+
+### D.5 业务工程侧的两处
+
+- 工程根目录下用来排除大目录的 `.newdiagignore` 改名成 `.oliveignore`，不改就不生效，发布时会连数据集一起拷进源码副本。
+- 旧版导出的流程包 `manifest.json` 里 `kind` 是 `newdiag-flow-package`，新版是 `olive-flow-package`。导入时不校验该字段，旧包照常能导；只有脚本按 `kind` 做判断的地方需要跟着改。
+
+### D.6 已经生成的实例不受影响
+
+每个实例目录（`data/executions/<id>/`）自带一份 `runtime/generated_runtime.py` 和 `session.py`，协议名跟着各自副本走。改名只影响之后新生成的实例，历史实例照旧跑完。

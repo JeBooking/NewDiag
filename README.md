@@ -51,7 +51,7 @@ pnpm dev
 backend/.venv/Scripts/python scripts/build_bundle.py
 ```
 
-产物是 `deploy/newdiag-win64-<日期>.zip`，拷到目标机器解压后：
+产物是 `deploy/olive-win64-<日期>.zip`，拷到目标机器解压后：
 
 1. 双击 `setup.cmd`：用本机 Python 建虚拟环境，从 `wheels/` 离线装依赖
 2. 双击 `start.cmd`：浏览器打开 http://127.0.0.1:8765/
@@ -132,18 +132,18 @@ pnpm dev:lan          # 访问 http://<那台机器的内网IP>:5173
 
 ## 数据、日志与备份
 
-- 数据：源码方式在 `backend/data/newdiag.db`，离线包在解压目录的 `data/newdiag.db`。SQLite 开了 WAL，备份时停服后复制整个 `data` 目录最稳
+- 数据：源码方式在 `backend/data/olive.db`，离线包在解压目录的 `data/olive.db`。SQLite 开了 WAL，备份时停服后复制整个 `data` 目录最稳
 - 每个实例的生成代码在 `data/executions/<实例id>/`
 - 日志：源码方式在 `backend/logs/app.log`，5 MB 轮转、保留 5 份
 - 每个 HTTP 响应都带 `X-Request-ID`
 
 | 环境变量 | 作用 |
 |---|---|
-| `NEWDIAG_DATA_DIR` | 数据目录，默认 `backend/data` |
-| `NEWDIAG_DB` | 直接指定数据库文件或连接串 |
-| `NEWDIAG_LOG_LEVEL` | `DEBUG` 打开调试日志 |
-| `NEWDIAG_LOG_DIR` | 日志目录，默认 `backend/logs` |
-| `NEWDIAG_LOG_PAYLOAD` | 设为 `1` 时把实参与返回值也写进日志 |
+| `OLIVE_DATA_DIR` | 数据目录，默认 `backend/data` |
+| `OLIVE_DB` | 直接指定数据库文件或连接串 |
+| `OLIVE_LOG_LEVEL` | `DEBUG` 打开调试日志 |
+| `OLIVE_LOG_DIR` | 日志目录，默认 `backend/logs` |
+| `OLIVE_LOG_PAYLOAD` | 设为 `1` 时把实参与返回值也写进日志 |
 
 ## 常见问题
 

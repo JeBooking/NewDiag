@@ -65,7 +65,7 @@ def main() -> int:
                 raise ValueError("args 必须是对象")
             node_sdk.configure_files(args.get("fileRoot"))
             with redirect_stdout(sys.stderr):
-                if function_name == "__newdiag_slot__":
+                if function_name == "__olive_slot__":
                     value = objects.execute(target, args)
                 else:
                     func = _resolve_callable(target, function_name)

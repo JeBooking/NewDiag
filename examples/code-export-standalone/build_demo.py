@@ -16,8 +16,8 @@ def main():
     # 隔离数据库与运行目录，生成演示包不读写使用者的平台实例。
     workspace = ROOT / 'backend' / '.pytest_cache' / f'export-demo-{uuid.uuid4().hex}'
     workspace.mkdir(parents=True)
-    os.environ['NEWDIAG_DATA_DIR'] = str(workspace / 'data')
-    os.environ['NEWDIAG_DB'] = str(workspace / 'data' / 'newdiag.db')
+    os.environ['OLIVE_DATA_DIR'] = str(workspace / 'data')
+    os.environ['OLIVE_DB'] = str(workspace / 'data' / 'olive.db')
     from fastapi.testclient import TestClient
     from app.main import app
 

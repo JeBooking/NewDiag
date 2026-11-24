@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 # 只有显式指定、或同目录下存在 web/（离线包形态）时才托管前端；开发态仍走 Vite
-WEB_DIR = Path(os.environ.get("NEWDIAG_WEB_DIR") or (BACKEND_ROOT.parent / "web"))
+WEB_DIR = Path(os.environ.get("OLIVE_WEB_DIR") or (BACKEND_ROOT.parent / "web"))
 if not (WEB_DIR / "index.html").is_file():
     WEB_DIR = None  # type: ignore[assignment]
 
@@ -48,7 +48,7 @@ async def lifespan(_app: FastAPI):
         sys.version.split()[0],
         os.getpid(),
         os.getcwd(),
-        os.environ.get("NEWDIAG_DB") or "(默认 backend/data/newdiag.db)",
+        os.environ.get("OLIVE_DB") or "(默认 backend/data/olive.db)",
     )
     _report_stale_instances()
     yield
@@ -84,7 +84,7 @@ def _report_stale_instances() -> None:
     )
 
 
-app = FastAPI(title="NewDiag 诊断流程平台", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="OcapLive 诊断流程平台", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

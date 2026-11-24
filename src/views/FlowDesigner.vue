@@ -35,7 +35,7 @@ const propertiesExpanded = ref(true)
 
 const PANEL_MIN = 280
 const PANEL_MAX = 720
-const PANEL_KEY = 'newdiag.panelWidth'
+const PANEL_KEY = 'olive.panelWidth'
 const storedPanel = Number(localStorage.getItem(PANEL_KEY))
 const panelWidth = ref(
   Number.isFinite(storedPanel) && storedPanel >= PANEL_MIN ? Math.min(PANEL_MAX, storedPanel) : 320,

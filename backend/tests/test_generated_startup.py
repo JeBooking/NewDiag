@@ -53,8 +53,8 @@ def live_backend(tmp_path):
     with log.open("w", encoding="utf-8") as output:
         process = subprocess.Popen([sys.executable, *args], cwd=backend,
                                    stdout=output, stderr=subprocess.STDOUT,
-                                   env={**os.environ, "NEWDIAG_DATA_DIR": str(backend / "data"),
-                                        "NEWDIAG_DB": str(backend / "data" / "newdiag.db"),
+                                   env={**os.environ, "OLIVE_DATA_DIR": str(backend / "data"),
+                                        "OLIVE_DB": str(backend / "data" / "olive.db"),
                                         "PYTHONIOENCODING": "utf-8"}, **process_options())
         try:
             with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=15, trust_env=False) as client:
@@ -174,8 +174,8 @@ def development_stack(tmp_path):
     with log.open("w", encoding="utf-8") as output:
         process = subprocess.Popen(["node", str(entry)], cwd=tmp_path,
                                    stdout=output, stderr=subprocess.STDOUT,
-                                   env={**os.environ, "NEWDIAG_DATA_DIR": str(backend / "data"),
-                                        "NEWDIAG_DB": str(backend / "data" / "newdiag.db"),
+                                   env={**os.environ, "OLIVE_DATA_DIR": str(backend / "data"),
+                                        "OLIVE_DB": str(backend / "data" / "olive.db"),
                                         "PYTHONIOENCODING": "utf-8"}, **options)
         try:
             # 本机常驻 HTTP_PROXY，NO_PROXY 对回环端口不生效，会被代理打回 502

@@ -158,7 +158,7 @@ pnpm install
 pnpm dev
 ```
 
-排错先分层：接口目录错误看导入和探针；发布错误看槽位校验；启动错误看源码副本和重新编译；节点错误看工程名、接口、方法与 traceback。实例卡在某个节点时，先在 `backend/logs/app.log` 找该实例的「分支启动 / 分支退出」行，再看后端启动时的遗留实例告警；重启原因在 `backend/logs/dev-all.log`。实例卡在某个节点时，先在 `backend/logs/app.log` 找该实例的「分支启动 / 分支退出」行，再看后端启动时的遗留实例告警；重启原因在 `backend/logs/dev-all.log`。`NEWDIAG_LOG_LEVEL=DEBUG` 增加日志，`NEWDIAG_LOG_PAYLOAD=1` 记录实参与返回值。
+排错先分层：接口目录错误看导入和探针；发布错误看槽位校验；启动错误看源码副本和重新编译；节点错误看工程名、接口、方法与 traceback。实例卡在某个节点时，先在 `backend/logs/app.log` 找该实例的「分支启动 / 分支退出」行，再看后端启动时的遗留实例告警；重启原因在 `backend/logs/dev-all.log`。实例卡在某个节点时，先在 `backend/logs/app.log` 找该实例的「分支启动 / 分支退出」行，再看后端启动时的遗留实例告警；重启原因在 `backend/logs/dev-all.log`。`OLIVE_LOG_LEVEL=DEBUG` 增加日志，`OLIVE_LOG_PAYLOAD=1` 记录实参与返回值。
 
 扩展按同一链路更新：先在 spec 约定字段，再同步 TypeScript 与后端契约；增加参数来源要同时改编辑器、结构校验、运行求值；改等待或回退要核对结果复用、缓存保留与旧执行代隔离。
 

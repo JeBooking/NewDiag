@@ -2,7 +2,7 @@ export type Figure =
   | { type: 'line'; values: number[]; title?: string; unit?: string }
   | { type: 'image'; src: string; title?: string; alt?: string; caption?: string }
 
-const PREFIX = 'newdiag:figure:'
+const PREFIX = 'olive:figure:'
 
 export function imageFigureUrl(src: string): string {
   return `/figure?src=${encodeURIComponent(src)}`
