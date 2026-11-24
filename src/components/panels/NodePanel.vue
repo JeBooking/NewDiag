@@ -41,6 +41,45 @@ const isStart = computed(() => props.node.kind === 'start')
 /** 分类节点是纯文本分流：只有标题和说明，选项顺序由出边 order 决定 */
 const isCategory = computed(() => props.node.kind === 'category')
 
+/** 结论与上升只写一句话结论，不需要正文和附件 */
+const titleOnly = computed(
+  () => props.node.kind === 'conclusion' || props.node.kind === 'escalation',
+)
+
+/** 同一个 detail 字段在不同节点上含义不同：动作类写步骤，跳转写目标地址 */
+const detailLabel = computed(() => {
+  switch (props.node.kind) {
+    case 'category':
+      return '说明'
+    case 'investigationAction':
+    case 'remediation':
+      return '操作步骤'
+    case 'jump':
+      return '链接'
+    default:
+      return '详细内容'
+  }
+})
+
+const detailPlaceholder = computed(() => {
+  switch (props.node.kind) {
+    case 'category':
+      return '按什么条件分流、什么时候走哪一条'
+    case 'investigationAction':
+    case 'remediation':
+      return '按顺序写清怎么做，一行一步'
+    case 'jump':
+      return '例如：https://example.com/flow/xxx'
+    default:
+      return '这一节点要做什么、看什么'
+  }
+})
+
+/** 排查节点的参考数据与判定标准放在一起，附件分区就不再重复出现 */
+const hasOwnAttachments = computed(
+  () => !isCategory.value && props.node.kind !== 'investigation' && !titleOnly.value,
+)
+
 /** 开始节点声明的对象名与启动参数，是其余槽位的可选值来源 */
 const startNode = computed(() => props.doc?.nodes?.find((item) => item.kind === 'start'))
 const objectNames = computed(() =>
@@ -209,16 +248,14 @@ function patchRuntimeInputs(value: ManualField[]): void {
             @update:model-value="patchText('title', $event)"
           />
 
-          <template v-if="!isStart">
-            <label class="label">{{ isCategory ? '说明' : '详细内容' }}</label>
+          <template v-if="!isStart && !titleOnly">
+            <label class="label">{{ detailLabel }}</label>
             <el-input
               :model-value="node.detail"
               :disabled="readonly"
               type="textarea"
               :rows="3"
-              :placeholder="isCategory
-                ? '按什么条件分流、什么时候走哪一条'
-                : '这一节点要做什么、看什么'"
+              :placeholder="detailPlaceholder"
               @update:model-value="patchText('detail', $event)"
             />
           </template>
@@ -248,6 +285,14 @@ function patchRuntimeInputs(value: ManualField[]): void {
               :disabled="readonly"
               placeholder="例如：低于 210V 判为异常"
               @update:model-value="patchField('assessment', $event)"
+            />
+            <!-- 参考数据是判定的依据，和判定标准必须挨在一起看，不放到独立的附件分区 -->
+            <label class="label">参考数据</label>
+            <div class="section-hint">判定时拿来比对的数据，例如现场照片、历史曲线、台账记录</div>
+            <AttachmentField
+              :attachments="node.attachments"
+              :readonly="readonly"
+              @update="patchAttachments"
             />
           </template>
         </div>
@@ -392,7 +437,7 @@ function patchRuntimeInputs(value: ManualField[]): void {
         </div>
       </el-collapse-item>
 
-      <el-collapse-item v-if="!isCategory" name="attachments" title="附件">
+      <el-collapse-item v-if="hasOwnAttachments" name="attachments" title="附件">
         <div class="section-body">
           <AttachmentField
             :attachments="node.attachments"
