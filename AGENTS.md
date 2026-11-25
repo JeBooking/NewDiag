@@ -2,6 +2,8 @@
 
 本文件约束所有参与本仓库开发的 agent。`docs/spec.md` 是唯一设计依据，冲突时以 spec 为准，并在此处登记偏差。
 
+2026-11-26：开发启动器的源码监控改为内容指纹判据。事件只当触发器，重启与否看 `backend/app` 下 `.py` 的 `mtime + size` 快照，实现照 Django `StatReloader` 与 uvicorn `StatReload`。起因：Windows 的目录通知把改名、只读位等元数据变更也报成 change，旧实现按事件重启，后端启动中途会被无关事件反复打断。同时新增 `OLIVE_DEV_NO_RELOAD=1` 关闭热重启。README 的启动说明已同步。
+
 2026-11-21：新增接入 skill `.workbuddy/skills/olive-project-integration`。把外部工程接入平台时先读它的 `SKILL.md`；探针、发布级校验、生成代码冒烟三个脚本直接调用 `backend` 实现，不另写一套规则。
 
 2026-11-16：v1.18 把槽位传值收敛到节点内：`previous` 只指本节点上一步，跨节点不再保留；开始节点的拉取与处理用于把数据写进对象，返回值不后传。

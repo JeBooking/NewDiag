@@ -4,16 +4,17 @@
 // 后端进程仍在但不响应时，也必须通过健康探测恢复服务。
 
 import { spawn, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, watch } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, watch } from 'node:fs'
 import { request } from 'node:http'
 import { Socket } from 'node:net'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { backendArgs } from './backend-command.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(here, '..')
 const backendDir = join(projectRoot, 'backend')
+const sourceRoot = join(backendDir, 'app')
 const isWin = process.platform === 'win32'
 
 const devLogFile = join(backendDir, 'logs', 'dev-all.log')
@@ -49,6 +50,10 @@ const STARTUP_GRACE = 30_000
 const MAX_RESTARTS = 3
 const RESTART_WINDOW = 60_000
 const RESTART_DELAY = 600
+// 源码监控只认内容指纹：Windows 的目录通知把改名、属性变更、临时文件也算动静，
+// 直接按事件重启会在后端启动或诊断中途误伤。判据取自 Django StatReloader 与 uvicorn StatReload。
+const SOURCE_DEBOUNCE = 300
+const SOURCE_EXCLUDED_DIRS = new Set(['__pycache__', '.pytest_cache', '.mypy_cache'])
 
 const python = isWin
   ? join(backendDir, '.venv', 'Scripts', 'python.exe')
@@ -257,12 +262,85 @@ function startMonitor() {
   }, PROBE_INTERVAL)
 }
 
+/** 给源码拍一份内容指纹：重启与否只看它，不看文件系统事件。 */
+function snapshotSources() {
+  const fingerprints = new Map()
+  const walk = (dir) => {
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (SOURCE_EXCLUDED_DIRS.has(entry.name)) continue
+        walk(full)
+        continue
+      }
+      if (!entry.name.endsWith('.py')) continue
+      try {
+        const info = statSync(full)
+        fingerprints.set(full, `${info.mtimeMs}:${info.size}`)
+      } catch {
+        // 遍历时正好被删除，交给后续事件处理
+      }
+    }
+  }
+  walk(sourceRoot)
+  return fingerprints
+}
+
+function applySourceChanges(pending, fingerprints) {
+  sourceTimer = null
+  const changed = []
+  for (const file of pending) {
+    const previous = fingerprints.get(file)
+    let info = null
+    try {
+      info = statSync(file)
+    } catch {
+      info = null
+    }
+    if (info === null) {
+      // 源码被删：上次见过才算变化，否则是早就消失的临时文件
+      if (previous === undefined) continue
+      fingerprints.delete(file)
+      changed.push(file)
+      continue
+    }
+    const current = `${info.mtimeMs}:${info.size}`
+    // 改名、只读位、杀毒扫描同样报 change，内容指纹没动就不重启
+    if (previous === current) continue
+    fingerprints.set(file, current)
+    changed.push(file)
+  }
+  pending.clear()
+  if (stopping || !changed.length) return
+
+  const names = changed.map((file) => relative(sourceRoot, file).split(sep).join('/'))
+  const shown = names.slice(0, 2).join('、')
+  const more = names.length > 2 ? ` 等 ${names.length} 个` : ''
+  restartBackend(`平台源码发生变化（${shown}${more}）`, true)
+}
+
 function watchBackendSource() {
+  if (process.env.OLIVE_DEV_NO_RELOAD === '1') {
+    console.log('[dev] 已按 OLIVE_DEV_NO_RELOAD=1 关闭后端热重启，改完后端代码请手动重启')
+    return
+  }
   // 只监控平台源码；重启直接清理整个后端进程树，不向共享控制台广播 Ctrl+C。
-  sourceWatcher = watch(join(backendDir, 'app'), { recursive: true }, (_event, filename) => {
-    if (!filename || !String(filename).endsWith('.py') || stopping) return
+  const fingerprints = snapshotSources()
+  const pending = new Set()
+  sourceWatcher = watch(sourceRoot, { recursive: true }, (_event, filename) => {
+    if (!filename || stopping) return
+    const full = join(sourceRoot, String(filename))
+    if (!full.endsWith('.py') || full.includes(`${sep}__pycache__${sep}`)) return
+    // 一次防抖窗口内可能改多个文件，只留最后一个会漏掉其余改动
+    pending.add(full)
     if (sourceTimer) clearTimeout(sourceTimer)
-    sourceTimer = setTimeout(() => restartBackend('平台源码发生变化', true), 300)
+    sourceTimer = setTimeout(() => applySourceChanges(pending, fingerprints), SOURCE_DEBOUNCE)
   })
   sourceWatcher.on('error', (error) => {
     console.error(`[dev] 源码监控失败：${error.message}`)

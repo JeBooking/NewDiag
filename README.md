@@ -41,7 +41,7 @@ pnpm install
 pnpm dev
 ```
 
-前端 http://127.0.0.1:5173，后端 http://127.0.0.1:8000（接口文档 `/docs`）。开发态由启动脚本监控 `backend/app`，源码变化后重启后端；生成代码目录 `data/executions` 不参与监控。
+前端 http://127.0.0.1:5173，后端 http://127.0.0.1:8000（接口文档 `/docs`）。开发态由启动脚本监控 `backend/app`，按 `mtime + size` 指纹判断源码是否真变，变了才重启后端；Windows 的改名、只读位等元数据变更不会误触发。生成代码目录 `data/executions` 不参与监控。设 `OLIVE_DEV_NO_RELOAD=1` 可关闭热重启，改完后端代码手动重启。
 
 需要盯着应用日志时双击 `start-dev-logs.cmd`：它在启动前后端的同时另开一个窗口跟随 `backend/logs/app.log`。守护进程自己的重启原因写在 `backend/logs/dev-all.log`，后端启动时会把上次没跑完的实例点名记进 `app.log`。
 
