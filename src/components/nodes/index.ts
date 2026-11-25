@@ -24,6 +24,10 @@ export interface NavLink {
 /** 画布把「居中到某节点并选中」下沉给节点卡片，避免卡片自己算坐标 */
 export const FOCUS_NODE_KEY: InjectionKey<(nodeId: string) => void> = Symbol('olive:focus-node')
 
+/** 类型转换只能落到 FlowDoc 上，卡片自身改不了；由画布提供实现 */
+export const CONVERT_NODE_KEY: InjectionKey<(nodeId: string, kind: NodeKind) => void> =
+  Symbol('olive:convert-node')
+
 /** NodeCard 只消费渲染投影，业务字段始终留在 FlowDoc 里 */
 export interface NodeCardData {
   kind: NodeKind
@@ -49,6 +53,8 @@ export interface NodeCardData {
   reviewCount?: number
   /** 一跳邻居，供节点左上角的导航浮层使用；不传则不出导航入口 */
   links?: { upstream: NavLink[]; downstream: NavLink[] }
+  /** 可改类型：编辑态且不是流程入口（开始节点转走会让流程失去唯一入口） */
+  convertible: boolean
 }
 
 /** 单一卡片渲染器承担 6 种类型；将来换成几何形状只需替换此注册项 */

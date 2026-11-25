@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { computed, inject, ref } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
-import { KIND_META } from '@/domain/kinds'
-import type { NodeVisualStatus } from '@/domain/types'
+import { KIND_META, V1_KINDS } from '@/domain/kinds'
+import type { NodeKind, NodeVisualStatus } from '@/domain/types'
 import { ICON_ERROR, ICON_WARNING } from '@/components/canvas/issue-icons'
 import type { NodeCardData } from './index'
-import { FOCUS_NODE_KEY } from './index'
+import { CONVERT_NODE_KEY, FOCUS_NODE_KEY } from './index'
 
 // 画布会把 position/dimensions 等内部字段一并透传，避免它们落到 DOM 属性上
 defineOptions({ inheritAttrs: false })
 
 const props = withDefaults(
   defineProps<{
+    /** vue-flow 注入的节点 id，转换时要拿它定位 FlowDoc 里的节点 */
+    id: string
     data: NodeCardData
     selected?: boolean
   }>(),
@@ -43,8 +45,15 @@ const menu = ref<{ x: number; y: number } | null>(null)
 const MENU_WIDTH = 220
 const MENU_MAX_HEIGHT = 320
 
+const convertNode = inject(CONVERT_NODE_KEY, null)
+/** 目标类型与候选列表同源：start 是唯一入口，永远不能作为转换目标 */
+const convertTargets = computed(() =>
+  props.data.convertible ? V1_KINDS.filter((kind) => kind !== props.data.kind) : [],
+)
+
 function openMenu(event: MouseEvent): void {
-  if (!focusNode || !hasLinks.value) return
+  if (!focusNode && !convertNode) return
+  if (!hasLinks.value && !convertTargets.value.length) return
   menu.value = {
     x: Math.max(8, Math.min(event.clientX, window.innerWidth - MENU_WIDTH - 8)),
     y: Math.max(8, Math.min(event.clientY, window.innerHeight - MENU_MAX_HEIGHT)),
@@ -57,7 +66,7 @@ function closeMenu(): void {
 }
 
 /** 二级菜单：导航先拆到子菜单里，以后加删除、复制这类命令直接往同一张表里添 */
-const sub = ref<'upstream' | 'downstream' | null>(null)
+const sub = ref<'upstream' | 'downstream' | 'convert' | null>(null)
 const menuGroups = computed(() => [
   { key: 'upstream' as const, label: '上游节点', items: props.data.links?.upstream ?? [] },
   { key: 'downstream' as const, label: '下游节点', items: props.data.links?.downstream ?? [] },
@@ -70,6 +79,15 @@ const subLeft = computed(() => {
 
 function pickLink(nodeId: string): void {
   focusNode?.(nodeId)
+  closeMenu()
+}
+
+/**
+ * 转换只把 kind 换掉，其余字段原样留在 FlowDoc 里：转错要能转回来，
+ * 而且面板里的配置发布前一直有用，裁剪是后端按类型做的事。
+ */
+function pickKind(kind: NodeKind): void {
+  convertNode?.(props.id, kind)
   closeMenu()
 }
 const isSelected = computed(() => props.selected || props.data.selected)
@@ -244,6 +262,40 @@ const worst = computed(() => {
               </button>
             </div>
           </div>
+
+          <template v-if="convertTargets.length">
+            <div class="menu-sep" role="separator" />
+            <div
+              class="menu-row"
+              role="menuitem"
+              aria-haspopup="menu"
+              :aria-expanded="sub === 'convert'"
+              @mouseenter="sub = 'convert'"
+            >
+              <span class="menu-label">转换为</span>
+              <span class="menu-count">{{ convertTargets.length }}</span>
+              <span class="menu-caret" aria-hidden="true">›</span>
+
+              <div
+                v-if="sub === 'convert'"
+                class="sub-menu"
+                :class="{ 'to-left': subLeft }"
+                role="menu"
+              >
+                <button
+                  v-for="kind in convertTargets"
+                  :key="kind"
+                  type="button"
+                  class="sub-row"
+                  role="menuitem"
+                  @click="pickKind(kind)"
+                >
+                  <span class="sub-name">{{ KIND_META[kind].label }}</span>
+                  <span class="kind-swatch" :style="{ background: KIND_META[kind].color }" />
+                </button>
+              </div>
+            </div>
+          </template>
         </div>
       </div>
     </Teleport>
@@ -649,6 +701,19 @@ const worst = computed(() => {
   background: var(--el-text-color-placeholder);
 }
 
+/*
+ * 视觉仍是 9px，热区靠伪元素外扩到 11px（约 1.2 倍）。
+ * 伪元素以 1px 边框内的 padding box 定位，-1px 只够铺满边框，要再退 1px 才真正向外长；
+ * 只往外放 1px：再大就会盖住卡片文字，也会让「是 / 否」两个出口的热区挨上。
+ */
+.h-in::after,
+.h-out::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+}
+
 .h-in.is-hidden {
   opacity: 0;
   pointer-events: none;
@@ -870,5 +935,19 @@ const worst = computed(() => {
 .nav-branch.no {
   color: #dc2626;
   background: #dc26261a;
+}
+
+/* 转换目标右侧的色点与画布配色同源，选之前就能认出会变成哪种节点 */
+.kind-swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--el-border-color-lighter);
 }
 </style>

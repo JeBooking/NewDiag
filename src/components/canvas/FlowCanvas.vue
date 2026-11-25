@@ -29,6 +29,7 @@ import type {
   NodeVisualStatus,
 } from '@/domain/types'
 import {
+  CONVERT_NODE_KEY,
   FOCUS_NODE_KEY,
   NODE_DRAG_TYPE,
   nodeTypes,
@@ -366,6 +367,8 @@ function projectAll(preservePositions: boolean) {
       reviewCount: props.reviewCounts[meta.id] ?? 0,
       // 执行页只看结果，右键导航会给只读画布带来意外的选中变化
       links: props.readonly ? undefined : linkMap.get(meta.id),
+      // 开始节点转成别的类型会让流程失去唯一入口，风险不可逆，不给这个入口
+      convertible: !props.readonly && !isStart,
     }
     nextNodes.push({
       id: meta.id,
@@ -557,6 +560,23 @@ function focusAndSelect(nodeId: string): void {
 }
 
 provide(FOCUS_NODE_KEY, focusAndSelect)
+
+/**
+ * 转换只换 kind，标题、正文、槽位、参数、位置全留在 FlowDoc 里：
+ * 转错要能转回来，且这些配置在发布前仍然有效，按类型裁剪是发布时后端的事。
+ * 连线可能因此不合法，交给 lint 报，不在转换时挡住用户。
+ */
+function convertNode(nodeId: string, kind: NodeKind): void {
+  if (props.readonly) return
+  const meta = nodeMeta.get(nodeId)
+  if (!meta || meta.kind === kind) return
+  nodeMeta.set(nodeId, { ...meta, kind })
+  projectAll(true)
+  emit('select-node', nodeId)
+  commit()
+}
+
+provide(CONVERT_NODE_KEY, convertNode)
 
 function commit() {
   const docNodes: DocNode[] = []
