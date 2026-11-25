@@ -641,6 +641,8 @@ function nextId(prefix: string) {
 
 /** 默认标题按类型递增，避免一加节点就满屏「标题缺失」 */
 function defaultTitle(kind: NodeKind) {
+  // 问题解决是流程终点，标题就是它的名字；排上序号反而要人手改
+  if (kind === 'problemSolved') return KIND_META[kind].label
   let count = 0
   for (const meta of nodeMeta.values()) if (meta.kind === kind) count += 1
   return `${KIND_META[kind].label} ${count + 1}`

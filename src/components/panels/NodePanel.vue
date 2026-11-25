@@ -41,9 +41,12 @@ const isStart = computed(() => props.node.kind === 'start')
 /** 分类节点是纯文本分流：只有标题和说明，选项顺序由出边 order 决定 */
 const isCategory = computed(() => props.node.kind === 'category')
 
-/** 结论与上升只写一句话结论，不需要正文和附件 */
+/** 结论、上升、问题解决只写一句话结论，不需要正文和附件 */
 const titleOnly = computed(
-  () => props.node.kind === 'conclusion' || props.node.kind === 'escalation',
+  () =>
+    props.node.kind === 'conclusion' ||
+    props.node.kind === 'escalation' ||
+    props.node.kind === 'problemSolved',
 )
 
 /** 同一个 detail 字段在不同节点上含义不同：动作类写步骤，跳转写目标地址 */
@@ -53,7 +56,6 @@ const detailLabel = computed(() => {
       return '说明'
     case 'investigationAction':
     case 'remediation':
-    case 'problemSolved':
       return '操作步骤'
     case 'jump':
       return '链接'
@@ -68,7 +70,6 @@ const detailPlaceholder = computed(() => {
       return '按什么条件分流、什么时候走哪一条'
     case 'investigationAction':
     case 'remediation':
-    case 'problemSolved':
       return '按顺序写清怎么做，一行一步'
     case 'jump':
       return '例如：https://example.com/flow/xxx'
