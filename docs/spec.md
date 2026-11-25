@@ -266,7 +266,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 {"id": "c1", "kind": "category", "title": "先查电压还是先查波形", "detail": "按现场条件选择一条"}
 ```
 
-- 只有 `title` / `detail` / `position`；不写 `fields`、不写 `slots`，`bindings.nodes` 里也不出现该节点
+- 只有 `title` / `detail` / `position`（`attachments` 属通用字段，编辑器不为分类节点提供入口）；不写 `fields`、不写 `slots`，`bindings.nodes` 里也不出现该节点
 - 出线 ≥2 条，分支键固定 `default`，`order` 即选项顺序；每条出线的目标必须是 `investigation`
 - 选项文案就是目标排查节点的 `title`，不另设分类名；标题为空的排查节点在选择面板里显示为「未命名排查」
 - 自动模式下不产生 token／run；plan 里保留该 step（手动模式要用），生成 `flow.py` 时穿透，见第 6 节
@@ -331,6 +331,24 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 | problemSolved | 问题解决 | 否 | 无 |
 | escalation | 上升 | 否 | 无 |
 
+### 节点类型转换与发布期字段裁剪
+
+编辑器允许把节点在类型之间转换（例如排查 → 结论）。转换只改 `kind`，`fields`、`slots`、`runtimeInputs`、`inputs` 等旧字段原样保留，方便转错后转回；因此 doc 里会暂时出现「结论节点带着排查的 fields 和 slots」这类数据，**发布前一律保留**。
+
+发布时按节点类型裁剪一次，发布快照与在线版本都写裁剪后的 doc：
+
+| kind | 允许的可选字段 |
+|---|---|
+| start | `inputs`、`slots`、`runtimeInputs` |
+| investigation | `fields`、`slots`、`runtimeInputs` |
+| category / investigationAction / conclusion / remediation / jump / problemSolved / escalation | 无 |
+
+- 通用字段 `id` / `kind` / `title` / `detail` / `position` / `attachments` 任何类型都保留。`detail` 在结论、上升、问题解决上不是必填，但写了就保留；`attachments` 运行期会作为参考材料下发给任意人工节点，所以不随类型删除
+- 只删上表之外的**已知**可选字段；不认识的键原样留下交给校验，旧接入字段照旧报错，不会被裁剪顺手吞掉
+- 裁剪发生在探测与校验之前：转换残留的槽位与现场参数不参与校验，也不会被当成作者的配置错误拦下发布
+- 裁剪没有变化时沿用原 revision；有变化时新建一个 committed revision（旧版本不可变），在线版本与发布快照同时指向它；检出中的草稿也一并清理
+- 转回原类型后按新类型重新要求字段：例如转回排查但没有 `fields`，发布报「排查节点缺少观测对象」
+
 ### 连接规则
 
 ```json
@@ -373,6 +391,10 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 ## 5. 发布编译（doc → plan）
 
 编译在发布时执行一次，产物不可变。
+
+### 发布前裁剪
+
+先按 `rules.trim_doc_fields` 把节点类型转换留下的多余字段清掉（规则见第 4 节「节点类型转换与发布期字段裁剪」），再做下面的探测与编译；裁剪后的 doc 同时写进发布快照与在线版本。
 
 ### 探测
 
@@ -766,4 +788,5 @@ backend/
 | v1.17（2026-11-16） | 接入改为节点槽位模板：开始节点构造对象并可选取数，排查节点固定「拉取／处理／展示／判定」四槽；删除 composition 三层、11 种参数来源、展示与判定字段映射；参数来源收敛为 lit／input／parameter／previous |
 | v1.18（2026-11-16） | 槽位传值收敛到节点内：`previous` 只指本节点上一步，跨节点不再保留；开始节点的拉取与处理用于把数据写进对象，返回值不后传 |
 | v1.19（2026-11-16） | 新增分类节点与手动模式：`category` 出线 ≥2 只连排查，执行时按后继标题选项分流；`mode="manual"` 不跑任何槽位、由平台生成待办推进，`runs.source` 标记 `manual`；自动模式下分类节点穿透；支持手动转自动（单向），自动转手动不做 |
+| 字段裁剪（2026-11-26） | 节点类型转换只改 `kind`、旧字段保留以便转回；发布时按 `rules.NODE_FIELDS` 裁剪该类型用不到的字段，发布快照、在线版本与检出草稿都写裁剪后的 doc |
 | 命名（2026-11-24） | 项目改名 OcapLive，简称 OLive。运行期标识一并更换，不做旧名兼容：环境变量 `NEWDIAG_*`→`OLIVE_*`、默认库 `newdiag.db`→`olive.db`、`.newdiagignore`→`.oliveignore`、包类型 `newdiag-flow-package`→`olive-flow-package`、槽位协议 `__newdiag_slot__`→`__olive_slot__`。已部署实例的迁移步骤见 `docs/deploy.md` 附录 D |

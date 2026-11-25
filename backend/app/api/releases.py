@@ -14,9 +14,12 @@ from app.api.flows import (
     current_revision,
     get_flow_or_404,
     revision_doc,
+    working_revision,
 )
 from app.db import get_db, new_id, now_iso
-from app.models import Release, Revision
+from app.models import Flow, Release, Revision
+from app.services.flow_format import compact
+from app.services.rules import trim_doc_fields
 from app.worker.input_types import INPUT_TYPES, input_type
 from app.schemas import ReleaseCreate, ReleaseDetail, ReleaseSummary, make_release_detail, make_release_summary
 
@@ -184,6 +187,35 @@ def _declared_inputs(node: dict | None) -> dict[str, dict]:
     return result
 
 
+def save_trimmed_revision(db: Session, flow: Flow, doc: dict) -> Revision:
+    """把清理后的 doc 存成新的在线版本，供发布快照与工作副本共用。
+
+    旧 revision 保持不可变（spec 第 3 节），所以新建一行而不是就地改写；
+    检出中的草稿也是旧版本的副本，一并清掉，否则下次提交会把多余字段带回在线版本。
+    """
+    stamp = now_iso()
+    revision = Revision(
+        id=new_id(),
+        flow_id=flow.id,
+        json=json.dumps(compact(doc), ensure_ascii=False),
+        status="committed",
+        author=LOCAL_ACTOR,
+        created_at=stamp,
+        committed_at=stamp,
+    )
+    db.add(revision)
+    db.flush()
+    flow.current_revision_id = revision.id
+
+    working = working_revision(db, flow)
+    if working is not None:
+        working_doc = revision_doc(working)
+        cleaned = trim_doc_fields(working_doc)
+        if cleaned is not working_doc:
+            working.json = json.dumps(compact(cleaned), ensure_ascii=False)
+    return revision
+
+
 @router.post("/flows/{flow_id}/releases", response_model=ReleaseSummary)
 def publish(flow_id: str, payload: ReleaseCreate, db: Session = Depends(get_db)) -> ReleaseSummary:
     flow = get_flow_or_404(db, flow_id)
@@ -194,9 +226,13 @@ def publish(flow_id: str, payload: ReleaseCreate, db: Session = Depends(get_db))
         raise HTTPException(status_code=503, detail="编译引擎尚未就绪")
 
     doc = revision_doc(revision)
+    # 节点类型转换只改 kind、旧字段原样保留；发布这一刻才按 NODE_FIELDS 清理。
+    # 必须在校验与探测之前裁剪：残留的槽位／现场参数对当前类型是非法配置，
+    # 先裁剪才不会把「转换留下的旧字段」当成作者的配置错误拦下发布。
+    trimmed = trim_doc_fields(doc)
     # 先按 doc 里的 binding 探一遍真实签名：编译期靠它过滤参数，探测失败直接拦发布
     try:
-        probed = probe_doc(doc)
+        probed = probe_doc(trimmed)
     except Exception as exc:
         logger.warning("接口探测异常（flow=%s）：%s", flow_id, exc)
         raise HTTPException(
@@ -209,7 +245,7 @@ def publish(flow_id: str, payload: ReleaseCreate, db: Session = Depends(get_db))
 
     version_no = (db.scalar(select(func.max(Release.version_no)).where(Release.flow_id == flow_id)) or 0) + 1
     try:
-        plan = compile_doc(doc, flow.id, version_no, functions=probed)
+        plan = compile_doc(trimmed, flow.id, version_no, functions=probed)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=getattr(exc, "issues", []) or []) from exc
     except Exception as exc:  # 编译器的其他失败也按校验失败回给作者
@@ -227,12 +263,17 @@ def publish(flow_id: str, payload: ReleaseCreate, db: Session = Depends(get_db))
             logger.warning("签名采集失败（flow=%s）：%s", flow_id, exc)
 
     # 启动表单在这里定稿：执行页只读它，之后改 doc 或改签名都不会影响已发布版本
-    inputs = freeze_inputs(doc, probed)
+    inputs = freeze_inputs(trimmed, probed)
+
+    # 发布快照引用清理后的 doc：没有可清理的字段时沿用原版本，避免无意义地新增 revision
+    snapshot = revision if trimmed is doc else save_trimmed_revision(db, flow, trimmed)
+    if snapshot is not revision:
+        logger.info("发布 flow=%s 前清理了节点多余字段，新在线版本 revision=%s", flow_id, snapshot.id)
 
     release = Release(
         id=new_id(),
         flow_id=flow.id,
-        revision_id=revision.id,
+        revision_id=snapshot.id,
         version_no=version_no,
         plan_json=json.dumps(plan, ensure_ascii=False),
         signature_json=json.dumps(signature, ensure_ascii=False),

@@ -560,23 +560,117 @@ def test_publish_rejects_unprobeable_project(client):
     assert "工程未登记" in messages
 
 
-def test_import_rejects_removed_format(client):
-    """旧接入格式导入直接 422，不能静默变成人工流程。"""
-    doc = valid_doc()
-    node_of(doc, "n1")["binding"] = {"project": "旧工程", "function": "judge"}
-    response = client.post("/api/flows/import", json={"doc": doc})
-    assert response.status_code == 422, response.text
-    messages = " ".join(item.get("message", "") for item in response.json()["detail"])
-    assert "已移除" in messages
+def test_publish_trims_fields_left_by_kind_conversion(client):
+    """排查改成结论后残留的字段在发布时清空，快照与工作副本都不再带 fields/slots。
 
-    flow = create_flow(client)
-    client.post(f"/api/flows/{flow['id']}/checkout").raise_for_status()
-    client.put(f"/api/flows/{flow['id']}/working", json={"doc": doc}).raise_for_status()
-    commit = client.post(f"/api/flows/{flow['id']}/commit")
-    assert commit.status_code == 200, commit.text
-    assert any("已移除" in item["message"] for item in commit.json()["issues"])
-    publish = client.post(f"/api/flows/{flow['id']}/releases", json={})
-    assert publish.status_code == 422, publish.text
+    转换只改 kind、旧字段原样保留（好让人转回去），清理只发生在发布：
+    槽位指向未登记的工程，若裁剪不在探测之前，这里会因「工程未登记」拦下发布。
+    """
+    doc = valid_doc()
+    converted = node_of(doc, "n2")
+    converted["fields"] = {
+        "observation": "母线电压",
+        "acquisition": "读取数据服务器的 voltage",
+        "assessment": "低于 210V 判为异常",
+    }
+    slot = {"project": "冷却系统", "module": "cooling.diagnosis",
+            "interface": "judge_voltage", "function": "judge_voltage",
+            "arguments": {"voltage": {"source": "input", "name": "voltage"}}}
+    converted["slots"] = {"present": {**slot, "view": "text"}, "decide": dict(slot)}
+    converted["runtimeInputs"] = [{"name": "scale", "type": "number"}]
+    converted["attachments"] = [{"hash": "a" * 64, "name": "历史曲线.png"}]
+
+    flow = create_flow(client, "类型转换清理")
+    flow_id = flow["id"]
+    client.post(f"/api/flows/{flow_id}/checkout").raise_for_status()
+    client.put(f"/api/flows/{flow_id}/working", json={"doc": doc}).raise_for_status()
+    client.post(f"/api/flows/{flow_id}/commit").raise_for_status()
+    # 发布时草稿还开着：草稿是旧版本的副本，同样要被清理
+    client.post(f"/api/flows/{flow_id}/checkout").raise_for_status()
+
+    response = client.post(f"/api/flows/{flow_id}/releases", json={})
+    assert response.status_code == 200, response.text
+    release_id = response.json()["id"]
+
+    snapshot = client.get(f"/api/releases/{release_id}").json()["doc"]
+    working = client.get(f"/api/flows/{flow_id}").json()["doc"]
+    for published in (snapshot, working):
+        node = node_of(published, "n2")
+        assert node["kind"] == "conclusion"
+        assert "fields" not in node and "slots" not in node and "runtimeInputs" not in node
+        assert node["title"] == "电压不足"
+        assert node["detail"] == "母线电压低于下限"
+        assert node["position"] == {"x": 120, "y": 220}
+        # 通用字段与不相关的节点原样保留
+        assert node["attachments"] == [{"hash": "a" * 64, "name": "历史曲线.png"}]
+        assert node_of(published, "n1")["fields"]["observation"] == "母线电压"
+        assert node_of(published, "n0")["inputs"] == [{"name": "voltage", "scope": "global"}]
+        assert [edge["id"] for edge in published["edges"]] == ["e0", "e1", "e2", "e3"]
+
+
+def test_publish_keeps_fields_of_matching_kind(client, tmp_path):
+    """合法 doc 发布后字段一个不少，裁剪不误删该类型自己的字段。"""
+    register_demo_project(client, tmp_path, name="保留字段工程")
+    doc = composed_doc("保留字段工程", "cooling.diagnosis", "judge_voltage")
+    node_of(doc, "n0")["attachments"] = [{"hash": "b" * 64, "name": "现场图.jpg"}]
+
+    status, body = publish_doc(client, doc)
+    assert status == 200, body
+
+    published = client.get(f"/api/releases/{body['id']}").json()["doc"]
+    assert published["nodes"] == doc["nodes"]
+    assert published["edges"] == doc["edges"]
+    node = node_of(published, "n1")
+    assert node["fields"]["assessment"] == "返回 True 判为命中"
+    assert node["slots"]["present"]["interface"] == "judge_voltage"
+    assert node["slots"]["decide"]["interface"] == "judge_voltage"
+    assert node_of(published, "n0")["inputs"] == [{"name": "voltage", "type": "number"}]
+
+
+def test_publish_requires_fields_again_after_converting_back(client):
+    """从结论转回排查后，发布按排查重新要求 fields，缺了照样报错。"""
+    doc = {
+        "format": 1,
+        "name": "转回排查",
+        "nodes": [
+            start_doc_node(),
+            {
+                "id": "n1",
+                "kind": "investigation",
+                "title": "检查母线电压",
+                "detail": "观察母线电压是否低于 210V",
+                "fields": {
+                    "observation": "母线电压",
+                    "acquisition": "读取数据服务器的 voltage",
+                    "assessment": "低于 210V 判为异常",
+                },
+                "position": {"x": 120, "y": 80},
+            },
+            {
+                "id": "n2",
+                "kind": "investigation",
+                "title": "检查波形",
+                "detail": "看波形是否毛刺",
+                "position": {"x": 120, "y": 220},
+            },
+            {
+                "id": "n3",
+                "kind": "escalation",
+                "title": "上升",
+                "detail": "转交专家",
+                "position": {"x": 120, "y": 360},
+            },
+        ],
+        "edges": [
+            {"id": "e0", "from": "n0", "to": "n1"},
+            {"id": "e1", "from": "n1", "to": "n2", "branch": "yes", "order": 1},
+            {"id": "e2", "from": "n2", "to": "n3", "branch": "yes", "order": 1},
+        ],
+    }
+    status, body = publish_doc(client, doc)
+    assert status == 422, body
+    messages = " ".join(item.get("message", "") for item in body["detail"])
+    assert "排查节点缺少观测对象" in messages
 
 
 def test_import_rejects_removed_format(client):
