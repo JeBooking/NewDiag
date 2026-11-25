@@ -14,6 +14,8 @@ backend/logs/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+# 固定 basetemp 会被批量删除保护拦下，所以每次跑测试用唯一目录，跑完留着也不该进版本库
+backend/.pytest-run-*/
 .mypy_cache/
 .ruff_cache/
 examples/code-export-standalone/generated/
