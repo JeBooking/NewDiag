@@ -76,6 +76,10 @@ DEFAULT_BRANCH = "default"
 
 # 人工节点必须填写的说明字段
 REQUIRED_TEXT = {"title": "标题", "detail": "说明"}
+# 只写一句结论的节点：标题之后不需要正文
+TITLE_ONLY_KINDS = frozenset({"conclusion", "escalation", "problemSolved"})
+# 同一个 detail 字段在不同类型上的叫法，报错文案跟着走
+DETAIL_LABEL = {"investigationAction": "操作步骤", "remediation": "操作步骤", "jump": "链接"}
 # 排查节点必须填写的四个描述字段（title/detail + fields 三项）
 INVESTIGATION_FIELDS = {
     "observation": "观测对象",

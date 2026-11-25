@@ -296,9 +296,15 @@ def _check_node_fields(nodes_by_id: dict[str, dict], issues: list[dict]) -> None
                 issues.append(_issue(LEVEL_ERROR, "分类节点缺少标题", node_id=nid))
             continue
 
-        for key, label in rules.REQUIRED_TEXT.items():
-            if not _text(node.get(key)):
-                issues.append(_issue(LEVEL_ERROR, f"{_kind_label(kind)}缺少{label}", node_id=nid))
+        if not _text(node.get("title")):
+            issues.append(_issue(LEVEL_ERROR, f"{_kind_label(kind)}缺少标题", node_id=nid))
+        # 结论、上升、问题解决只写一句结论，正文不是必填
+        if kind not in rules.TITLE_ONLY_KINDS:
+            detail_label = rules.DETAIL_LABEL.get(kind, "说明")
+            if not _text(node.get("detail")):
+                issues.append(
+                    _issue(LEVEL_ERROR, f"{_kind_label(kind)}缺少{detail_label}", node_id=nid)
+                )
 
         if kind == "investigation":
             fields = node.get("fields")

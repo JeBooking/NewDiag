@@ -1,13 +1,22 @@
 import { onScopeDispose, ref, watch, type Ref } from 'vue'
 import { KIND_META, isKnownKind, isTerminalKind } from '@/domain/kinds'
 import { canConnect, isSingleSuccessor, needsBranch } from '@/domain/rules'
-import type { DocEdge, DocNode, FlowDoc, InvestigationFields, LintIssue, SlotCall } from '@/domain/types'
+import type { DocEdge, DocNode, FlowDoc, InvestigationFields, LintIssue, NodeKind, SlotCall } from '@/domain/types'
 
 const FIELD_LABELS: Array<[keyof InvestigationFields, string]> = [
   ['observation', '观察对象'],
   ['acquisition', '取数方式'],
   ['assessment', '判定依据'],
 ]
+
+// 与后端 rules.TITLE_ONLY_KINDS 对齐：这三类只写一句结论，不要求正文
+const TITLE_ONLY_KINDS = new Set<NodeKind>(['conclusion', 'escalation', 'problemSolved'])
+// detail 在不同类型上的叫法，报错文案跟面板标签保持一致
+const DETAIL_LABEL: Partial<Record<NodeKind, string>> = {
+  investigationAction: '操作步骤',
+  remediation: '操作步骤',
+  jump: '链接',
+}
 
 const displayName = (node: DocNode) =>
   node.title?.trim() || `未命名${KIND_META[node.kind]?.label ?? '节点'}`
@@ -331,11 +340,11 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
         nodeId: node.id,
       })
     }
-    if (!node.detail?.trim() && node.kind !== 'start') {
+    if (!node.detail?.trim() && node.kind !== 'start' && !TITLE_ONLY_KINDS.has(node.kind)) {
       issues.push({
         id: `node:${node.id}:detail`,
         level: 'error',
-        message: `节点「${displayName(node)}」缺少说明`,
+        message: `节点「${displayName(node)}」缺少${DETAIL_LABEL[node.kind] ?? '说明'}`,
         nodeId: node.id,
       })
     }

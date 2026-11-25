@@ -515,3 +515,23 @@ def test_validation_error_carries_issues():
     with pytest.raises(ValidationError) as caught:
         compile_doc(doc, "f1", 1)
     assert caught.value.issues
+
+
+def test_title_only_nodes_do_not_need_detail():
+    """结论、上升、问题解决只写标题，正文留空不该被拦"""
+    doc = base_doc()
+    for item in doc["nodes"]:
+        if item["kind"] in {"conclusion", "escalation", "problemSolved"}:
+            item["detail"] = ""
+    assert errors(doc) == []
+
+
+def test_detail_errors_use_the_label_the_panel_shows():
+    """同一个 detail 字段，面板上叫操作步骤／链接，报错也要跟着叫，不能笼统说缺少说明"""
+    doc = base_doc()
+    node(doc, "n3")["detail"] = ""
+    assert "缺少操作步骤" in messages(doc)
+
+    doc = base_doc()
+    node(doc, "n1")["detail"] = ""
+    assert "缺少说明" in messages(doc)
