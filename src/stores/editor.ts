@@ -316,6 +316,15 @@ export const useEditorStore = defineStore('editor', () => {
     try {
       const result = await publishFlow(flow.value.id, note ? { note } : {})
       saveIssues.value = []
+      // 发布时后端会按节点类型裁剪字段并写回 doc（节点类型转换留下的旧字段在这一步清掉）。
+      // 不重拉的话，内存里的旧 doc 会在下一次保存时把裁掉的字段原样写回去。
+      const detail = await getFlow(flow.value.id)
+      if (flow.value?.id === detail.id) {
+        flow.value = detail
+        doc.value = ensureLayout(coerceDoc(detail.doc, detail.name)).doc
+        clearAutosave()
+        dirty.value = false
+      }
       return result
     } catch (error) {
       if (isApiError(error) && error.issues.length > 0) issues.value = error.issues
