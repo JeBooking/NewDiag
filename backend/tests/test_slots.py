@@ -171,3 +171,22 @@ def test_only_fetch_accepts_cache_switch():
 def test_cache_switch_must_be_boolean():
     doc = start_doc({"fetch": {**CALL, "useCache": "yes"}})
     assert "使用缓存开关必须为布尔值" in messages(doc)
+
+
+def test_missing_present_and_decide_are_noop(tmp_path):
+    """槽位空着不算错误：展示槽没有就返回空块，判定槽没有就交给人工，都不调用任何接口"""
+    rt, calls = runtime(tmp_path)
+    result = rt.run({"kind": "investigation", "slots": {}})
+    assert result["blocks"] == []
+    assert result["human"] is False
+    assert result["result"] is None
+    assert calls == []
+
+
+def test_empty_present_does_not_break_decide(tmp_path):
+    """有拉取但没有展示与判定时，值仍然按链传下去，不因缺槽中途报错"""
+    rt, calls = runtime(tmp_path)
+    result = rt.run({"kind": "investigation", "slots": {"fetch": dict(CALL)}})
+    assert result["value"] == "v1"
+    assert result["blocks"] == []
+    assert len(calls) == 1
