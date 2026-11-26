@@ -28,6 +28,9 @@ export const FOCUS_NODE_KEY: InjectionKey<(nodeId: string) => void> = Symbol('ol
 export const CONVERT_NODE_KEY: InjectionKey<(nodeId: string, kind: NodeKind) => void> =
   Symbol('olive:convert-node')
 
+/** 复制节点：卡片只报出 id，怎么拷贝由画布决定 */
+export const COPY_NODE_KEY: InjectionKey<(nodeId: string) => void> = Symbol('olive:copy-node')
+
 /** NodeCard 只消费渲染投影，业务字段始终留在 FlowDoc 里 */
 export interface NodeCardData {
   kind: NodeKind
@@ -55,6 +58,10 @@ export interface NodeCardData {
   links?: { upstream: NavLink[]; downstream: NavLink[] }
   /** 可改类型：编辑态且不是流程入口（开始节点转走会让流程失去唯一入口） */
   convertible: boolean
+  /** 节点自己的 id：右键菜单里的复制要用，卡片不知道自己在图里的位置 */
+  nodeId: string
+  /** 能否复制：只读画布与开始节点不给复制 */
+  copyable?: boolean
 }
 
 /** 单一卡片渲染器承担 6 种类型；将来换成几何形状只需替换此注册项 */

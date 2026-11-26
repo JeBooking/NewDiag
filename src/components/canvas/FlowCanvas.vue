@@ -30,6 +30,7 @@ import type {
 } from '@/domain/types'
 import {
   CONVERT_NODE_KEY,
+  COPY_NODE_KEY,
   FOCUS_NODE_KEY,
   NODE_DRAG_TYPE,
   nodeTypes,
@@ -369,6 +370,8 @@ function projectAll(preservePositions: boolean) {
       links: props.readonly ? undefined : linkMap.get(meta.id),
       // 开始节点转成别的类型会让流程失去唯一入口，风险不可逆，不给这个入口
       convertible: !props.readonly && !isStart,
+      nodeId: meta.id,
+      copyable: !props.readonly && !isStart,
     }
     nextNodes.push({
       id: meta.id,
@@ -577,6 +580,28 @@ function convertNode(nodeId: string, kind: NodeKind): void {
 }
 
 provide(CONVERT_NODE_KEY, convertNode)
+
+/**
+ * 复制节点：内容整体带走，但不连边——副本摆在原节点右下角，位置错开一点好认。
+ * 开始节点不允许复制，否则流程图里会出现第二个入口。
+ */
+function copyNode(nodeId: string): void {
+  if (props.readonly) return
+  const source = nodeMeta.get(nodeId)
+  if (!source || source.kind === 'start') return
+  const copy: DocNode = {
+    ...structuredClone(source),
+    id: nextId('n'),
+    title: `${source.title || '未命名节点'} 副本`,
+    position: { x: source.position.x + 40, y: source.position.y + 40 },
+  }
+  nodeMeta.set(copy.id, copy)
+  projectAll(true)
+  emit('select-node', copy.id)
+  commit()
+}
+
+provide(COPY_NODE_KEY, copyNode)
 
 function commit() {
   const docNodes: DocNode[] = []
