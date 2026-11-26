@@ -2,6 +2,8 @@
 
 本文件约束所有参与本仓库开发的 agent。`docs/spec.md` 是唯一设计依据，冲突时以 spec 为准，并在此处登记偏差。
 
+2026-11-26：槽位填充不再作为发布校验。排查节点缺展示槽、判定槽不再拦发布，判定槽留空按人工判断执行；空槽（没有工程／接口／function／human 的槽对象）整条跳过，只校验已填内容的合法性（接口存在、参数来源合法、非展示槽不带 view）。前端画布提示与 `backend/app/services/slots.py` 同步移除，spec 第 4、5 节已改。
+
 2026-11-26：开发启动器的源码监控改为内容指纹判据。事件只当触发器，重启与否看 `backend/app` 下 `.py` 的 `mtime + size` 快照，实现照 Django `StatReloader` 与 uvicorn `StatReload`。起因：Windows 的目录通知把改名、只读位等元数据变更也报成 change，旧实现按事件重启，后端启动中途会被无关事件反复打断。同时新增 `OLIVE_DEV_NO_RELOAD=1` 关闭热重启。README 的启动说明已同步。
 
 2026-11-26：节点类型转换（如排查 → 结论）只改 `kind`，`fields`／`slots`／`runtimeInputs`／`inputs` 等旧字段原样保留，方便转回；发布时由 `backend/app/services/rules.py` 的 `NODE_FIELDS`（每种类型允许哪些字段）与 `trim_doc_fields` 裁剪该类型用不到的字段，发布快照、在线版本与检出草稿都写裁剪后的 doc。字段表是契约的一部分，见 `docs/spec.md` 第 4 节「节点类型转换与发布期字段裁剪」。

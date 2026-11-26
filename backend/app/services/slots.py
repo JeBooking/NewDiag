@@ -140,13 +140,15 @@ def _shape_errors(doc):
             if not isinstance(value, dict):
                 errors.append(f"{label} 的{name}槽必须为对象")
                 continue
-            if name == "present" and value.get("view") not in VIEW_TYPES:
-                errors.append(f"{label} 的展示槽必须选择展示类型")
             if name != "present" and value.get("view"):
                 errors.append(f"{label} 只有展示槽能指定展示类型")
             if name == "decide" and value.get("human") and (value.get("interface") or value.get("function")):
                 errors.append(f"{label} 的判定槽要么选人工判断，要么选方法")
         for name, call in calls_in_node(node):
+            # 空槽等于没填：槽位填不填不拦发布，只有填了内容才校验内容对不对
+            if not (call.get("project") or call.get("interface") or call.get("function")
+                    or call.get("human")):
+                continue
             owner = f"{label} 的{name}槽"
             allow_previous = name != "constructs"
             if not call.get("project"):
@@ -216,18 +218,8 @@ def validate(doc, functions=None):
                 objects[name] = call
 
     for node in nodes:
-        kind = node.get("kind")
-        slots = slots_of(node)
         label = f"节点 {node.get('id')}"
-        if kind == "investigation" and slots:
-            # 完全没有槽位的历史文档按人工节点执行，不强制展示与判定
-            if not isinstance(slots.get("present"), dict):
-                errors.append(f"{label} 缺少展示槽")
-            decide = slots.get("decide")
-            if not isinstance(decide, dict):
-                errors.append(f"{label} 缺少判定槽")
-            elif not decide.get("human") and not (decide.get("interface") or decide.get("function")):
-                errors.append(f"{label} 的判定槽必须选择方法或人工判断")
+        # 槽位填不填不拦发布：只校验槽位内部引用对不对，缺口留给运行时暴露
         for name, call in calls_in_node(node):
             if name != "constructs":
                 target = str(call.get("object") or "").strip()

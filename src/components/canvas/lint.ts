@@ -136,19 +136,7 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
   }
   for (const node of nodes) {
     const slots = node.slots ?? {}
-    if (node.kind === 'investigation') {
-      if (!slots.present) {
-        issues.push({ id: `node:${node.id}:present`, nodeId: node.id, level: 'error',
-          message: '排查节点缺少展示槽：必须选择展示方法和展示类型' })
-      } else if (!slots.present.view) {
-        issues.push({ id: `node:${node.id}:view`, nodeId: node.id, level: 'error',
-          message: '展示槽还没有选择展示类型' })
-      }
-      if (!slots.decide) {
-        issues.push({ id: `node:${node.id}:decide`, nodeId: node.id, level: 'error',
-          message: '排查节点缺少判定槽：选判定方法或人工判断' })
-      }
-    }
+    // 槽位填不填不拦发布：只校验写下的文字与参数引用，槽位缺口留给运行时暴露
     if (previousIn(slots.process) && !slots.fetch) {
       issues.push({ id: `node:${node.id}:previous:process`, nodeId: node.id, level: 'error',
         message: '处理槽要用上一槽结果，但这个节点没有拉取槽' })

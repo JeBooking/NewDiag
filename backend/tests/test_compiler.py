@@ -377,16 +377,17 @@ def test_slot_object_must_be_declared():
     assert "引用了未声明的对象" in messages(doc)
 
 
-def test_investigation_requires_present():
+def test_missing_slots_are_allowed():
+    """槽位有没有填不拦发布：只要文字写全就能过，缺口留给运行时暴露"""
     doc = base_doc()
-    node(doc, "n1")["slots"].pop("present")
-    assert "缺少展示槽" in messages(doc)
+    node(doc, "n1")["slots"] = {}
+    assert errors(doc) == []
 
 
-def test_present_requires_view():
+def test_present_view_is_optional():
     doc = base_doc()
     node(doc, "n1")["slots"]["present"].pop("view")
-    assert "展示槽必须选择展示类型" in messages(doc)
+    assert errors(doc) == []
 
 
 def test_only_present_carries_view():
@@ -395,16 +396,16 @@ def test_only_present_carries_view():
     assert "只有展示槽能指定展示类型" in messages(doc)
 
 
-def test_investigation_requires_decide():
+def test_decide_can_be_omitted():
     doc = base_doc()
     node(doc, "n1")["slots"].pop("decide")
-    assert "缺少判定槽" in messages(doc)
+    assert errors(doc) == []
 
 
-def test_decide_needs_method_or_human():
+def test_empty_decide_is_allowed():
     doc = base_doc()
     node(doc, "n1")["slots"]["decide"] = {}
-    assert "必须选择方法或人工判断" in messages(doc)
+    assert errors(doc) == []
 
 
 def test_human_decide_cannot_carry_interface():
