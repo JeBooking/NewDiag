@@ -14,8 +14,8 @@ from __future__ import annotations
 # start 只用于入口判定。
 CONNECTION_RULES: dict[str, list[str]] = {
     "start": ["investigation", "category"],
-    # 分类节点是可读的分流说明：出线只能落到排查节点，由人挑一条
-    "category": ["investigation"],
+    # 分类节点是可读的分流说明：出线落到排查节点，也可以再落一层分类做进一步细分
+    "category": ["investigation", "category"],
     "investigation": [
         "investigation", "category", "investigationAction", "conclusion", "escalation", "jump",
     ],

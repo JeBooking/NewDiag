@@ -371,7 +371,7 @@ def _check_out_edges(
 
 
 def _check_category_edges(node_id: str, out_edges: list[dict], issues: list[dict]) -> None:
-    """分类节点的选项：至少两条、全走 default、目标已在 _check_edges 确保是排查。"""
+    """分类节点的选项：至少两条、全走 default、目标已在 _check_edges 确保是排查或分类。"""
     if len(out_edges) < 2:
         issues.append(_issue(LEVEL_ERROR, "分类节点至少需要两条出线", node_id=node_id))
     for edge in out_edges:

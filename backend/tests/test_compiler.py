@@ -536,3 +536,38 @@ def test_detail_errors_use_the_label_the_panel_shows():
     doc = base_doc()
     node(doc, "n1")["detail"] = ""
     assert "缺少说明" in messages(doc)
+
+
+def test_category_can_chain_into_category():
+    """分类接分类等于进一步细分：这种结构要能通过发布"""
+    doc = {
+        "format": 1,
+        "name": "多级分类",
+        "nodes": [
+            _start_node([{"name": "device", "type": "text"}], [construct()]),
+            _node("c1", "category", "先分大类", "按设备类型分"),
+            _node("c2", "category", "再分小类", "按电压等级分"),
+            _investigation("n1"),
+            _investigation("n2"),
+            _node("n9", "escalation", "上升", "转交厂家"),
+        ],
+        "edges": [
+            {"id": "s1", "from": START_ID, "to": "c1", "order": 1},
+            {"id": "e1", "from": "c1", "to": "c2", "order": 1},
+            {"id": "e2", "from": "c1", "to": "n1", "order": 2},
+            {"id": "e3", "from": "c2", "to": "n2", "order": 1},
+            {"id": "e4", "from": "c2", "to": "n1", "order": 2},
+            {"id": "e5", "from": "n1", "to": "n9", "branch": "yes", "order": 1},
+            {"id": "e6", "from": "n1", "to": "n9", "branch": "no", "order": 2},
+            {"id": "e7", "from": "n2", "to": "n9", "branch": "yes", "order": 1},
+            {"id": "e8", "from": "n2", "to": "n9", "branch": "no", "order": 2},
+        ],
+    }
+    assert errors(doc) == []
+    assert can_connect("category", "category")
+
+
+def test_category_still_rejects_other_targets():
+    """放开的是分类接分类，别的类型依旧不行"""
+    assert not can_connect("category", "conclusion")
+    assert not can_connect("category", "remediation")

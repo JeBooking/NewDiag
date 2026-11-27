@@ -256,7 +256,7 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
       }
     }
 
-    // 4. 出线数量：终止节点无出线，结论恰好一条，其余至少一条；分类至少两条且只连排查
+    // 4. 出线数量：终止节点无出线，结论恰好一条，其余至少一条；分类至少两条且只连排查或下一层分类
     if (node.kind === 'category') {
       if (outs.length < 2) {
         issues.push({
@@ -268,14 +268,14 @@ export function lintDoc(doc: FlowDoc): LintIssue[] {
       }
       for (const edge of outs) {
         const target = byId.get(edge.to)
-        // 目标缺失已由悬空连线报过，这里只管类型
-        if (target && target.kind !== 'investigation') {
+        // 目标缺失已由悬空连线报过，这里只管类型；分类接分类是进一步细分
+        if (target && target.kind !== 'investigation' && target.kind !== 'category') {
           issues.push({
             id: `edge:${edge.id}:category-target`,
             level: 'error',
             nodeId: node.id,
             edgeId: edge.id,
-            message: '分类节点的出线只能连到排查节点',
+            message: '分类节点的出线只能连到排查节点或分类节点',
           })
         }
         if (edge.branch) {

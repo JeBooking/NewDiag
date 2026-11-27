@@ -322,7 +322,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 | kind | 名称 | 是否执行代码 | 后继 |
 |---|---|---|---|
 | start | 开始 | 有槽位则执行 | 多条，全 default |
-| category | 分类 | 否，纯文本分流 | ≥2 条，全 default，目标只能是排查 |
+| category | 分类 | 否，纯文本分流 | ≥2 条，全 default，目标为排查或下一层分类 |
 | investigation | 排查 | 有槽位则执行，否则人工判断 | 是 / 否两组 |
 | investigationAction | 排查动作 | 否，人工 | 完成后接排查 |
 | conclusion | 结论 | 否，展示设计时文本后继续 | 恰好一条，接处置或上升 |
@@ -354,7 +354,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 ```json
 {
   "start": ["investigation", "category"],
-  "category": ["investigation"],
+  "category": ["investigation", "category"],
   "investigation": ["investigation", "category", "investigationAction", "conclusion", "escalation", "jump"],
   "investigationAction": ["investigation", "category"],
   "conclusion": ["remediation", "escalation", "jump"],
@@ -365,7 +365,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 }
 ```
 
-开始节点的出边不区分是/否，一律 `default`，可以同时连多个排查节点。分类节点同理，出线全部是 `default`，`order` 决定选项顺序，目标只能是排查节点。
+开始节点的出边不区分是/否，一律 `default`，可以同时连多个排查节点。分类节点同理，出线全部是 `default`，`order` 决定选项顺序，目标为排查节点或下一层分类节点：选了分类项就进入那一层继续分流，相当于把一个大类拆成多级。
 
 ### 校验规则（发布必过）
 
@@ -408,7 +408,7 @@ revision 与流程包使用分层格式，只有当前版本可读写：
 | 规则 | 报错文案 |
 |---|---|
 | 出线 ≥2 条 | `分类节点至少需要两条出线` |
-| 每条出线的目标存在且 `kind == investigation` | `分类节点的出线只能连到排查节点` |
+| 每条出线的目标存在且 `kind` 为 `investigation` 或 `category` | `分类节点的出线只能连到排查节点或分类节点` |
 | 出线分支键必须是 `default` | `分类节点的出线不能带是/否分支` |
 | 分类节点自身不能是 `start` / 终止节点，也不能无入线以外的孤立形态 | 由通用连线与可达性校验覆盖 |
 

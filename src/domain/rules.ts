@@ -7,8 +7,8 @@ import { KIND_META } from './kinds'
  */
 export const CONNECTION_RULES: Record<NodeKind, NodeKind[]> = {
   start: ['investigation', 'category'],
-  // 分类节点只做分流：后继必须是排查节点，几条出线就是几个选项。
-  category: ['investigation'],
+  // 分类节点只做分流：后继是排查节点，也可以是下一层分类做进一步细分。
+  category: ['investigation', 'category'],
   investigation: ['investigation', 'category', 'investigationAction', 'conclusion', 'escalation', 'jump'],
   investigationAction: ['investigation', 'category'],
   conclusion: ['remediation', 'escalation', 'jump'],
