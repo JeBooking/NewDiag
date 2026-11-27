@@ -130,6 +130,7 @@ const {
   setViewport,
   connectionStartHandle,
   fitView,
+  getSelectedNodes,
   zoomIn,
   zoomOut,
   zoomTo,
@@ -583,41 +584,86 @@ provide(CONVERT_NODE_KEY, convertNode)
  * 节点剪贴板：Ctrl+C 存一份纯数据，Ctrl+V 粘成新节点。
  * 放在模块作用域而不是响应式状态——剪贴板变化不需要触发渲染。
  */
-let clipboard: DocNode | null = null
+type NodeClipboard = { nodes: DocNode[]; edges: DocEdge[] }
+
+let clipboard: NodeClipboard | null = null
 let lastPointer: { x: number; y: number } | null = null
 
 function onCanvasMove(event: MouseEvent): void {
   lastPointer = { x: event.clientX, y: event.clientY }
 }
 
+/** 纯数据深拷贝：nodeMeta 里存的是响应式代理，structuredClone 克隆 Proxy 会抛 DataCloneError */
+function snapshot(node: DocNode): DocNode {
+  return JSON.parse(JSON.stringify(node)) as DocNode
+}
+
 function copySelected(): void {
-  if (props.readonly || !props.selectedNodeId) return
-  const source = nodeMeta.get(props.selectedNodeId)
-  if (!source || source.kind === 'start') return
-  // 不能直接 structuredClone：nodeMeta 里存的是 reactive 代理，克隆 Proxy 会直接抛
-  // DataCloneError，而这个错没人接，表现就是“点了没反应”
-  clipboard = JSON.parse(JSON.stringify(source)) as DocNode
+  if (props.readonly) return
+  // 多选状态挂在节点的 selected 上；单选时 selectedNodeId 兜底
+  const picked = new Set(
+    getSelectedNodes.value
+      .filter((item) => nodeMeta.get(item.id)?.kind !== 'start')
+      .map((item) => item.id),
+  )
+  if (picked.size === 0 && props.selectedNodeId && nodeMeta.get(props.selectedNodeId)?.kind !== 'start') {
+    picked.add(props.selectedNodeId)
+  }
+  if (picked.size === 0) return
+  clipboard = {
+    nodes: [...picked].map((id) => snapshot(nodeMeta.get(id)!)),
+    // 只带选中节点之间的连线：连到范围外的边粘出来就是悬空的
+    edges: [...edgeMeta.values()]
+      .filter((edge) => picked.has(edge.from) && picked.has(edge.to))
+      .map((edge) => ({ ...edge })),
+  }
 }
 
 function pasteClipboard(): void {
-  if (props.readonly || !clipboard) return
+  if (props.readonly || !clipboard || clipboard.nodes.length === 0) return
   const rect = wrapper.value?.getBoundingClientRect()
   const point = rect && lastPointer
     ? project({ x: lastPointer.x - rect.left, y: lastPointer.y - rect.top })
     : null
-  const land = point ?? { x: clipboard.position.x + 40, y: clipboard.position.y + 40 }
-  const copy: DocNode = {
-    ...clipboard,
-    id: nextId('n'),
-    // 粘贴保留原标题：它和原节点是同一个东西，多个副本重名由人来改
-    position: { x: Math.round(land.x), y: Math.round(land.y) },
+  // 按整块左上角对齐落点，保持多节点之间的相对位置
+  const minX = Math.min(...clipboard.nodes.map((node) => node.position.x))
+  const minY = Math.min(...clipboard.nodes.map((node) => node.position.y))
+  const land = point ?? { x: minX + 40, y: minY + 40 }
+  const dx = land.x - minX
+  const dy = land.y - minY
+
+  const idMap = new Map<string, string>()
+  const fresh: string[] = []
+  for (const node of clipboard.nodes) {
+    const id = nextId('n')
+    idMap.set(node.id, id)
+    fresh.push(id)
+    nodeMeta.set(id, {
+      ...node,
+      id,
+      // 粘贴保留原标题：它和原节点是同一个东西，重名由人来改
+      position: { x: Math.round(node.position.x + dx), y: Math.round(node.position.y + dy) },
+    })
   }
-  nodeMeta.set(copy.id, copy)
+  for (const edge of clipboard.edges) {
+    const from = idMap.get(edge.from)
+    const to = idMap.get(edge.to)
+    if (!from || !to) continue
+    const id = nextId('e')
+    edgeMeta.set(id, { ...edge, id, from, to })
+  }
+
   projectAll(true)
-  emit('select-node', copy.id)
+  emit('select-node', fresh[0])
   commit()
-  // 连着粘两次时错开，否则会叠在同一个点上
-  clipboard = { ...clipboard, position: { x: land.x + 40, y: land.y + 40 } }
+  // 连着粘两次时整块错开，否则会叠在同一个点上
+  clipboard = {
+    ...clipboard,
+    nodes: clipboard.nodes.map((node) => ({
+      ...node,
+      position: { x: node.position.x + 40, y: node.position.y + 40 },
+    })),
+  }
 }
 
 /** Ctrl+C 复制选中节点、Ctrl+V 粘贴；输入框里的组合键一律放行给浏览器 */
