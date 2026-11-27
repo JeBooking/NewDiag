@@ -5,7 +5,7 @@ import { KIND_META, V1_KINDS } from '@/domain/kinds'
 import type { NodeKind, NodeVisualStatus } from '@/domain/types'
 import { ICON_ERROR, ICON_WARNING } from '@/components/canvas/issue-icons'
 import type { NodeCardData } from './index'
-import { CONVERT_NODE_KEY, COPY_NODE_KEY, FOCUS_NODE_KEY } from './index'
+import { CONVERT_NODE_KEY, FOCUS_NODE_KEY } from './index'
 
 // 画布会把 position/dimensions 等内部字段一并透传，避免它们落到 DOM 属性上
 defineOptions({ inheritAttrs: false })
@@ -46,13 +46,6 @@ const MENU_WIDTH = 220
 const MENU_MAX_HEIGHT = 320
 
 const convertNode = inject(CONVERT_NODE_KEY, null)
-const copyNode = inject(COPY_NODE_KEY, null)
-
-/** 复制完就把菜单收了：副本已经选中，菜单再挂着反而挡住视线 */
-function copyAndClose(): void {
-  copyNode?.(props.data.nodeId)
-  closeMenu()
-}
 /** 目标类型与候选列表同源：start 是唯一入口，永远不能作为转换目标 */
 const convertTargets = computed(() =>
   props.data.convertible ? V1_KINDS.filter((kind) => kind !== props.data.kind) : [],
@@ -301,12 +294,6 @@ const worst = computed(() => {
                   <span class="kind-swatch" :style="{ background: KIND_META[kind].color }" />
                 </button>
               </div>
-            </div>
-          </template>
-          <template v-if="copyNode && data.copyable">
-            <div class="menu-sep" role="separator" />
-            <div class="menu-row" role="menuitem" @click="copyAndClose">
-              <span class="menu-label">复制节点</span>
             </div>
           </template>
         </div>

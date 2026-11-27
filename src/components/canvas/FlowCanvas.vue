@@ -30,7 +30,6 @@ import type {
 } from '@/domain/types'
 import {
   CONVERT_NODE_KEY,
-  COPY_NODE_KEY,
   FOCUS_NODE_KEY,
   NODE_DRAG_TYPE,
   nodeTypes,
@@ -159,6 +158,7 @@ function releaseCtrl(): void {
 onMounted(() => {
   window.addEventListener('keydown', onCtrlKey)
   window.addEventListener('keyup', onCtrlKey)
+  window.addEventListener('keydown', onShortcut)
   window.addEventListener('blur', releaseCtrl)
 })
 
@@ -370,8 +370,6 @@ function projectAll(preservePositions: boolean) {
       links: props.readonly ? undefined : linkMap.get(meta.id),
       // 开始节点转成别的类型会让流程失去唯一入口，风险不可逆，不给这个入口
       convertible: !props.readonly && !isStart,
-      nodeId: meta.id,
-      copyable: !props.readonly && !isStart,
     }
     nextNodes.push({
       id: meta.id,
@@ -582,26 +580,64 @@ function convertNode(nodeId: string, kind: NodeKind): void {
 provide(CONVERT_NODE_KEY, convertNode)
 
 /**
- * 复制节点：内容整体带走，但不连边——副本摆在原节点右下角，位置错开一点好认。
- * 开始节点不允许复制，否则流程图里会出现第二个入口。
+ * 节点剪贴板：Ctrl+C 存一份纯数据，Ctrl+V 粘成新节点。
+ * 放在模块作用域而不是响应式状态——剪贴板变化不需要触发渲染。
  */
-function copyNode(nodeId: string): void {
-  if (props.readonly) return
-  const source = nodeMeta.get(nodeId)
+let clipboard: DocNode | null = null
+let lastPointer: { x: number; y: number } | null = null
+
+function onCanvasMove(event: MouseEvent): void {
+  lastPointer = { x: event.clientX, y: event.clientY }
+}
+
+function copySelected(): void {
+  if (props.readonly || !props.selectedNodeId) return
+  const source = nodeMeta.get(props.selectedNodeId)
   if (!source || source.kind === 'start') return
+  // 不能直接 structuredClone：nodeMeta 里存的是 reactive 代理，克隆 Proxy 会直接抛
+  // DataCloneError，而这个错没人接，表现就是“点了没反应”
+  clipboard = JSON.parse(JSON.stringify(source)) as DocNode
+}
+
+function pasteClipboard(): void {
+  if (props.readonly || !clipboard) return
+  const rect = wrapper.value?.getBoundingClientRect()
+  const point = rect && lastPointer
+    ? project({ x: lastPointer.x - rect.left, y: lastPointer.y - rect.top })
+    : null
+  const land = point ?? { x: clipboard.position.x + 40, y: clipboard.position.y + 40 }
   const copy: DocNode = {
-    ...structuredClone(source),
+    ...clipboard,
     id: nextId('n'),
-    title: `${source.title || '未命名节点'} 副本`,
-    position: { x: source.position.x + 40, y: source.position.y + 40 },
+    // 粘贴保留原标题：它和原节点是同一个东西，多个副本重名由人来改
+    position: { x: Math.round(land.x), y: Math.round(land.y) },
   }
   nodeMeta.set(copy.id, copy)
   projectAll(true)
   emit('select-node', copy.id)
   commit()
+  // 连着粘两次时错开，否则会叠在同一个点上
+  clipboard = { ...clipboard, position: { x: land.x + 40, y: land.y + 40 } }
 }
 
-provide(COPY_NODE_KEY, copyNode)
+/** Ctrl+C 复制选中节点、Ctrl+V 粘贴；输入框里的组合键一律放行给浏览器 */
+function onShortcut(event: KeyboardEvent): void {
+  if (!(event.ctrlKey || event.metaKey)) return
+  const key = event.key.toLowerCase()
+  if (key !== 'c' && key !== 'v') return
+  const target = event.target as HTMLElement | null
+  const tag = target?.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return
+  if (key === 'c') {
+    if (!props.selectedNodeId) return
+    event.preventDefault()
+    copySelected()
+    return
+  }
+  if (!clipboard) return
+  event.preventDefault()
+  pasteClipboard()
+}
 
 function commit() {
   const docNodes: DocNode[] = []
@@ -983,6 +1019,7 @@ onBeforeUnmount(() => {
   clearCloseTimer()
   window.removeEventListener('keydown', onCtrlKey)
   window.removeEventListener('keyup', onCtrlKey)
+  window.removeEventListener('keydown', onShortcut)
   window.removeEventListener('blur', releaseCtrl)
   onPanEnd()
 })
@@ -1010,6 +1047,7 @@ defineExpose({ fitView, zoomPercent, zoomIn, zoomOut, resetZoom, focusNode })
     @dragover="onDragOver"
     @drop="onDrop"
     @mousedown.capture="onCanvasMouseDown"
+    @mousemove="onCanvasMove"
     @mouseover="onCanvasMouseOver"
     @mouseout="onCanvasMouseOut"
     @wheel.passive="hideTip"
